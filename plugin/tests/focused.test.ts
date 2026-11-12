@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { fullReasons, type LayermapCheck, parseCheck, select } from '../src/focused.ts'
+import { fullReasons, type LayermapCheck, parseCheck, parseUntested, select, type Untested } from '../src/focused.ts'
 import { matcher } from '../src/glob.ts'
 import { commit, ENV, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
 
@@ -13,13 +13,14 @@ const check = (partial: Partial<LayermapCheck>): LayermapCheck => ({ files: [], 
 describe('选测', () => {
   const exists = (path: string): boolean => !path.includes('deleted')
 
-  test('只选 rank 0–3 而且还在的测试文件', () => {
+  test('选 rank 4 以下（含 3.5）而且还在的测试文件', () => {
     const selection = select(
       check({
         files: [{ path: 'src/a.ts', status: 'MODIFIED' }],
         tests: [
           { path: 't/a.test.ts', rank: 0, why: 'calls a' },
           { path: 't/b.test.ts', rank: 3, why: 'same directory' },
+          { path: 't/s.test.ts', rank: 3.5, why: 'may use it through t/support.ts' },
           { path: 't/deleted.test.ts', rank: 1, why: 'changed' },
           { path: 't/c.test.ts', rank: 4, why: 'imports' },
         ],
@@ -31,12 +32,35 @@ describe('选测', () => {
       kind: 'selected',
       changed: ['src/a.ts'],
       onlyIgnored: false,
-      tests: ['t/a.test.ts', 't/b.test.ts'],
+      tests: ['t/a.test.ts', 't/b.test.ts', 't/s.test.ts'],
       indirect: 1,
       unmapped: [],
       truncated: false,
+      untested: null,
     })
     assert.deepEqual(fullReasons(selection), [])
+  })
+
+  test('选出的测试跑不到的改动，或者确认时追踪被截断，都建议跑整组', () => {
+    const selection = select(
+      check({ files: [{ path: 'src/a.ts', status: 'MODIFIED' }], tests: [{ path: 't/b.test.ts', rank: 3, why: 'same directory' }] }),
+      () => false,
+      () => true,
+    )
+    assert.ok(selection.kind === 'selected')
+    selection.untested = { changed: [], truncated: false }
+    assert.deepEqual(fullReasons(selection), [])
+    selection.untested = { changed: ['src/a.ts: a f1-3', 'src/a.ts: b f5-9', 'src/a.ts: c f11-12', 'src/a.ts: d f14-20'], truncated: true }
+    assert.deepEqual(fullReasons(selection), [
+      '选出的测试跑不到 src/a.ts: a f1-3、src/a.ts: b f5-9、src/a.ts: c f11-12 等 4 处',
+      '确认选出的测试跑不跑得到改动时，layermap 追踪到上限就停了',
+    ])
+    // 选测时已经截断，确认时的截断不再重复
+    selection.truncated = true
+    assert.deepEqual(fullReasons(selection), [
+      '改动影响的范围太大，layermap 追踪到上限就停了',
+      '选出的测试跑不到 src/a.ts: a f1-3、src/a.ts: b f5-9、src/a.ts: c f11-12 等 4 处',
+    ])
   })
 
   test('改了地图跟不到的文件、追踪被截断、没找到测试，都建议跑整组', () => {
@@ -60,28 +84,41 @@ describe('选测', () => {
 
   test('layermap 的输出缺字段时说明可能是版本太旧', () => {
     assert.throws(() => parseCheck('{"files":[],"tests":[]}'), /版本太旧/)
+    assert.throws(() => parseUntested('{"files":[],"tests":[],"unmapped":[],"truncated":false}'), /没有输出 untested/)
+    assert.deepEqual(parseUntested('{"untested":{"changed":["src/a.ts: a f1-3"],"routes":[],"truncated":false}}'), {
+      changed: ['src/a.ts: a f1-3'],
+      truncated: false,
+    })
   })
 })
 
-/** 假的 layermap：记下参数，输出给定的 JSON；FAKE_LAYERMAP_FAIL 时报错退出。 */
-function fakeLayermap(output: LayermapCheck): { env: NodeJS.ProcessEnv; args: () => string[] } {
+/**
+ * 假的 layermap：每次调用的参数按行记下；输出给定的 JSON，参数里给了测试文件时再带上 untested；
+ * FAKE_LAYERMAP_FAIL 时报错退出。
+ */
+function fakeLayermap(output: LayermapCheck, untested: Untested = { changed: [], truncated: false }): { env: NodeJS.ProcessEnv; calls: () => string[][] } {
   const dir = tempDir('testpace-fake-')
   const json = join(dir, 'check.json')
-  const argsFile = join(dir, 'args.json')
+  const withTests = join(dir, 'check-tests.json')
+  const callsFile = join(dir, 'calls.jsonl')
   writeFileSync(json, JSON.stringify(output))
+  writeFileSync(withTests, JSON.stringify({ ...output, untested: { ...untested, entries: [], throughRoutes: [], routes: [], missing: [] } }))
   const bin = join(dir, 'layermap')
   writeFileSync(
     bin,
     `#!/usr/bin/env node
-require('node:fs').writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)))
+const fs = require('node:fs')
+const args = process.argv.slice(2)
+fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + '\\n')
 if (process.env.FAKE_LAYERMAP_FAIL) { console.error('layermap: map build failed'); process.exit(1) }
-process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(json)}, 'utf8'))
+// check --json --base REF 之后还有参数，就是给了测试文件
+process.stdout.write(fs.readFileSync(args.length > 4 ? ${JSON.stringify(withTests)} : ${JSON.stringify(json)}, 'utf8'))
 `,
   )
   chmodSync(bin, 0o755)
   return {
     env: { ...ENV, PATH: `${dir}:${ENV.PATH}` },
-    args: () => JSON.parse(readFileSync(argsFile, 'utf8')),
+    calls: () => readFileSync(callsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line)),
   }
 }
 
@@ -106,8 +143,12 @@ describe('testpace focused', () => {
     assert.equal(files!.kind, 'files')
     assert.deepEqual(files!.files, ['tests/format.test.mjs'])
     assert.match(readFileSync(files!.log as string, 'utf8'), /^# tests 1$/m, '只跑了选出的那个文件')
-    // 在默认分支上，对比的就是 HEAD
-    assert.deepEqual(layermap.args(), ['check', '--json', '--base', sh(repo, 'git rev-parse HEAD').trim()])
+    // 在默认分支上，对比的就是 HEAD；选出测试后再问 layermap 它们跑不跑得到改动
+    const head = sh(repo, 'git rev-parse HEAD').trim()
+    assert.deepEqual(layermap.calls(), [
+      ['check', '--json', '--base', head],
+      ['check', '--json', '--base', head, 'tests/format.test.mjs'],
+    ])
   })
 
   test('在工作分支上对比和默认分支的分叉点，分支上已提交的改动也算', () => {
@@ -118,9 +159,9 @@ describe('testpace focused', () => {
     commit(repo, 'extra')
     const layermap = fakeLayermap(FORMAT_CHANGE)
     assert.equal(testpace(repo, ['focused'], layermap.env).code, 0)
-    assert.deepEqual(layermap.args(), ['check', '--json', '--base', fork])
+    assert.deepEqual(layermap.calls()[0], ['check', '--json', '--base', fork])
     testpace(repo, ['focused', '--base', 'HEAD~1'], layermap.env)
-    assert.deepEqual(layermap.args(), ['check', '--json', '--base', 'HEAD~1'])
+    assert.deepEqual(layermap.calls()[2], ['check', '--json', '--base', 'HEAD~1'])
   })
 
   test('相关测试失败时给出节选，退出码 1', () => {
@@ -147,6 +188,14 @@ describe('testpace focused', () => {
     const r = testpace(repo, ['focused'], layermap.env)
     assert.equal(r.code, 4, r.out)
     assert.match(r.out, /相关测试通过 · 用时 \d+秒\n建议跑整组（testpace full，放后台）：改了 package\.json（build or dependency file），地图跟不到它们影响哪些测试。\n$/)
+  })
+
+  test('选出的测试跑不到某处改动：跑完选出的测试，再建议跑整组，退出码 4', () => {
+    const repo = sampleRepo()
+    const layermap = fakeLayermap(FORMAT_CHANGE, { changed: ['src/format.mjs: yuan f1-3'], truncated: false })
+    const r = testpace(repo, ['focused'], layermap.env)
+    assert.equal(r.code, 4, r.out)
+    assert.match(r.out, /相关测试通过 · 用时 \d+秒\n建议跑整组（testpace full，放后台）：选出的测试跑不到 src\/format\.mjs: yuan f1-3。\n$/)
   })
 
   test('没有 layermap 或它出错时不跑测试，建议跑整组', () => {
