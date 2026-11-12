@@ -217,6 +217,8 @@ function status(): number {
     }
     if (config.ignore.length) lines.push(`  ignore: ${config.ignore.join(', ')}`)
   }
+  // 版本太旧不在这里查：focused 读输出时会说
+  lines.push(`layermap：${commandExists(ctx.root, 'layermap') ? '找到' : '找不到，focused 没法按改动选测试，每次都会建议跑整组'}`)
 
   console.log(lines.join('\n'))
   // 停止门据此判断 agent 有没有看过整组的结果

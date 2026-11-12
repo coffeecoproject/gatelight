@@ -82,6 +82,27 @@ describe('选测', () => {
     assert.deepEqual(fullReasons(selection), [])
   })
 
+  test('地图跟不到的文件在 ignore 里时不算，其余照样建议跑整组', () => {
+    const selection = select(
+      check({
+        files: [
+          { path: 'src/a.ts', status: 'MODIFIED' },
+          { path: 'docs/shot.png', status: 'ADDED' },
+          { path: 'scripts/deploy.sh', status: 'MODIFIED' },
+        ],
+        tests: [{ path: 'tests/a.test.ts', rank: 2, why: 'imports src/a.ts' }],
+        unmapped: [
+          { path: 'docs/shot.png', kind: 'binary file' },
+          { path: 'scripts/deploy.sh', kind: 'shell script' },
+        ],
+      }),
+      matcher(['docs/**']),
+      exists,
+    )
+    assert.deepEqual(selection.kind === 'selected' && selection.unmapped, [{ path: 'scripts/deploy.sh', kind: 'shell script' }])
+    assert.deepEqual(fullReasons(selection), ['改了 scripts/deploy.sh（shell script），地图跟不到它们影响哪些测试'])
+  })
+
   test('layermap 的输出缺字段时说明可能是版本太旧', () => {
     assert.throws(() => parseCheck('{"files":[],"tests":[]}'), /版本太旧/)
     assert.throws(() => parseUntested('{"files":[],"tests":[],"unmapped":[],"truncated":false}'), /没有输出 untested/)
@@ -210,6 +231,15 @@ describe('testpace focused', () => {
     const r = testpace(repo, ['focused'], { ...failing.env, FAKE_LAYERMAP_FAIL: '1' })
     assert.equal(r.code, 4)
     assert.match(r.out, /layermap 出错了：layermap: map build failed/)
+  })
+
+  test('status 说明有没有 layermap', () => {
+    const repo = sampleRepo()
+    const node = sh(repo, 'dirname "$(command -v node)"').trim()
+    const missing = testpace(repo, ['status'], { ...ENV, PATH: `${node}:/usr/bin:/bin` })
+    assert.match(missing.out, /\nlayermap：找不到，focused 没法按改动选测试，每次都会建议跑整组\n$/)
+    const found = testpace(repo, ['status'], fakeLayermap(FORMAT_CHANGE).env)
+    assert.match(found.out, /\nlayermap：找到\n$/)
   })
 
   test('多余的参数报用法错误', () => {

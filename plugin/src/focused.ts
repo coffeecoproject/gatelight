@@ -69,7 +69,8 @@ export function select(check: LayermapCheck, isIgnored: (path: string) => boolea
     onlyIgnored: changed.every(isIgnored),
     tests: [...new Set(tests)],
     indirect: check.tests.filter(test => test.rank >= INDIRECT_RANK).length,
-    unmapped: check.unmapped,
+    // ignore 里的文件约定不影响测试，地图跟不到它们也无妨
+    unmapped: check.unmapped.filter(file => !isIgnored(file.path)),
     truncated: check.truncated,
     untested: null,
   }
