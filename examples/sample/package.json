@@ -1,0 +1,6 @@
+{
+  "name": "testpace-sample",
+  "private": true,
+  "type": "module",
+  "description": "按 testpace 约定建的示例项目，用于 testpace 自测"
+}

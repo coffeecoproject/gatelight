@@ -1,0 +1,17 @@
+{
+  "name": "testpace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Test pacing for coding agents (Claude Code plugin)",
+  "license": "MIT",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "test": "node --test plugin/tests/*.test.ts",
+    "typecheck": "tsc -p plugin"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.9"
+  }
+}

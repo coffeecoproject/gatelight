@@ -1,0 +1,14 @@
+{
+  "name": "testpace",
+  "description": "testpace：agent 开发时按改动选测试、落地前程序确认整组通过、记录测试耗时",
+  "owner": {
+    "name": "coffeecoproject"
+  },
+  "plugins": [
+    {
+      "name": "testpace",
+      "source": "./plugin",
+      "description": "agent 开发时按改动选测试、落地前确认整组通过、记录测试耗时"
+    }
+  ]
+}

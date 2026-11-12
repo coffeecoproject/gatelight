@@ -1,0 +1,4 @@
+#!/bin/sh
+# testpace 命令入口：插件启用时这个目录在 Bash 工具的 PATH 里。
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node --disable-warning=ExperimentalWarning "$dir/../src/cli.ts" "$@"
