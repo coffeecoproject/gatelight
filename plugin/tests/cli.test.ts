@@ -1,58 +1,14 @@
 // 在示例项目的副本上跑真实的 testpace 命令：git 仓库、记录、计时、精简输出。
 
 import assert from 'node:assert/strict'
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { after, before, describe, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { before, describe, test } from 'node:test'
+import { BIN, ENV, runs, sampleRepo, setConfig as setConfigWith, sh, tempDir, testpace as run } from './helpers.ts'
 
-const BIN = fileURLToPath(new URL('../bin/testpace', import.meta.url))
-const SAMPLE = fileURLToPath(new URL('../../examples/sample', import.meta.url))
-
-// node:test 会把 NODE_TEST_CONTEXT 传给子进程，示例项目里的 node --test 看到它就跳过所有测试文件。
-const { NODE_TEST_CONTEXT: _, ...ENV } = process.env
-
-interface Result {
-  code: number | null
-  out: string
-}
-
-function testpace(cwd: string, ...args: string[]): Result {
-  const r = spawnSync(BIN, args, { cwd, env: ENV, encoding: 'utf8' })
-  return { code: r.status, out: r.stdout + r.stderr }
-}
-
-function sh(cwd: string, script: string): string {
-  return execFileSync('/bin/sh', ['-c', script], { cwd, encoding: 'utf8' })
-}
-
-function runs(repo: string): Array<Record<string, unknown>> {
-  const file = join(repo, '.git', 'testpace', 'runs.jsonl')
-  if (!existsSync(file)) return []
-  return readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line))
-}
-
-function setConfig(repo: string, full: string): void {
-  const config = JSON.parse(readFileSync(join(repo, 'testpace.json'), 'utf8'))
-  writeFileSync(join(repo, 'testpace.json'), JSON.stringify({ ...config, full }))
-}
-
-const dirs: string[] = []
-
-/** 复制示例项目，建成一个有一次提交的 git 仓库。 */
-function sampleRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'testpace-sample-'))
-  dirs.push(dir)
-  cpSync(SAMPLE, dir, { recursive: true })
-  sh(dir, 'git init -q -b main && git add -A && git -c user.name=t -c user.email=t@t commit -qm init')
-  return dir
-}
-
-after(() => {
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
-})
+const testpace = (cwd: string, ...args: string[]) => run(cwd, args)
+const setConfig = (repo: string, full: string): void => setConfigWith(repo, { full })
 
 describe('testpace full', () => {
   let repo: string
@@ -127,8 +83,7 @@ describe('结果的可信度', () => {
 
   test('同一份代码先失败后通过，报告标为不稳定', () => {
     const repo = sampleRepo()
-    const flag = join(dirs.at(-1)!, '..', `flag-${Date.now()}`)
-    dirs.push(flag)
+    const flag = join(tempDir('testpace-flag-'), 'ok')
     setConfig(repo, `node scripts/full.mjs && test -f '${flag}'`)
     assert.equal(testpace(repo, 'full').code, 1)
     writeFileSync(flag, '')
@@ -142,9 +97,8 @@ describe('结果的可信度', () => {
 
   test('有整组在跑时 status 显示出来，同一工作区、别的工作区的同一份代码都不再起第二个', async () => {
     const repo = sampleRepo()
-    const go = join(dirs.at(-1)!, '..', `go-${Date.now()}`)
-    const other = `${repo}-wt`
-    dirs.push(go, other)
+    const go = join(tempDir('testpace-go-'), 'go')
+    const other = join(tempDir('testpace-wt-'), 'wt')
     setConfig(repo, `while [ ! -f '${go}' ]; do sleep 0.1; done; node scripts/full.mjs`)
     sh(repo, `git add -A && git -c user.name=t -c user.email=t@t commit -qm slow && git worktree add -q --detach '${other}'`)
     const first = spawn(BIN, ['full'], { cwd: repo, env: ENV })
@@ -228,8 +182,7 @@ describe('配置和报告', () => {
   })
 
   test('不在 git 仓库里时说明', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'testpace-nogit-'))
-    dirs.push(dir)
+    const dir = tempDir('testpace-nogit-')
     const r = testpace(dir, 'status')
     assert.equal(r.code, 2)
     assert.match(r.out, /testpace 要在 git 仓库里运行/)

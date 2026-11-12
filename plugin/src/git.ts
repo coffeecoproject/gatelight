@@ -34,18 +34,27 @@ export function commonDir(root: string): string {
 }
 
 /**
- * 工作区完整内容的哈希：已跟踪文件的当前内容加上未跟踪、未被 .gitignore 忽略的文件。
- * 用一份临时索引做 `git add -A` 再 `git write-tree`，不动真实索引。
- * 结果就是 git 的树对象 id，和"把这些内容提交后的提交树"是同一个值。
+ * 在一份临时索引上做事，不动真实索引。复制真实索引只为复用其中的文件状态缓存，
+ * 内容以 fn 里的 git add 为准。
  */
-export function workTreeId(root: string): string {
+function withTempIndex<T>(root: string, fn: (env: Record<string, string>) => T): T {
   const index = git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'index'])
   const dir = mkdtempSync(join(tmpdir(), 'testpace-index-'))
   const tmpIndex = join(dir, 'index')
   try {
-    // 复制真实索引只为复用其中的文件状态缓存，内容以工作区为准。
     if (existsSync(index)) copyFileSync(index, tmpIndex)
-    const env = { GIT_INDEX_FILE: tmpIndex }
+    return fn({ GIT_INDEX_FILE: tmpIndex })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * 工作区完整内容的哈希：已跟踪文件的当前内容加上未跟踪、未被 .gitignore 忽略的文件。
+ * 结果就是 git 的树对象 id，和"把这些内容提交后的提交树"是同一个值。
+ */
+export function workTreeId(root: string): string {
+  return withTempIndex(root, env => {
     // 标了 assume-unchanged 的文件，git add 会当它没改；先在临时索引里去掉这个标记。
     // skip-worktree（稀疏检出）不动：那些文件不在磁盘上，去掉标记会被当成删除。
     const assumed = git(root, ['ls-files', '-v', '-z'], env)
@@ -62,9 +71,7 @@ export function workTreeId(root: string): string {
     }
     git(root, ['add', '--all', '--', '.'], env)
     return git(root, ['write-tree'], env)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
+  })
 }
 
 /** 两棵树之间改动过的文件路径（相对仓库根目录）。 */
@@ -129,4 +136,62 @@ export function landings(root: string, branch: string, sinceMs: number): Landing
     result.push({ commit, time: Number(seconds) * 1000, files })
   }
   return result
+}
+
+/** 真实索引（暂存区）的树：不带 -a 的 git commit 会提交的内容。不改索引。 */
+export function indexTree(root: string): string {
+  return git(root, ['write-tree'])
+}
+
+/**
+ * 暂存区加上已跟踪文件的改动：git commit -a 会提交的内容。
+ * 和 git commit -a 一样不管 assume-unchanged 的文件。
+ */
+export function indexWithTrackedTree(root: string): string {
+  return withTempIndex(root, env => {
+    git(root, ['add', '--update', '--', '.'], env)
+    return git(root, ['write-tree'], env)
+  })
+}
+
+/** 一个提交（或分支、标签）的树；找不到返回 undefined。 */
+export function treeOf(root: string, rev: string): string | undefined {
+  return gitOrUndefined(root, ['rev-parse', '--verify', '--quiet', `${rev}^{tree}`])
+}
+
+export function commitOf(root: string, rev: string): string | undefined {
+  return gitOrUndefined(root, ['rev-parse', '--verify', '--quiet', `${rev}^{commit}`])
+}
+
+export function isAncestor(root: string, ancestor: string, descendant: string): boolean {
+  try {
+    git(root, ['merge-base', '--is-ancestor', ancestor, descendant])
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function mergeBase(root: string, a: string, b: string): string | undefined {
+  return gitOrUndefined(root, ['merge-base', a, b])
+}
+
+/** 把 rev 合进 HEAD 的结果树；有冲突（合并会停下来等解决）时返回 undefined。 */
+export function mergedTree(root: string, rev: string): string | undefined {
+  const out = gitOrUndefined(root, ['merge-tree', '--write-tree', 'HEAD', rev])
+  return out?.split('\n')[0]
+}
+
+/** 分支最新提交的 id、提交时间和树。 */
+export function branchTip(root: string, branch: string): { commit: string; time: number; tree: string } | undefined {
+  const out = gitOrUndefined(root, ['log', '-1', '--format=%H %ct %T', `refs/heads/${branch}`, '--'])
+  if (!out) return undefined
+  const [commit = '', seconds = '0', tree = ''] = out.split(' ')
+  return { commit, time: Number(seconds) * 1000, tree }
+}
+
+/** 远程上的同名分支（refs/remotes/<远程>/<分支>）里有没有一个已经包含这个提交。 */
+export function onRemoteBranch(root: string, branch: string, commit: string): boolean {
+  const refs = gitOrUndefined(root, ['for-each-ref', '--format=%(refname)', `refs/remotes/*/${branch}`])
+  return (refs ?? '').split('\n').filter(Boolean).some(ref => isAncestor(root, commit, ref))
 }

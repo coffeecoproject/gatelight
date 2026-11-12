@@ -3,6 +3,7 @@
 //   running/     正在跑的命令，每个一份，结束时删掉
 //   logs/        每次运行的完整输出
 
+import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CommandKey } from './config.ts'
@@ -36,6 +37,21 @@ export interface RunningMarker {
   tree: string
   startedAt: number
   log: string
+}
+
+export interface SessionState {
+  startedAt: number
+  /** 会话开始时默认分支的最新提交：之后变了才检查有没有绕过合并门。 */
+  tipAtStart?: string
+  /** 已经提示过的、没有整组通过记录的默认分支提交。 */
+  warned: string[]
+}
+
+/** 会话记录留多久。 */
+const SESSION_KEEP_MS = 7 * 24 * 3600 * 1000
+
+function worktreeKey(worktree: string): string {
+  return createHash('sha1').update(worktree).digest('hex').slice(0, 16)
 }
 
 /** 日志文件名以开始时间开头，按名字排序就是按时间排序。 */
@@ -91,6 +107,50 @@ export class Store {
 
   clearRunning(id: string): void {
     rmSync(join(this.runningDir, `${id}.json`), { force: true })
+  }
+
+  /** agent 最近一次看到整组结果的时间（跑了 testpace status，或在前台等到了 testpace full）。 */
+  markRead(worktree: string, at: number): void {
+    const dir = join(this.dir, 'read')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, worktreeKey(worktree)), String(at))
+  }
+
+  readAt(worktree: string): number {
+    const path = join(this.dir, 'read', worktreeKey(worktree))
+    return existsSync(path) ? Number(readFileSync(path, 'utf8')) || 0 : 0
+  }
+
+  /** 会话第一次被 testpace 看到时的状态。第一次读时记下现在和 tip() 给的默认分支最新提交。 */
+  session(id: string, now: number, tip: () => string | undefined = () => undefined): SessionState {
+    const dir = join(this.dir, 'sessions')
+    const path = join(dir, `${id.replace(/[^\w.-]/g, '_')}.json`)
+    if (existsSync(path)) {
+      try {
+        return JSON.parse(readFileSync(path, 'utf8')) as SessionState
+      } catch {
+        // 写坏了就重新开始
+      }
+    }
+    mkdirSync(dir, { recursive: true })
+    for (const name of readdirSync(dir)) {
+      const file = join(dir, name)
+      try {
+        if (now - (JSON.parse(readFileSync(file, 'utf8')) as SessionState).startedAt > SESSION_KEEP_MS) rmSync(file, { force: true })
+      } catch {
+        rmSync(file, { force: true })
+      }
+    }
+    const tipAtStart = tip()
+    const state: SessionState = { startedAt: now, ...(tipAtStart ? { tipAtStart } : {}), warned: [] }
+    writeFileSync(path, JSON.stringify(state))
+    return state
+  }
+
+  saveSession(id: string, state: SessionState): void {
+    const dir = join(this.dir, 'sessions')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id.replace(/[^\w.-]/g, '_')}.json`), JSON.stringify(state))
   }
 
   /** 正在跑的命令；进程已经不在的（被强杀、机器重启）顺手清掉。 */

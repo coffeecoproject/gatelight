@@ -1,50 +1,34 @@
-// testpace 命令行：full、status、report（focused 在第 3 期加）。
+// testpace 命令行：focused、files、full、status、report。
 
-import { readFileSync } from 'node:fs'
-import { COMMAND_KEYS, commandExists, type Config, CONFIG_FILE, loadConfig } from './config.ts'
-import { type Coverage, findCoverage } from './coverage.ts'
-import { failureExcerpt } from './excerpt.ts'
+import { COMMAND_KEYS, commandExists, CONFIG_FILE, loadConfig } from './config.ts'
 import { execute } from './execute.ts'
+import { askLayermap, fullReasons } from './focused.ts'
 import { duration, short, when } from './format.ts'
-import { changedPaths, commonDir, currentBranch, defaultBranch, headCommit, landings, repoRoot, workTreeId } from './git.ts'
+import { commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { matcher } from './glob.ts'
 import { renderReport } from './report.ts'
-import { newRunId, type RunRecord, Store } from './store.ts'
+import { coverageOf, describeCoverage, failureText, openRepo, type Repo, runRecorded } from './repo.ts'
+import { newRunId } from './store.ts'
 
 const USAGE = `用法：
-  testpace full            跑整组（testpace.json 的 full），按当前工作区完整内容记录结果。适合放到后台跑
-  testpace status          当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
-  testpace report [--days N]  计时诊断，默认最近 28 天`
+  testpace focused [--base REF]  改完先跑：fast，再跑 layermap 选出的相关测试。默认对比和默认分支的分叉点
+  testpace files PATH...         只跑给定的测试文件（testpace.json 的 files），比如重跑失败的文件
+  testpace full                  跑整组（testpace.json 的 full），按当前工作区完整内容记录结果。适合放到后台跑
+  testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
+  testpace report [--days N]     计时诊断，默认最近 28 天`
 
-/** 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；3 已有整组在跑；130 被中断。 */
-const EXIT = { ok: 0, fail: 1, usage: 2, busy: 3, interrupted: 130 } as const
+/**
+ * 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；3 已有整组在跑；
+ * 4 跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
+ */
+const EXIT = { ok: 0, fail: 1, usage: 2, busy: 3, fullNeeded: 4, interrupted: 130 } as const
 
-interface Context {
-  root: string
-  store: Store
-}
+type Context = Repo
 
 function context(): Context | undefined {
-  const root = repoRoot(process.cwd())
-  if (!root) {
-    console.error('testpace 要在 git 仓库里运行。')
-    return undefined
-  }
-  return { root, store: new Store(commonDir(root)) }
-}
-
-function coverageFor(ctx: Context, config: Config, tree: string, runs: RunRecord[]): Coverage {
-  return findCoverage(tree, runs, matcher(config.ignore), (from, to) => changedPaths(ctx.root, from, to))
-}
-
-function describeCoverage(coverage: Coverage): string {
-  if (coverage.kind === 'none') return '没有整组通过记录'
-  const run = coverage.run
-  const base = `有整组通过记录（${when(run.startedAt)}，用时 ${duration(run.durationMs)}）`
-  if (coverage.kind === 'exact') return base
-  const sample = coverage.changed.slice(0, 3).join('、')
-  const more = coverage.changed.length > 3 ? ` 等 ${coverage.changed.length} 个` : ''
-  return `${base}；相对那次只改了忽略路径：${sample}${more}`
+  const repo = openRepo(process.cwd())
+  if (!repo) console.error('testpace 要在 git 仓库里运行。')
+  return repo
 }
 
 async function full(): Promise<number> {
@@ -57,7 +41,7 @@ async function full(): Promise<number> {
   }
 
   const tree = workTreeId(ctx.root)
-  const coverage = coverageFor(ctx, config, tree, ctx.store.readRuns())
+  const coverage = coverageOf(ctx, config, tree)
   if (coverage.kind !== 'none') {
     console.log(`这份代码${describeCoverage(coverage)}，不重跑。`)
     return EXIT.ok
@@ -113,11 +97,87 @@ async function full(): Promise<number> {
     console.log(`整组通过，但跑的过程中代码改过，这次不算通过记录。代码不再改动时重跑 testpace full。\n用时 ${took} · 日志：${log}`)
     return EXIT.fail
   }
-  const code =
-    execution.exitCode !== null ? `退出码 ${execution.exitCode}` : execution.signal ? `被信号 ${execution.signal} 终止` : '命令没能启动'
-  const excerpt = failureExcerpt(readFileSync(log, 'utf8'))
-  console.log([`整组失败（${code}）· 用时 ${took}`, '--- 输出节选 ---', ...excerpt, '---', `完整日志：${log}`].join('\n'))
+  console.log(failureText('整组失败', log, execution))
   return EXIT.fail
+}
+
+async function focused(args: string[]): Promise<number> {
+  const at = args.indexOf('--base')
+  if (at === -1 ? args.length > 0 : args.length !== 2 || at !== 0) {
+    console.error(USAGE)
+    return EXIT.usage
+  }
+  const ctx = context()
+  if (!ctx) return EXIT.usage
+  const { config, problems } = loadConfig(ctx.root)
+  if (!config?.fast || !config.files) {
+    console.error(`没法跑 focused：${problems.join('；')}`)
+    return EXIT.usage
+  }
+
+  const tree = workTreeId(ctx.root)
+  const lines: string[] = []
+  const fast = await runRecorded(ctx, 'fast', config.fast, [], tree)
+  if (fast.record.result === 'interrupted') return EXIT.interrupted
+  if (fast.record.result === 'fail') {
+    console.log(failureText('fast 失败', fast.record.log, fast.execution))
+    return EXIT.fail
+  }
+  lines.push(`fast 通过 · 用时 ${duration(fast.execution.durationMs)}`)
+
+  // 对比和默认分支的分叉点：分支上已经提交的改动也算这次的改动。
+  const branch = defaultBranch(ctx.root)
+  const base = at !== -1 ? args[at + 1]! : (branch && commitOf(ctx.root, 'HEAD') && mergeBase(ctx.root, 'HEAD', `refs/heads/${branch}`)) || 'HEAD'
+  const ignored = matcher(config.ignore)
+  const selection = askLayermap(ctx.root, base, ignored)
+  const reasons = fullReasons(selection)
+
+  let code: number = EXIT.ok
+  if (selection.kind === 'selected' && selection.changed.length === 0) {
+    lines.push(`相对 ${short(base)} 没有改动，不用跑测试。`)
+  } else if (selection.kind === 'selected' && selection.onlyIgnored) {
+    lines.push('改动只涉及 ignore 里的路径，不用跑测试。')
+  } else if (selection.kind === 'selected' && selection.tests.length > 0) {
+    const shown = selection.tests.slice(0, 10).map(test => `  ${test}`)
+    if (selection.tests.length > 10) shown.push(`  等 ${selection.tests.length} 个`)
+    const indirect = selection.indirect ? `；另有 ${selection.indirect} 个只是间接导入改动，没选` : ''
+    lines.push(`相关测试 ${selection.tests.length} 个（对比 ${short(base)}${indirect}）：`, ...shown)
+    const related = await runRecorded(ctx, 'files', config.files, selection.tests, tree)
+    if (related.record.result === 'interrupted') return EXIT.interrupted
+    if (related.record.result === 'fail') {
+      console.log([...lines, failureText('相关测试失败', related.record.log, related.execution)].join('\n'))
+      return EXIT.fail
+    }
+    lines.push(`相关测试通过 · 用时 ${duration(related.execution.durationMs)}`)
+  }
+  if (reasons.length > 0) {
+    lines.push(`建议跑整组（testpace full，放后台）：${reasons.join('；')}。`)
+    code = EXIT.fullNeeded
+  }
+  console.log(lines.join('\n'))
+  return code
+}
+
+async function files(paths: string[]): Promise<number> {
+  if (paths.length === 0) {
+    console.error(USAGE)
+    return EXIT.usage
+  }
+  const ctx = context()
+  if (!ctx) return EXIT.usage
+  const { config, problems } = loadConfig(ctx.root)
+  if (!config?.files) {
+    console.error(`没法跑测试文件：${problems.join('；')}`)
+    return EXIT.usage
+  }
+  const run = await runRecorded(ctx, 'files', config.files, paths, workTreeId(ctx.root))
+  if (run.record.result === 'interrupted') return EXIT.interrupted
+  if (run.record.result === 'fail') {
+    console.log(failureText(`${paths.length} 个测试文件失败`, run.record.log, run.execution))
+    return EXIT.fail
+  }
+  console.log(`${paths.length} 个测试文件通过 · 用时 ${duration(run.execution.durationMs)}`)
+  return EXIT.ok
 }
 
 function status(): number {
@@ -129,7 +189,7 @@ function status(): number {
   if (config) {
     const tree = workTreeId(ctx.root)
     const runs = ctx.store.readRuns()
-    lines.push(`当前代码（${short(tree)}）：${describeCoverage(coverageFor(ctx, config, tree, runs))}`)
+    lines.push(`当前代码（${short(tree)}）：${describeCoverage(coverageOf(ctx, config, tree, runs))}`)
 
     for (const marker of ctx.store.running().filter(m => m.worktree === ctx.root)) {
       const changed = marker.tree === tree ? '开始后代码没改过' : '开始后代码改过，跑完的结果不算当前代码的记录'
@@ -159,6 +219,8 @@ function status(): number {
   }
 
   console.log(lines.join('\n'))
+  // 停止门据此判断 agent 有没有看过整组的结果
+  ctx.store.markRead(ctx.root, Date.now())
   return config ? EXIT.ok : EXIT.usage
 }
 
@@ -192,6 +254,10 @@ function report(args: string[]): number {
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv
   switch (command) {
+    case 'focused':
+      return focused(rest)
+    case 'files':
+      return files(rest)
     case 'full':
       return full()
     case 'status':
