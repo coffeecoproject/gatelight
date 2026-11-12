@@ -41,7 +41,7 @@
 
 只对接入了约定（有 `testpace.json`）的仓库起作用，只作用于 agent 的命令，用户自己在终端里的操作不受影响。
 
-- **合并门**（PreToolUse）：agent 的 `git commit`、`git merge`、`git push`、`gh pr merge` 要落到默认分支时，算出落地后的代码内容，必须有一次 `testpace full` 通过的记录，否则拒绝并说明原因。
+- **合并门**（PreToolUse）：agent 的 `git commit`、`git merge`、`git push`、`gh pr merge` 要落到默认分支时，算出落地后的代码内容，必须有一次 `testpace full` 通过的记录，否则拒绝并说明原因。同一条命令里，落地的操作前面只能连 `cd` 和 `git add`（会预演），连着别的命令时要求拆开执行。
   - 提交按暂存区算（`-a` 加上已跟踪文件的改动）；带路径或 `-p` 的提交没法确定内容，拒绝。
   - 合并按合并后的结果算；推送按推送的那个提交算。
   - `gh pr merge` 要求 PR 分支包含最新的默认分支，并按 PR 的头提交算。

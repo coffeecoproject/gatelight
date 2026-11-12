@@ -10,11 +10,12 @@ import {
   commitOf,
   currentBranch,
   defaultBranch,
+  commitTree,
   indexTree,
-  indexWithTrackedTree,
   isAncestor,
   mergedTree,
   onRemoteBranch,
+  repoRoot,
   treeOf,
   workTreeId,
 } from './git.ts'
@@ -42,6 +43,21 @@ const COMMIT_PARTIAL = new Set(['-p', '--patch', '--interactive', '-i', '--inclu
 const MERGE_VALUES = new Set(['-m', '--message', '-F', '--file', '-s', '--strategy', '-X', '--strategy-option', '--into-name'])
 const PUSH_VALUES = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec'])
 const GH_MERGE_VALUES = new Set(['-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '--match-head-commit', '-R', '--repo'])
+const ADD_VALUES = new Set(['--chmod', '--pathspec-from-file'])
+const ADD_INTERACTIVE = new Set(['-p', '--patch', '-i', '--interactive', '-e', '--edit', '--pathspec-from-file'])
+
+/**
+ * 同一条命令里排在一次落地前面的命令。合并门在整条命令执行前判断，
+ * 只算得出 git add 的效果；前面有别的命令时，落到默认分支的操作要拆开单独执行。
+ */
+interface Chain {
+  /** 前面的 git add：提交时在临时索引上预演。 */
+  adds: Array<{ cwd: string; args: string[] }>
+  /** 前面别的命令（git add 和已放行的提交、合并之外）。 */
+  others: Invocation[]
+  /** 前面已放行、落到默认分支的提交或合并：仓库根目录 → 落地后默认分支的内容。 */
+  landed: Map<string, string>
+}
 
 /** 接入了约定、而且当前在默认分支上的仓库。 */
 function contracted(cwd: string): { repo: Repo; config: Config; branch: string } | undefined {
@@ -52,21 +68,47 @@ function contracted(cwd: string): { repo: Repo; config: Config; branch: string }
   return config && branch ? { repo, config, branch } : undefined
 }
 
-function commitLanding(cwd: string, args: string[]): Landing {
+/** 会换分支的命令：之后的提交、合并落到哪个分支，执行前看不出来。 */
+function switchesBranch(call: Invocation): boolean {
+  const git = gitSubcommand(call)
+  if (git) return git.sub === 'checkout' || git.sub === 'switch'
+  const [program, area, action] = call.argv
+  return basename(program ?? '') === 'gh' && area === 'pr' && action === 'checkout'
+}
+
+/** 落地前面连着算不出效果的命令：要拆开执行。 */
+function split(chain: Chain, branch: string, action: string): Landing {
+  const first = chain.others[0]
+  const what = first ? first.argv.slice(0, 3).join(' ') : '前面的提交或合并'
+  const space = /[A-Za-z0-9]$/.test(action) ? ' ' : ''
+  return {
+    kind: 'deny',
+    reason: `这次${action}${space}要落到 ${branch}，但前面还连着别的命令（${what}）。合并门在整条命令执行前判断，算不出那些命令执行后落地的内容。先单独执行前面的命令，再单独${action}；落到 ${branch} 的命令前面只能连 cd 和 git add。`,
+  }
+}
+
+function commitLanding(cwd: string, args: string[], chain: Chain): Landing {
   const target = contracted(cwd)
-  if (!target || currentBranch(target.repo.root) !== target.branch) return { kind: 'none' }
+  if (!target) return { kind: 'none' }
+  const root = target.repo.root
   const { options, positionals } = splitArgs(args, COMMIT_VALUES)
   if (options.includes('--dry-run')) return { kind: 'none' }
+  if (currentBranch(root) !== target.branch && !chain.others.some(switchesBranch)) return { kind: 'none' }
+  if (chain.others.length > 0 || chain.landed.size > 0) return split(chain, target.branch, '提交')
   if (positionals.length > 0 || options.some(option => COMMIT_PARTIAL.has(option))) {
     return {
       kind: 'deny',
       reason: `提交到 ${target.branch} 时没法确定带路径或 -p 这类提交的内容。先把要提交的内容全部加进暂存区，再不带路径地 git commit。`,
     }
   }
+  const adds = chain.adds.filter(add => repoRoot(add.cwd) === root)
+  if (adds.some(add => splitArgs(add.args, ADD_VALUES).options.some(option => ADD_INTERACTIVE.has(option)))) {
+    return { kind: 'deny', reason: `git add -p 这类要交互的写法没法预演。先单独执行 git add，再提交到 ${target.branch}。` }
+  }
   const all = options.includes('-a') || options.includes('--all')
-  const tree = all ? indexWithTrackedTree(target.repo.root) : indexTree(target.repo.root)
+  const tree = commitTree(root, adds, all)
   // 工作区整组通过了、但提交的内容和工作区不一样时，说清楚差在哪
-  const worktree = workTreeId(target.repo.root)
+  const worktree = workTreeId(root)
   const note =
     worktree !== tree && coverageOf(target.repo, target.config, worktree).kind !== 'none'
       ? '工作区的整组通过了，但这次提交的内容和工作区不一样：还有没加进暂存区的改动或未跟踪的文件。把它们一起提交，或者删掉、加进 .gitignore 后重跑整组。'
@@ -74,12 +116,14 @@ function commitLanding(cwd: string, args: string[]): Landing {
   return { kind: 'tree', ...target, action: '提交', tree, ...(note ? { note } : {}) }
 }
 
-function mergeLanding(cwd: string, args: string[]): Landing {
+function mergeLanding(cwd: string, args: string[], chain: Chain): Landing {
   const target = contracted(cwd)
-  if (!target || currentBranch(target.repo.root) !== target.branch) return { kind: 'none' }
+  if (!target) return { kind: 'none' }
   const root = target.repo.root
   const { options, positionals } = splitArgs(args, MERGE_VALUES)
   if (['--abort', '--quit', '--no-commit', '--squash'].some(option => options.includes(option))) return { kind: 'none' }
+  if (currentBranch(root) !== target.branch && !chain.others.some(switchesBranch)) return { kind: 'none' }
+  if (chain.others.length > 0 || chain.landed.size > 0) return split(chain, target.branch, '合并')
   if (options.includes('--continue')) return { kind: 'tree', ...target, action: '合并', tree: indexTree(root) }
   if (positionals.length > 1) return { kind: 'deny', reason: `合并到 ${target.branch} 请一次合并一个分支，每次合并后的内容都要有整组通过记录。` }
   const rev = positionals[0] ?? '@{upstream}'
@@ -93,7 +137,7 @@ function mergeLanding(cwd: string, args: string[]): Landing {
   return tree ? { kind: 'tree', ...target, action: `合并 ${rev}`, tree } : { kind: 'none' }
 }
 
-function pushLanding(cwd: string, args: string[]): Landing {
+function pushLanding(cwd: string, args: string[], chain: Chain): Landing {
   const target = contracted(cwd)
   if (!target) return { kind: 'none' }
   const root = target.repo.root
@@ -112,14 +156,21 @@ function pushLanding(cwd: string, args: string[]): Landing {
       if (src !== '' && dst.replace(/^refs\/heads\//, '') === target.branch) source = src
     }
   }
-  const commit = source && commitOf(root, source)
+  if (chain.others.length > 0 && (source || chain.others.some(switchesBranch))) return split(chain, target.branch, '推送')
+  if (!source) return { kind: 'none' }
+  // 推送前面刚放行的提交或合并：默认分支落地后的内容已经检查过
+  const landed = chain.landed.get(root)
+  if (landed && ['HEAD', target.branch, `refs/heads/${target.branch}`].includes(source)) {
+    return { kind: 'tree', ...target, action: '推送', tree: landed }
+  }
+  const commit = commitOf(root, source)
   // 远程默认分支已经有这个提交：没有新内容落地
-  if (!source || !commit || onRemoteBranch(root, target.branch, commit)) return { kind: 'none' }
+  if (!commit || onRemoteBranch(root, target.branch, commit)) return { kind: 'none' }
   const tree = treeOf(root, commit)
   return tree ? { kind: 'tree', ...target, action: '推送', tree } : { kind: 'none' }
 }
 
-function prMergeLanding(cwd: string, args: string[]): Landing {
+function prMergeLanding(cwd: string, args: string[], chain: Chain): Landing {
   const target = contracted(cwd)
   if (!target) return { kind: 'none' }
   const root = target.repo.root
@@ -135,6 +186,8 @@ function prMergeLanding(cwd: string, args: string[]): Landing {
     return { kind: 'deny', reason: `合并 PR 前要确认合并后的内容测过，但读不到 PR 的信息（${detail}）。` }
   }
   if (pr.baseRefName !== target.branch) return { kind: 'none' }
+  // 前面的命令可能改了 PR（比如推送了新提交），这里读到的是执行前的 PR
+  if (chain.others.length > 0 || chain.landed.size > 0) return split(chain, target.branch, '合并 PR')
   const head = commitOf(root, pr.headRefOid)
   if (!head) return { kind: 'deny', reason: `本地没有 PR 的最新提交 ${short(pr.headRefOid)}，先 git fetch，在这份代码上跑过整组再合并。` }
   const base = commitOf(root, `refs/remotes/origin/${target.branch}`) ?? commitOf(root, `refs/heads/${target.branch}`)
@@ -148,13 +201,13 @@ function prMergeLanding(cwd: string, args: string[]): Landing {
   return tree ? { kind: 'tree', ...target, action: '合并 PR', tree } : { kind: 'none' }
 }
 
-function landingOf(invocation: Invocation): Landing {
+function landingOf(invocation: Invocation, chain: Chain): Landing {
   const git = gitSubcommand(invocation)
-  if (git?.sub === 'commit') return commitLanding(git.cwd, git.args)
-  if (git?.sub === 'merge') return mergeLanding(git.cwd, git.args)
-  if (git?.sub === 'push') return pushLanding(git.cwd, git.args)
+  if (git?.sub === 'commit') return commitLanding(git.cwd, git.args, chain)
+  if (git?.sub === 'merge') return mergeLanding(git.cwd, git.args, chain)
+  if (git?.sub === 'push') return pushLanding(git.cwd, git.args, chain)
   const [program, area, action, ...rest] = invocation.argv
-  if (basename(program ?? '') === 'gh' && area === 'pr' && action === 'merge') return prMergeLanding(invocation.cwd, rest)
+  if (basename(program ?? '') === 'gh' && area === 'pr' && action === 'merge') return prMergeLanding(invocation.cwd, rest, chain)
   return { kind: 'none' }
 }
 
@@ -172,14 +225,24 @@ function judge(landing: Landing): string | undefined {
 /** PreToolUse 对一条 Bash 命令的判断。 */
 export function checkCommand(command: string, cwd: string): GateResult {
   const calls = invocations(command, cwd)
+  const chain: Chain = { adds: [], others: [], landed: new Map() }
   for (const call of calls) {
+    const git = gitSubcommand(call)
+    if (git?.sub === 'add') {
+      chain.adds.push({ cwd: git.cwd, args: git.args })
+      continue
+    }
     let reason: string | undefined
     try {
-      reason = judge(landingOf(call))
+      const landing = landingOf(call, chain)
+      reason = judge(landing)
+      if (!reason && landing.kind === 'tree' && (git?.sub === 'commit' || git?.sub === 'merge')) chain.landed.set(landing.repo.root, landing.tree)
+      else chain.others.push(call)
     } catch (error) {
       reason = `testpace 合并门：没能确认这条命令落地的内容测过（${(error as Error).message.split('\n')[0]}），先不放行。`
     }
-    if (reason) return { deny: reason }
+    // agent 容易以为前面的 git add 这类命令已经执行了
+    if (reason) return { deny: `${reason}整条命令都没有执行。` }
   }
   // 直接跑配置里的整组命令不会留下记录，合并门不认
   const repo = openRepo(cwd)

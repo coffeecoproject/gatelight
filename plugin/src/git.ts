@@ -34,8 +34,7 @@ export function commonDir(root: string): string {
 }
 
 /**
- * 在一份临时索引上做事，不动真实索引。复制真实索引只为复用其中的文件状态缓存，
- * 内容以 fn 里的 git add 为准。
+ * 在一份真实索引的副本上做事，不动真实索引。副本带着暂存区的内容和文件状态缓存。
  */
 function withTempIndex<T>(root: string, fn: (env: Record<string, string>) => T): T {
   const index = git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'index'])
@@ -144,12 +143,14 @@ export function indexTree(root: string): string {
 }
 
 /**
- * 暂存区加上已跟踪文件的改动：git commit -a 会提交的内容。
- * 和 git commit -a 一样不管 assume-unchanged 的文件。
+ * 一次提交会提交的内容：在临时索引上按顺序预演同一条命令里排在前面的 git add（各自的目录和参数），
+ * all 时再加上已跟踪文件的改动（git commit -a，和它一样不管 assume-unchanged 的文件）。
  */
-export function indexWithTrackedTree(root: string): string {
+export function commitTree(root: string, adds: Array<{ cwd: string; args: string[] }>, all: boolean): string {
+  if (adds.length === 0 && !all) return indexTree(root)
   return withTempIndex(root, env => {
-    git(root, ['add', '--update', '--', '.'], env)
+    for (const add of adds) git(add.cwd, ['add', ...add.args], env)
+    if (all) git(root, ['add', '--update', '--', '.'], env)
     return git(root, ['write-tree'], env)
   })
 }

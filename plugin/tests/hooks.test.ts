@@ -106,6 +106,42 @@ describe('合并门：提交', () => {
     assert.ok(denied(pre(outside, `bash -c "cd ${repo} && git commit -am m"`)))
     assert.ok(denied(pre(join(repo, 'src'), 'npm test; git commit -am m')))
   })
+
+  test('同一条命令里先 git add 再提交：按预演 git add 之后的暂存区算，不动真实暂存区', () => {
+    const repo = sampleRepo()
+    change(repo)
+    assert.equal(testpace(repo, ['full']).code, 0)
+    assert.equal(pre(repo, 'git add -A && git commit -m m'), undefined)
+    assert.equal(pre(join(repo, 'src'), 'git add price.mjs; git commit -m m'), undefined)
+    assert.equal(pre(repo, 'git add . && git commit -m m && git push origin main'), undefined, '推送刚放行的提交')
+    assert.equal(sh(repo, 'git diff --cached --name-only'), '')
+    // 只预演写出来的 git add：少加了文件照样拦，并说明整条命令没有执行
+    writeFileSync(join(repo, 'src', 'extra.mjs'), 'export const x = 1\n')
+    assert.equal(testpace(repo, ['full']).code, 0)
+    const partial = denied(pre(repo, 'git add src/extra.mjs && git commit -m m')) ?? ''
+    assert.match(partial, /工作区的整组通过了，但这次提交的内容和工作区不一样/)
+    assert.match(partial, /整条命令都没有执行。$/)
+    assert.match(denied(pre(repo, 'git add -p && git commit -m m')) ?? '', /git add -p 这类要交互的写法没法预演/)
+  })
+
+  test('落到默认分支的命令前面连着 git add 之外的命令时，要求拆开执行', () => {
+    const repo = sampleRepo()
+    change(repo)
+    assert.equal(testpace(repo, ['full']).code, 0)
+    // 前面的命令可能改了要提交的内容
+    assert.match(denied(pre(repo, 'echo x >> src/price.mjs && git commit -am m')) ?? '', /前面还连着别的命令（echo x）/)
+    assert.match(denied(pre(repo, 'git commit -am m && git commit --amend -m n')) ?? '', /前面还连着别的命令（前面的提交或合并）/)
+    // 工作分支上照常连写
+    sh(repo, 'git checkout -qb feature')
+    assert.equal(pre(repo, 'npm test && git commit -am wip && git push -u origin feature'), undefined)
+    // 先切到默认分支再合并：执行前还在工作分支上，也要拦
+    commit(repo, 'untested')
+    change(repo, '// 没测过\n')
+    commit(repo, 'untested 2')
+    assert.match(denied(pre(repo, 'git checkout main && git merge feature')) ?? '', /这次合并要落到 main，但前面还连着别的命令（git checkout main）/)
+    assert.ok(denied(pre(repo, 'git switch main && git commit -am m')))
+    assert.ok(denied(pre(repo, 'git checkout main && git push')))
+  })
 })
 
 describe('合并门：合并和推送', () => {
@@ -197,6 +233,8 @@ describe('合并门：合并和推送', () => {
       assert.match(denied(pre(repo, 'gh pr merge 7 --squash')) ?? '', /这次合并 PR 要落到 main 的代码/)
       assert.equal(testpace(repo, ['full']).code, 0)
       assert.equal(pre(repo, 'gh pr merge 7 --squash -b "说明"'), undefined)
+      // 前面的推送可能给 PR 加了新提交，读到的 PR 头提交是执行前的
+      assert.match(denied(pre(repo, 'git push origin feature && gh pr merge 7 --squash')) ?? '', /合并 PR 要落到 main，但前面还连着别的命令（git push origin）/)
       // main 往前走了，PR 没跟上
       sh(repo, 'git checkout -q main')
       writeFileSync(join(repo, 'src', 'other.mjs'), 'export const y = 2\n')
