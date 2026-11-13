@@ -1,4 +1,4 @@
-// files：只跑给定的测试文件。文件不存在，或有文件一个测试都没跑，返回非零。
+// files：只跑给定的测试文件。文件不存在，或有文件一个测试都没有，返回非零。
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
@@ -19,7 +19,7 @@ process.stderr.write(run.stderr)
 const topLevel = [...run.stdout.matchAll(/^(?:not )?ok \d+ - (.*)$/gm)].map(match => match[1])
 const empty = files.filter(file => topLevel.includes(file))
 if (empty.length > 0) {
-  console.error(`这些文件一个测试都没跑：${empty.join(', ')}`)
+  console.error(`这些文件一个测试都没有：${empty.join(', ')}`)
   process.exit(1)
 }
 process.exit(run.status ?? 1)

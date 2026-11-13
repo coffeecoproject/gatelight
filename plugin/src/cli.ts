@@ -47,8 +47,11 @@ async function full(): Promise<number> {
     return EXIT.ok
   }
 
+  // Claude Code 给 agent 的命令带上会话号：停止门只拦起这次整组的会话，和等着用它结果的会话
+  const sessionId = process.env.CLAUDE_CODE_SESSION_ID
   const busy = ctx.store.running().find(marker => marker.kind === 'full' && (marker.worktree === ctx.root || marker.tree === tree))
   if (busy) {
+    if (sessionId && busy.worktree === ctx.root) ctx.store.waitOn(busy.id, sessionId)
     const where = busy.worktree === ctx.root ? '这个工作区已有整组在跑' : `工作区 ${busy.worktree} 正在跑同一份代码的整组`
     console.log(`${where}（开始于 ${when(busy.startedAt)}，进程 ${busy.pid}）。等它结束后用 testpace status 看结果。`)
     return EXIT.busy
@@ -57,12 +60,15 @@ async function full(): Promise<number> {
   const startedAt = Date.now()
   const id = newRunId(startedAt)
   const log = ctx.store.logPath(id)
+  const session = sessionId ? { session: sessionId } : {}
   let execution
+  let waiting: string[] | undefined
   try {
     execution = await execute(config.full, [], ctx.root, log, () =>
-      ctx.store.markRunning({ id, kind: 'full', pid: process.pid, worktree: ctx.root, tree, startedAt, log }),
+      ctx.store.markRunning({ id, kind: 'full', pid: process.pid, worktree: ctx.root, tree, startedAt, ...session, log }),
     )
   } finally {
+    waiting = ctx.store.running().find(marker => marker.id === id)?.waiting
     ctx.store.clearRunning(id)
   }
 
@@ -85,6 +91,8 @@ async function full(): Promise<number> {
     durationMs: execution.durationMs,
     exitCode: execution.exitCode,
     result,
+    ...session,
+    ...(waiting ? { waiting } : {}),
     log,
   })
 

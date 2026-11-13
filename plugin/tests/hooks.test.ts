@@ -31,6 +31,11 @@ function stop(cwd: string, session = 's1', active = false): Output {
   return handle({ hook_event_name: 'Stop', session_id: session, cwd, stop_hook_active: active }, Date.now()) as Output
 }
 
+// 在这个会话里起整组：Claude Code 给 agent 的命令带着会话号。
+function fullIn(repo: string, session: string): number | null {
+  return testpace(repo, ['full'], { ...ENV, CLAUDE_CODE_SESSION_ID: session }).code
+}
+
 function change(repo: string, text = '// 改过\n'): void {
   writeFileSync(join(repo, 'src', 'price.mjs'), `${sh(repo, 'cat src/price.mjs')}${text}`)
 }
@@ -296,7 +301,7 @@ describe('停止门', () => {
     const repo = sampleRepo()
     handle({ hook_event_name: 'SessionStart', session_id: 'a', cwd: repo }, Date.now())
     assert.equal(stop(repo, 'a'), undefined)
-    assert.equal(testpace(repo, ['full']).code, 0)
+    assert.equal(fullIn(repo, 'a'), 0)
     assert.match(stop(repo, 'a')?.reason ?? '', /^这个会话跑的整组已经结束（通过），还没看结果。先跑 testpace status/)
     assert.equal(stop(repo, 'a')?.decision, 'block')
     assert.equal(stop(repo, 'a', true), undefined, '已经因为停止门继续过一次，不再拦')
@@ -310,7 +315,7 @@ describe('停止门', () => {
     const parent = tempDir('testpace-parent-')
     handle({ hook_event_name: 'SessionStart', session_id: 'o', cwd: parent }, Date.now())
     handle({ hook_event_name: 'PreToolUse', session_id: 'o', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && testpace full` } }, Date.now())
-    assert.equal(testpace(repo, ['full']).code, 0)
+    assert.equal(fullIn(repo, 'o'), 0)
     assert.equal(stop(parent, 'o')?.reason, `这个会话在 ${root} 跑的整组已经结束（通过），还没看结果。先跑 testpace status 看结果，再收尾。`)
     testpace(repo, ['status'])
     assert.equal(stop(parent, 'o'), undefined)
@@ -319,7 +324,7 @@ describe('停止门', () => {
     delete process.env.CLAUDE_PLUGIN_DATA
     try {
       handle({ hook_event_name: 'PreToolUse', session_id: 'o2', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && ls` } }, Date.now())
-      assert.equal(testpace(repo, ['full']).code, 0)
+      assert.equal(fullIn(repo, 'o2'), 0)
       assert.equal(stop(parent, 'o2'), undefined)
     } finally {
       process.env.CLAUDE_PLUGIN_DATA = data
@@ -329,7 +334,7 @@ describe('停止门', () => {
   test('前台跑完 testpace full 算看过；放到后台的不算', () => {
     const repo = sampleRepo()
     handle({ hook_event_name: 'SessionStart', session_id: 'b', cwd: repo }, Date.now())
-    assert.equal(testpace(repo, ['full']).code, 0)
+    assert.equal(fullIn(repo, 'b'), 0)
     const post = (response: unknown): unknown =>
       handle({ hook_event_name: 'PostToolUse', session_id: 'b', cwd: repo, tool_name: 'Bash', tool_input: { command: 'testpace full' }, tool_response: response }, Date.now())
     post({ backgroundTaskId: 'task1' })
@@ -344,19 +349,42 @@ describe('停止门', () => {
     const store = new Store(join(repo, '.git'))
     // 和 testpace full 一样按 git 给的根目录登记（macOS 上临时目录的真实路径在 /private 下）
     const root = sh(repo, 'git rev-parse --show-toplevel').trim()
-    store.markRunning({ id: 'r1', kind: 'full', pid: process.pid, worktree: root, tree: 't', startedAt: Date.now(), log: '/dev/null' })
+    store.markRunning({ id: 'r1', kind: 'full', pid: process.pid, worktree: root, tree: 't', startedAt: Date.now(), session: 'c', log: '/dev/null' })
     try {
       assert.match(stop(repo, 'c')?.reason ?? '', /^这个工作区的整组还在跑（开始于 .+，已 \d+秒）/)
+      // 别的会话想跑整组，发现已经在跑：它等着用这次的结果，也要拦
+      handle({ hook_event_name: 'SessionStart', session_id: 'c2', cwd: repo }, Date.now())
+      assert.equal(testpace(repo, ['full'], { ...ENV, CLAUDE_CODE_SESSION_ID: 'c2' }).code, 3)
+      assert.match(stop(repo, 'c2')?.reason ?? '', /^这个工作区的整组还在跑/)
+      handle({ hook_event_name: 'SessionStart', session_id: 'c3', cwd: repo }, Date.now())
+      assert.equal(stop(repo, 'c3'), undefined, '没起也没等的会话不管')
     } finally {
       store.clearRunning('r1')
     }
   })
 
-  test('会话开始前的整组不管', () => {
+  test('等着用别人整组结果的会话：跑完还没看结果时也拦', () => {
     const repo = sampleRepo()
-    assert.equal(testpace(repo, ['full']).code, 0)
-    handle({ hook_event_name: 'SessionStart', session_id: 'd', cwd: repo }, Date.now() + 60_000)
+    const root = sh(repo, 'git rev-parse --show-toplevel').trim()
+    handle({ hook_event_name: 'SessionStart', session_id: 'w', cwd: repo }, Date.now())
+    new Store(join(repo, '.git')).appendRun({
+      id: 'r2', kind: 'full', worktree: root, tree: 't', treeAtEnd: 't', startedAt: Date.now() - 2000, durationMs: 1000,
+      exitCode: 0, result: 'pass', session: 'a', waiting: ['w'], log: '/dev/null',
+    })
+    assert.match(stop(repo, 'w')?.reason ?? '', /^这个会话等的整组已经结束（通过），还没看结果/)
+    testpace(repo, ['status'])
+    assert.equal(stop(repo, 'w'), undefined)
+  })
+
+  test('别的会话、或不在 Claude Code 里起的整组不管', () => {
+    const repo = sampleRepo()
+    handle({ hook_event_name: 'SessionStart', session_id: 'd', cwd: repo }, Date.now())
+    assert.equal(fullIn(repo, 'other'), 0)
     assert.equal(stop(repo, 'd'), undefined)
+    change(repo)
+    assert.equal(testpace(repo, ['full']).code, 0)
+    assert.equal(stop(repo, 'd'), undefined)
+    assert.match(stop(repo, 'other')?.reason ?? '', /^这个会话跑的整组已经结束/)
   })
 
   test('默认分支在会话里有了没测过的提交，提示用户一次', () => {

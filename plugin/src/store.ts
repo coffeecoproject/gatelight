@@ -26,6 +26,10 @@ export interface RunRecord {
   result: RunResult
   /** files 命令跑的测试文件。 */
   files?: string[]
+  /** 起这次整组的 Claude Code 会话；不是从 Claude Code 里起的没有。 */
+  session?: string
+  /** 想跑整组时发现它已经在跑、等着用它结果的其他会话。 */
+  waiting?: string[]
   log: string
 }
 
@@ -36,6 +40,10 @@ export interface RunningMarker {
   worktree: string
   tree: string
   startedAt: number
+  /** 同 RunRecord.session。 */
+  session?: string
+  /** 同 RunRecord.waiting。 */
+  waiting?: string[]
   log: string
 }
 
@@ -105,6 +113,19 @@ export class Store {
   markRunning(marker: RunningMarker): void {
     mkdirSync(this.runningDir, { recursive: true })
     writeFileSync(join(this.runningDir, `${marker.id}.json`), JSON.stringify(marker))
+  }
+
+  /** 记下这个会话在等正在跑的那次结果。那次已经结束（记录删了）就不记。 */
+  waitOn(id: string, session: string): void {
+    const path = join(this.runningDir, `${id}.json`)
+    let marker: RunningMarker
+    try {
+      marker = JSON.parse(readFileSync(path, 'utf8')) as RunningMarker
+    } catch {
+      return
+    }
+    if (marker.session === session || marker.waiting?.includes(session)) return
+    writeFileSync(path, JSON.stringify({ ...marker, waiting: [...(marker.waiting ?? []), session] }))
   }
 
   clearRunning(id: string): void {
