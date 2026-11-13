@@ -6,7 +6,7 @@ import { COMMAND_KEYS, commandExists, CONFIG_FILE, configExists, loadConfig } fr
 import { execute } from './execute.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT } from './focused.ts'
 import { duration, short, when } from './format.ts'
-import { checkRefUpdates, gateProblem, gateStateProblem, hookPlace, installGate, MERGE_HINT } from './gate.ts'
+import { checkRefUpdates, gateProblem, installGate } from './gate.ts'
 import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { renderReport } from './report.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runRecorded, started } from './repo.ts'
@@ -18,7 +18,7 @@ const USAGE = `用法：
   testpace full                  跑整组（testpace.json 的 full），按当前工作区完整内容记录结果。适合放到后台跑
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace report [--days N]     计时诊断，默认最近 28 天
-  testpace install               装上合并门的 git 钩子：agent 移动默认分支时，要求落地的代码有整组通过记录`
+  testpace install               在全局 git 配置里配上合并门（这台机器配一次）：agent 移动默认分支时，要求落地的代码有整组通过记录`
 
 /**
  * 退出码：0 通过；1 失败或没得到通过记录（gate：拒绝这次更新）；2 用法或配置问题；
@@ -308,29 +308,14 @@ function report(args: string[]): number {
 function install(): number {
   const ctx = context()
   if (!ctx) return EXIT.usage
-  const state = installGate(ctx.root)
-  if (state.kind === 'foreign') {
-    console.error(`${state.path} 已经有别的 reference-transaction 钩子，没有覆盖。要用合并门，${MERGE_HINT}`)
+  const { ok, problem } = installGate(ctx.root)
+  if (!ok) {
+    console.error(`没有配好：${problem}`)
     return EXIT.usage
   }
-  if (state.kind === 'onDefault' || state.kind === 'noDir') {
-    console.error(`没有装：${gateStateProblem(ctx.root, state)}`)
-    return EXIT.usage
-  }
-  if (state.kind === 'merged') {
-    console.log(`${state.path} 是项目自己的钩子，里面已经调用了 testpace gate，没有改动它。`)
-  } else {
-    const place = hookPlace(ctx.root, state.path)
-    const note =
-      place === 'project'
-        ? '\n这个钩子在项目目录里（core.hooksPath），和 testpace.json 一样要提交进仓库。'
-        : place === 'ignored'
-          ? '\n这个钩子目录不进版本库（被 .gitignore 忽略）：每个工作区、每次重新克隆后都要再跑一次 testpace install。'
-          : ''
-    console.log(`合并门已装上：${state.path}${note}`)
-  }
-  const problem = gateProblem(ctx.root)
-  if (problem) console.log(problem)
+  console.log('合并门已配好：全局 git 配置里的 hook.testpace，这台机器上 agent 在所有仓库里移动默认分支时都检查（只管接入了 testpace 的仓库）。')
+  const rest = gateProblem(ctx.root)
+  if (rest) console.log(rest)
   return EXIT.ok
 }
 

@@ -1,6 +1,6 @@
 // 和 git 打交道的部分：仓库位置、工作区内容哈希、默认分支、落地历史。
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,6 +21,22 @@ function gitOrUndefined(cwd: string, args: string[]): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * 配置里给这个钩子事件声明的钩子（git hook list），每个一行，被关掉的写成 "disabled\t<名字>"；
+ * 没有任何钩子时是空的。git 太旧、没有 hook list 时返回 undefined。
+ */
+export function configuredHooks(root: string, event: string): string[] | undefined {
+  const r = spawnSync('git', ['hook', 'list', event], { cwd: root, encoding: 'utf8' })
+  // 没有任何钩子时退出码 1；git 太旧时是用法错误
+  if (r.status !== 0 && r.status !== 1) return undefined
+  return r.stdout.split('\n').filter(Boolean)
+}
+
+/** git 配置里这一项的值（各层配置合起来）；没有返回 undefined。 */
+export function configValue(root: string, key: string): string | undefined {
+  return gitOrUndefined(root, ['config', '--get', key])
 }
 
 /** 当前目录所在仓库（或 worktree）的根目录；不在仓库里返回 undefined。 */
@@ -157,11 +173,6 @@ export function fileAt(root: string, rev: string, path: string): string | undefi
   return gitOrUndefined(root, ['cat-file', 'blob', `${rev}:${path}`])
 }
 
-/** 这个路径（相对仓库根目录）被 .gitignore 忽略，进不了版本库。 */
-export function isIgnored(root: string, path: string): boolean {
-  return gitOrUndefined(root, ['check-ignore', '-q', '--', path]) !== undefined
-}
-
 export function hasRemote(root: string): boolean {
   return (gitOrUndefined(root, ['remote']) ?? '') !== ''
 }
@@ -185,11 +196,6 @@ export function refTip(root: string, ref: string): { commit: string; tree: strin
   if (!out) return undefined
   const [commit = '', tree = ''] = out.split(' ')
   return { commit, tree }
-}
-
-/** git 钩子所在的目录（考虑了 core.hooksPath），所有 worktree 共用。 */
-export function hooksDir(root: string): string {
-  return git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks'])
 }
 
 /** 远程上的同名分支（refs/remotes/<远程>/<分支>）里有没有一个已经包含这个提交。 */

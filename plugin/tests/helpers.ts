@@ -6,11 +6,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { HOOK_COMMAND } from '../src/gate.ts'
 
 export const BIN = fileURLToPath(new URL('../bin/testpace', import.meta.url))
 /** 插件的 bin 目录：Claude Code 里它在 Bash 工具的 PATH 上，合并门的 git 钩子靠它找到 testpace。 */
 export const BIN_DIR = fileURLToPath(new URL('../bin', import.meta.url))
 export const SAMPLE = fileURLToPath(new URL('../../examples/sample', import.meta.url))
+
+// 全局 git 配置换成测试自己的：合并门的钩子配在全局配置里，测试不读也不改用户真实的那份（~/.gitconfig）。
+// 里面只放提交要用的身份；要全局配合并门的测试另给一份。
+const globalConfigDir = mkdtempSync(join(tmpdir(), 'testpace-gitconfig-'))
+export function globalGitConfig(): string {
+  const file = join(mkdtempSync(join(globalConfigDir, 'c-')), 'gitconfig')
+  writeFileSync(file, '[user]\n\tname = t\n\temail = t@t\n')
+  return file
+}
+process.env.GIT_CONFIG_GLOBAL = globalGitConfig()
 
 // node:test 会把 NODE_TEST_CONTEXT 传给子进程，示例项目里的 node --test 看到它就跳过所有测试文件。
 // 插件数据目录也不带：测试不写真实的会话记录。会话号、CLAUDECODE 也不带（在 Claude Code 里跑测试时有）：
@@ -64,11 +75,16 @@ export function sampleRepo(): string {
   return dir
 }
 
-/** 示例项目副本，装好合并门的 git 钩子。 */
+/**
+ * 示例项目副本，合并门在把关：钩子配在这个仓库自己的 git 配置里，和 testpace install 配在全局配置里一样生效，
+ * 只是不影响别的测试仓库。
+ */
 export function gatedRepo(): string {
   const dir = sampleRepo()
-  const r = testpace(dir, ['install'])
-  if (r.code !== 0) throw new Error(r.out)
+  execFileSync('git', ['config', 'hook.testpace.event', 'reference-transaction'], { cwd: dir, env: ENV })
+  execFileSync('git', ['config', 'hook.testpace.command', HOOK_COMMAND], { cwd: dir, env: ENV })
+  const r = testpace(dir, ['status'])
+  if (!/合并门：已装上/.test(r.out)) throw new Error(`合并门没在把关（测试要 git 2.54 以上）：\n${r.out}`)
   return dir
 }
 
@@ -83,5 +99,5 @@ export function agent(cwd: string, script: string, env: NodeJS.ProcessEnv = {}):
 }
 
 after(() => {
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+  for (const dir of [...dirs, globalConfigDir]) rmSync(dir, { recursive: true, force: true })
 })

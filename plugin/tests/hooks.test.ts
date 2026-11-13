@@ -3,13 +3,16 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { handle, RHYTHM, rhythm } from '../src/hook.ts'
-import { GATE_SNIPPET } from '../src/gate.ts'
+import { HOOK_COMMAND } from '../src/gate.ts'
 import { Store } from '../src/store.ts'
-import { agent, commit, ENV, gatedRepo, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
+import { agent, commit, ENV, gatedRepo, globalGitConfig, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
+
+/** PATH 上没有 testpace、但有测试用的 git（合并门要 git 2.54 以上，不一定是 /usr/bin 里那个）。 */
+const NO_TESTPACE_PATH = `${dirname(sh(tempDir('testpace-git-'), 'command -v git').trim())}:/usr/bin:/bin`
 
 const ENTRY = fileURLToPath(new URL('../hooks/testpace.ts', import.meta.url))
 // Claude Code 给 hook 的插件数据目录：会话碰过哪些仓库记在这里。
@@ -227,127 +230,102 @@ describe('合并门（git 钩子）', () => {
   test('钩子找不到 testpace 命令（插件没启用）时说一句，不挡', () => {
     const repo = gatedRepo()
     change(repo)
-    const r = agent(repo, 'git commit -qam m', { PATH: '/usr/bin:/bin' })
+    const r = agent(repo, 'git commit -qam m', { PATH: NO_TESTPACE_PATH })
     assert.equal(r.code, 0)
     assert.match(r.out, /找不到 testpace 命令/)
+    // 钩子配在全局、所有仓库都跑：没接入 testpace 的仓库里不说
+    const plain = tempDir('testpace-plain-')
+    sh(plain, 'git init -q -b main && git config hook.testpace.event reference-transaction')
+    spawnSync('git', ['config', 'hook.testpace.command', HOOK_COMMAND], { cwd: plain, env: ENV })
+    const quiet = agent(plain, 'git commit -q --allow-empty -m m', { PATH: NO_TESTPACE_PATH })
+    assert.deepEqual(quiet, { code: 0, out: '' })
+    // 对照：同一个仓库有了 testpace.json 就说，钩子确实在这里跑
+    writeFileSync(join(plain, 'testpace.json'), '{}')
+    assert.match(agent(plain, 'git commit -q --allow-empty -m m', { PATH: NO_TESTPACE_PATH }).out, /找不到 testpace 命令/)
+  })
+
+  test('没有分支要动（只是远程跟踪分支）时钩子不调用 testpace', () => {
+    const repo = gatedRepo()
+    const fake = tempDir('testpace-fake-')
+    const calls = join(fake, 'calls')
+    writeFileSync(join(fake, 'testpace'), `#!/bin/sh\ncat >> '${calls}'\n`, { mode: 0o755 })
+    const env = { PATH: `${fake}:${NO_TESTPACE_PATH}` }
+    assert.equal(agent(repo, 'git update-ref refs/remotes/origin/main HEAD', env).code, 0)
+    assert.equal(sh(repo, `cat '${calls}' 2>/dev/null || true`), '')
+    assert.equal(agent(repo, 'git branch x', env).code, 0)
+    assert.match(sh(repo, `cat '${calls}'`), / refs\/heads\/x$/m, '有分支要动时调用，引用更新原样交给它')
   })
 
   test('会话里的 testpace 是还没有 gate 命令的旧版本（插件更新后没重开会话）时说一句，不挡', () => {
     const repo = gatedRepo()
     const old = tempDir('testpace-old-')
     writeFileSync(join(old, 'testpace'), '#!/bin/sh\necho "不认识的命令 \\"$1\\"" >&2\nexit 2\n', { mode: 0o755 })
-    const env = { PATH: `${old}:/usr/bin:/bin` }
+    const env = { PATH: `${old}:${NO_TESTPACE_PATH}` }
     change(repo)
     const r = agent(repo, 'git commit -qam m', env)
     assert.equal(r.code, 0, r.out)
     assert.equal(r.out.trim(), 'testpace 合并门：这个会话用的 testpace 是旧版本，没有合并门的检查，这次没有检查。插件更新后，开着的会话要重开才换成新版本。')
-    // 加进项目自己钩子里的检查也一样
-    writeFileSync(join(sh(repo, 'git rev-parse --path-format=absolute --git-path hooks').trim(), 'reference-transaction'), `#!/bin/sh\n${GATE_SNIPPET}\nexit 0\n`, { mode: 0o755 })
-    change(repo)
-    const merged = agent(repo, 'git commit -qam m', env)
-    assert.equal(merged.code, 0, merged.out)
-    assert.match(merged.out, /这个会话用的 testpace 是旧版本/)
   })
 
-  test('install 装进 core.hooksPath 指的目录，不覆盖别人的钩子；status 和会话开始时说出合并门没在把关的原因', () => {
+  test('install 把合并门配进全局 git 配置：所有仓库、所有工作区都把关，不碰项目自己的钩子；status 和会话开始时说出没在把关的原因', () => {
+    const env = { ...ENV, GIT_CONFIG_GLOBAL: globalGitConfig() }
     const repo = sampleRepo()
-    assert.match(testpace(repo, ['status']).out, /合并门：合并门的 git 钩子还没装，提交、合并到默认分支时不会检查。跑 testpace install 装上。/)
+    const missing = /合并门：合并门还没配，提交、合并到默认分支时不会检查。跑 testpace install：在全局 git 配置里加上合并门的钩子，这台机器上所有仓库都生效。改的是用户的全局配置，先问用户。/
+    assert.match(testpace(repo, ['status'], env).out, missing)
     const start = handle({ hook_event_name: 'SessionStart', session_id: 'i', cwd: repo }, Date.now()) as Output
-    assert.match(String(start?.hookSpecificOutput?.additionalContext), /^.*用 testpace 管测试节奏[\s\S]*跑 testpace install 装上。$/)
+    assert.match(String(start?.hookSpecificOutput?.additionalContext), /^.*用 testpace 管测试节奏[\s\S]*改的是用户的全局配置，先问用户。$/)
 
-    sh(repo, 'git config core.hooksPath .githooks')
-    // core.hooksPath 指的目录还不存在：看不出它进不进版本库，不装
-    const noDir = /钩子目录 \.githooks（core\.hooksPath）在这个工作区里还不存在，git 不会跑那里的任何钩子，合并门没有生效。/
-    assert.match(testpace(repo, ['status']).out, noDir)
-    const refused = testpace(repo, ['install'])
-    assert.equal(refused.code, 2)
-    assert.match(refused.out, /^没有装：钩子目录 \.githooks/)
-    assert.equal(sh(repo, 'ls -a').includes('.githooks'), false)
-    mkdirSync(join(repo, '.githooks'))
-    const installed = testpace(repo, ['install'])
-    assert.equal(installed.code, 0)
-    assert.match(installed.out, /合并门已装上：.*\/\.githooks\/reference-transaction\n这个钩子在项目目录里（core.hooksPath），和 testpace.json 一样要提交进仓库。/)
-    assert.match(testpace(repo, ['status']).out, /合并门：已装上/)
-
-    const hook = join(repo, '.githooks', 'reference-transaction')
-    writeFileSync(hook, '#!/bin/sh\n# testpace 合并门\nexit 0\n')
-    assert.match(testpace(repo, ['status']).out, /合并门的 git 钩子是旧版本/)
-    assert.equal(testpace(repo, ['install']).code, 0, '旧版本直接更新')
-    writeFileSync(hook, '#!/bin/sh\nexit 0\n')
-    const foreign = testpace(repo, ['install'])
-    assert.equal(foreign.code, 2)
-    assert.match(foreign.out, /已经有别的 reference-transaction 钩子，没有覆盖。要用合并门，在那个钩子开头/)
-    assert.ok(foreign.out.includes(GATE_SNIPPET.replace(/^/gm, '  ')), '说明里给出完整的检查片段')
-    assert.equal(sh(repo, 'cat .githooks/reference-transaction'), '#!/bin/sh\nexit 0\n')
-    // 照说明把检查加进项目自己的钩子：算装上了，不动它，真的在把关，钩子原来的内容也照样读得到 git 给的引用更新
+    // 项目自己的钩子：git 自己的钩子目录里有一个，core.hooksPath 指向一个还不存在的目录（husky 装依赖前的 .husky/_）
     const seen = join(tempDir('testpace-seen-'), 'refs')
-    const merged = `#!/bin/sh\n${GATE_SNIPPET}\n# 项目自己的钩子：记下要更新的引用\n[ "$1" = prepared ] && cat >> '${seen}'\nexit 0\n`
-    writeFileSync(hook, merged)
-    const kept = testpace(repo, ['install'])
-    assert.equal(kept.code, 0)
-    assert.match(kept.out, /是项目自己的钩子，里面已经调用了 testpace gate，没有改动它。/)
-    assert.equal(sh(repo, 'cat .githooks/reference-transaction'), merged)
-    assert.match(testpace(repo, ['status']).out, /合并门：已装上/)
-    commit(repo, '提交钩子')
+    writeFileSync(join(repo, '.git', 'hooks', 'reference-transaction'), `#!/bin/sh\n[ "$1" = prepared ] && cat >> '${seen}'\nexit 0\n`, { mode: 0o755 })
+    const installed = testpace(repo, ['install'], env)
+    assert.equal(installed.code, 0, installed.out)
+    assert.equal(installed.out, '合并门已配好：全局 git 配置里的 hook.testpace，这台机器上 agent 在所有仓库里移动默认分支时都检查（只管接入了 testpace 的仓库）。\n')
+    assert.equal(sh(repo, `git config --file '${env.GIT_CONFIG_GLOBAL}' --get hook.testpace.command`).trim(), HOOK_COMMAND)
+    assert.equal(sh(repo, 'git status --porcelain --untracked-files=all'), '', '仓库里什么都没写')
+    assert.match(testpace(repo, ['status'], env).out, /合并门：已装上/)
     change(repo)
-    assert.match(agent(repo, 'git commit -qam m').out, /testpace 合并门：这次要把 main 更新到/)
-    assert.equal(agent(repo, 'git checkout -qb fix && git commit -qam m').code, 0, '分支上的提交照常放行')
-    assert.match(sh(repo, `cat '${seen}'`), /^[0-9a-f]+ [0-9a-f]+ refs\/heads\/fix$/m, '钩子原来的内容读到了 testpace gate 读过的引用更新')
+    assert.match(agent(repo, 'git commit -qam m', env).out, /testpace 合并门：这次要把 main 更新到/)
+    assert.equal(agent(repo, 'git checkout -qb fix && git commit -qam m', env).code, 0, '分支上的提交照常放行')
+    assert.match(sh(repo, `cat '${seen}'`), /^[0-9a-f]+ [0-9a-f]+ refs\/heads\/fix$/m, '项目自己的钩子照常跑，读得到引用更新')
+    sh(repo, 'git config core.hooksPath .husky/_')
+    assert.match(agent(repo, 'git update-ref refs/heads/main fix', env).out, /testpace 合并门：这次要把 main 更新到/, 'core.hooksPath 不影响')
 
-    // 钩子目录被 .gitignore 忽略（husky 的 .husky/_ 这类）：不说要提交，说每个工作区各装一次
-    const husky = sampleRepo()
-    mkdirSync(join(husky, '.husky', '_'), { recursive: true })
-    writeFileSync(join(husky, '.husky', '_', '.gitignore'), '*\n')
-    sh(husky, 'git config core.hooksPath .husky/_')
-    assert.match(
-      testpace(husky, ['status']).out,
-      /合并门：合并门的 git 钩子还没装，提交、合并到默认分支时不会检查。这个项目的钩子目录（\.husky\/_）不进版本库，每个工作区要各装一次。跑 testpace install 装上。/,
-    )
-    const ignored = testpace(husky, ['install'])
-    assert.match(ignored.out, /合并门已装上：.*\/\.husky\/_\/reference-transaction\n这个钩子目录不进版本库（被 \.gitignore 忽略）：每个工作区、每次重新克隆后都要再跑一次 testpace install。/)
-    assert.match(testpace(husky, ['status']).out, /合并门：已装上/)
-    // 新的工作区里还没装依赖、.husky/_ 还没生成：不装，免得写出一个没被忽略、会被当成项目文件提交的钩子
-    const fresh = join(tempDir('testpace-wt-'), 'wt')
-    sh(husky, `git worktree add -q '${fresh}' -b fresh`)
-    assert.match(testpace(fresh, ['status']).out, /合并门：钩子目录 \.husky\/_（core\.hooksPath）在这个工作区里还不存在[\s\S]*先装依赖再跑 testpace install/)
-    assert.equal(testpace(fresh, ['install']).code, 2)
-    assert.equal(sh(fresh, 'git status --porcelain --untracked-files=all'), '')
+    // 别的仓库、别的工作区不用再装
+    const other = sampleRepo()
+    const wt = join(tempDir('testpace-wt-'), 'wt')
+    sh(other, `git branch old && git worktree add -q '${wt}' old`)
+    change(wt)
+    commit(wt, 'old 上没测过的提交')
+    assert.match(testpace(wt, ['status'], env).out, /合并门：已装上/)
+    assert.match(agent(wt, 'git update-ref refs/heads/main old', env).out, /testpace 合并门：这次要把 main 更新到/)
+
+    // 命令不是这一版的：提示更新，install 改回来
+    sh(repo, `git config --file '${env.GIT_CONFIG_GLOBAL}' hook.testpace.command 'testpace gate'`)
+    assert.match(testpace(repo, ['status'], env).out, /合并门：git 配置里合并门的钩子命令（hook\.testpace\.command）不是这一版的，跑 testpace install 更新。/)
+    assert.equal(testpace(repo, ['install'], env).code, 0)
+    assert.match(testpace(repo, ['status'], env).out, /合并门：已装上/)
+    // 仓库自己的配置把它关了：说出来，install 也说配好了但没生效
+    sh(other, 'git config hook.testpace.enabled false')
+    assert.match(testpace(other, ['status'], env).out, /合并门：git 配置把合并门的钩子关掉了（hook\.testpace\.enabled = false），合并门没有生效。/)
+    const off = testpace(other, ['install'], env)
+    assert.equal(off.code, 2)
+    assert.match(off.out, /^没有配好：全局 git 配置里配好了，但在这个仓库里没有生效：git 配置把合并门的钩子关掉了/)
+
+    // git 太旧，不认配置里的钩子：说清楚，不配
+    const oldGit = tempDir('testpace-oldgit-')
+    const realGit = sh(repo, 'command -v git').trim()
+    writeFileSync(join(oldGit, 'git'), `#!/bin/sh\n[ "$1" = hook ] && { echo "error: unknown subcommand: \\\`list'" >&2; exit 129; }\n[ "$1" = --version ] && { echo 'git version 2.49.0'; exit 0; }\nexec '${realGit}' "$@"\n`, { mode: 0o755 })
+    const oldEnv = { ...ENV, GIT_CONFIG_GLOBAL: globalGitConfig(), PATH: `${oldGit}:${ENV.PATH}` }
+    assert.match(testpace(repo, ['status'], oldEnv).out, /合并门：这台机器的 git（2\.49\.0）不认配置里声明的钩子，合并门没有生效。要 git 2\.54 以上：告诉用户升级 git（比如 brew upgrade git），不要自己装。/)
+    const refused = testpace(repo, ['install'], oldEnv)
+    assert.equal(refused.code, 2)
+    assert.match(refused.out, /^没有配好：这台机器的 git（2\.49\.0）/)
+    assert.equal(sh(repo, `cat '${oldEnv.GIT_CONFIG_GLOBAL}'`).includes('hook'), false)
 
     const trunk = tempDir('testpace-trunk-')
     sh(trunk, `cp -R ${join(repo, 'src')} ${join(repo, 'testpace.json')} . && git init -q -b trunk && git add -A && git -c user.name=t -c user.email=t@t commit -qm i`)
-    assert.match(testpace(trunk, ['status']).out, /合并门：找不到默认分支（没有 origin\/HEAD，本地也没有 main、master），合并门没有生效。/)
-  })
-
-  test('项目的钩子目录跟着分支走：分支上还没有钩子的工作区里不检查，说清楚合进默认分支就有', () => {
-    const repo = sampleRepo()
-    sh(repo, 'git branch old && git config core.hooksPath .githooks && mkdir .githooks')
-    assert.equal(testpace(repo, ['install']).code, 0)
-    commit(repo, '提交合并门钩子')
-    // 检出的提交里有钩子、只是工作区里删了：照常提示安装，装回去和提交的一样
-    rmSync(join(repo, '.githooks', 'reference-transaction'))
-    assert.match(testpace(repo, ['status']).out, /合并门：合并门的 git 钩子还没装/)
-    assert.equal(testpace(repo, ['install']).code, 0)
-    assert.equal(sh(repo, 'git status --porcelain'), '')
-    const other = join(tempDir('testpace-wt-'), 'wt')
-    sh(repo, `git worktree add -q '${other}' old`)
-    assert.match(
-      testpace(other, ['status']).out,
-      /合并门：这个工作区检出的代码里还没有合并门的钩子（\.githooks\/reference-transaction）：项目的钩子目录跟着分支走，main 上已经有了，把 main 合进这个分支就有，不用在这里装。/,
-    )
-    // 在这里装会写出未跟踪的钩子文件，之后把 main 合进来时 git 会因为它拒绝合并：不装
-    const refused = testpace(other, ['install'])
-    assert.equal(refused.code, 2)
-    assert.match(refused.out, /^没有装：这个工作区检出的代码里还没有合并门的钩子/)
-    assert.equal(sh(other, 'git status --porcelain --untracked-files=all'), '')
-    // 说明里讲的缺口是真的：这个工作区里移动 main 不经过钩子
-    change(other)
-    commit(other, 'old 上没测过的提交')
-    assert.equal(agent(other, 'git update-ref refs/heads/main old').code, 0)
-    sh(repo, 'git reset -q --hard main@{1}')
-    sh(other, 'git merge -q --no-edit main')
-    assert.match(testpace(other, ['status']).out, /合并门：已装上/)
-    const after = agent(other, 'git update-ref refs/heads/main old')
-    assert.match(after.out, /testpace 合并门：这次要把 main 更新到/, '合进默认分支后就检查')
+    assert.match(testpace(trunk, ['status'], env).out, /合并门：找不到默认分支（没有 origin\/HEAD，本地也没有 main、master），合并门没有生效。/)
   })
 })
 
