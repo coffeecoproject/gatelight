@@ -5,8 +5,9 @@ import { findCoverage } from '../src/coverage.ts'
 import { cleanLines, failureExcerpt } from '../src/excerpt.ts'
 import { duration } from '../src/format.ts'
 import { matcher } from '../src/glob.ts'
-import { fileRole, flakyTrees, landingCost, renderReport, repeatedFiles, rerunsAfterFailure, weekly } from '../src/report.ts'
+import { failedThenPassed, fileRole, landingCost, renderReport, repeatedFiles, rerunsAfterFailure, weekly } from '../src/report.ts'
 import { KEEP_LOGS, type RunRecord, Store } from '../src/store.ts'
+import { firstTest } from '../src/verify.ts'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -132,7 +133,7 @@ describe('报告的统计', () => {
     assert.deepEqual(rerunsAfterFailure(runs), [2, 1])
   })
 
-  test('同一份代码先失败后通过算不稳定；先通过后失败、代码改过的不算', () => {
+  test('同一份代码先失败后通过的找出来；先通过后失败、代码改过的不算', () => {
     const runs = [
       run({ result: 'fail', tree: 'A' }),
       run({ result: 'pass', tree: 'A' }),
@@ -141,7 +142,7 @@ describe('报告的统计', () => {
       run({ result: 'fail', tree: 'C' }),
       run({ result: 'pass', tree: 'C', treeAtEnd: 'X' }),
     ]
-    assert.deepEqual(flakyTrees(runs).map(f => f.tree), ['A'])
+    assert.deepEqual(failedThenPassed(runs).map(f => f.tree), ['A'])
   })
 
   test('反复跑的测试文件按次数排', () => {
@@ -198,20 +199,20 @@ describe('报告的统计', () => {
     ])
   })
 
-  test('报告写出次数、失败重跑、不稳定和 fast 过慢', () => {
+  test('报告写出次数、失败重跑、先失败后通过和 fast 过慢', () => {
     const now = 100 * 24 * 3600 * 1000
     const at = (minutes: number): number => now - minutes * 60_000
     const runs = [
       run({ kind: 'fast', startedAt: at(50), durationMs: 30_000 }),
-      run({ kind: 'full', startedAt: at(40), result: 'fail', exitCode: 1, tree: 'A' }),
+      run({ kind: 'full', startedAt: at(40), result: 'fail', exitCode: 1, tree: 'A', durationMs: 8_000, log: '/logs/a-fail.log' }),
       run({ kind: 'full', startedAt: at(30), result: 'pass', tree: 'A' }),
       run({ kind: 'full', startedAt: at(500 * 24 * 60), tree: 'old' }),
     ]
     const text = renderReport({ repo: '/repo', days: 7, now, runs, landings: [] })
     assert.match(text, /fast\s+1\s+1\s+0\s+30秒\s+30秒/)
-    assert.match(text, /full\s+2\s+1\s+1\s+1分00秒\s+2分00秒/)
+    assert.match(text, /full\s+2\s+1\s+1\s+34秒\s+1分08秒/)
     assert.match(text, /整组失败 1 次；失败后平均重跑 1\.0 轮才通过（1 次）/)
-    assert.match(text, /不稳定：1 份代码/)
+    assert.match(text, /先失败后通过：1 份代码整组先失败、后通过。可能是测试不稳定，也可能是环境问题（比如数据库没起来），看失败的日志分辨：\n  代码 A（.+）：失败用时 8秒，之后通过用时 1分00秒，失败日志 \/logs\/a-fail\.log/)
     assert.match(text, /fast 平均 30秒，超过 20 秒/)
   })
 
@@ -241,4 +242,17 @@ test('日志只留最近的，最早的先删', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+describe('verify', () => {
+  test('找文件里第一个测试声明的行和列', () => {
+    assert.deepEqual(firstTest("import { test } from 'node:test'\n\ntest('a', () => {})\n"), { line: 3, column: 1 })
+    assert.deepEqual(firstTest("describe('x', () => {\n  it.only('y', () => {})\n})\n"), { line: 1, column: 1 })
+    assert.deepEqual(firstTest('import x\n  it.skip("y", () => {})\n'), { line: 2, column: 3 })
+    assert.deepEqual(firstTest('import os\n\ndef test_price():\n    pass\n'), { line: 3, column: 1 })
+    assert.deepEqual(firstTest('package p\n\nfunc TestPrice(t *testing.T) {}\n'), { line: 3, column: 1 })
+    assert.equal(firstTest('const testing = 1\nexport function it() {}\n'), undefined)
+    // 钩子和配置那一行没有测试，按行跑会落空：跳过它们
+    assert.deepEqual(firstTest("test.use({ locale: 'zh' })\ntest.beforeEach(() => {})\ntest.describe.configure({ mode: 'serial' })\ntest.skip('a', () => {})\n"), { line: 4, column: 1 })
+  })
 })

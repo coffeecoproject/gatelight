@@ -1,6 +1,6 @@
-// testpace 命令行：focused、files、full、status、report、install，以及 git 钩子调用的 gate。
+// testpace 命令行：focused、files、full、status、report、verify、install，以及 git 钩子调用的 gate。
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import { COMMAND_KEYS, commandExists, CONFIG_FILE, configExists, loadConfig } from './config.ts'
 import { execute } from './execute.ts'
@@ -11,6 +11,7 @@ import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landi
 import { renderReport } from './report.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runRecorded, started } from './repo.ts'
 import { LOCATED, newRunId } from './store.ts'
+import { verifyFiles } from './verify.ts'
 
 const USAGE = `用法：
   testpace focused [--base REF]  改完先跑：fast，再跑 layermap 选出的相关测试。默认对比和默认分支的分叉点；在默认分支上选测靠不住时建议跑整组
@@ -18,6 +19,7 @@ const USAGE = `用法：
   testpace full                  跑整组（testpace.json 的 full），按当前工作区完整内容记录结果。适合放到后台跑
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace report [--days N]     计时诊断，默认最近 28 天
+  testpace verify [测试文件]     核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号
   testpace install               在全局 git 配置里配上合并门（这台机器配一次）：agent 移动默认分支时，要求落地的代码有整组通过记录`
 
 /**
@@ -305,6 +307,64 @@ function report(args: string[]): number {
   return EXIT.ok
 }
 
+/** 由程序核对这个项目的接入守不守约定（见 verify.ts）。整组太长，不在这里跑。 */
+async function verify(args: string[]): Promise<number> {
+  if (args.length > 1) {
+    console.error(USAGE)
+    return EXIT.usage
+  }
+  const ctx = context()
+  if (!ctx) return EXIT.usage
+  const { config, problems } = loadConfig(ctx.root)
+  if (!config) {
+    console.error(`${CONFIG_FILE} 读不出来，先修好：${problems.join('；')}`)
+    return EXIT.usage
+  }
+  let test: { path: string; text: string } | undefined
+  if (args[0] !== undefined) {
+    const absolute = resolve(args[0])
+    const path = relative(ctx.root, absolute)
+    if (!existsSync(absolute) || !statSync(absolute).isFile() || path.startsWith('..')) {
+      console.error(`找不到测试文件 ${args[0]}（要是这个仓库里的文件）`)
+      return EXIT.usage
+    }
+    test = { path, text: readFileSync(absolute, 'utf8') }
+  }
+
+  const say = (line: string): void => console.log(line)
+  let failed = problems.length > 0 ? 1 : 0
+  say(problems.length > 0 ? `没通过　${CONFIG_FILE} 写得对：${problems.join('；')}` : `通过　${CONFIG_FILE} 写得对`)
+  for (const key of COMMAND_KEYS) {
+    // 没写的命令上一行已经算过
+    const command = config[key]
+    if (command === undefined) continue
+    const found = commandExists(ctx.root, command)
+    if (!found) failed += 1
+    say(found ? `通过　找得到 ${key} 的命令（${command}）` : `没通过　找得到 ${key} 的命令：找不到 ${command}`)
+  }
+  const gate = gateProblem(ctx.root)
+  if (gate) failed += 1
+  say(gate ? `没通过　合并门在把关：${gate}` : '通过　合并门在把关')
+
+  if (!config.files) {
+    say(`接入核对：${failed} 项没通过；${CONFIG_FILE} 里没有 files，其余没法查。`)
+    return EXIT.fail
+  }
+  const tree = workTreeId(ctx.root)
+  const result = await verifyFiles(ctx, config.files, tree, test, say)
+  if (result.kind === 'busy') {
+    console.log(busyText(result.marker, tree))
+    return EXIT.busy
+  }
+  if (result.kind === 'interrupted') return EXIT.interrupted
+  failed += result.failed
+  say(`没查　整组（${config.full ?? `${CONFIG_FILE} 里没有 full`}）：太长不在这里跑，程序也看不出它是不是全部的检查。要和用户确认它就是落地前、发版前该跑的那些；能不能通过用 testpace full 看。`)
+
+  const notChecked = result.skipped + 1
+  say(failed > 0 ? `接入核对：${failed} 项没通过，${notChecked} 项没查。` : `接入核对：查了的都通过，${notChecked} 项没查。`)
+  return failed > 0 ? EXIT.fail : EXIT.ok
+}
+
 function install(): number {
   const ctx = context()
   if (!ctx) return EXIT.usage
@@ -347,6 +407,8 @@ async function main(argv: string[]): Promise<number> {
       return status()
     case 'report':
       return report(rest)
+    case 'verify':
+      return verify(rest)
     case 'install':
       return install()
     case 'gate':

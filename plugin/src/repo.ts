@@ -88,8 +88,31 @@ export function busyText(marker: RunningMarker, tree: string): string {
 }
 
 /**
- * 跑 fast 或 files 并记一条记录。同一个工作区一次只跑一轮测试（两轮同时跑会抢端口、测试库这些资源，
+ * 占住这个工作区跑一次项目的命令，不记录。同一个工作区一次只跑一轮测试（两轮同时跑会抢端口、测试库这些资源，
  * 失败了也分不清是谁的问题）：已经有在跑的，不跑，返回它。
+ */
+export async function runClaimed(
+  repo: Repo,
+  kind: Exclude<CommandKey, 'full'>,
+  command: string,
+  args: string[],
+  tree: string,
+): Promise<{ id: string; startedAt: number; log: string; execution: Execution } | { busy: RunningMarker }> {
+  const startedAt = Date.now()
+  const id = newRunId(startedAt)
+  const log = repo.store.logPath(id)
+  const busy = repo.store.claim({ id, kind, pid: process.pid, worktree: repo.root, tree, startedAt, log })
+  if (busy) return { busy }
+  try {
+    const execution = await execute(command, args, repo.root, log, group => repo.store.update(repo.root, id, { group }))
+    return { id, startedAt, log, execution }
+  } finally {
+    repo.store.release(repo.root, id)
+  }
+}
+
+/**
+ * 跑 fast 或 files 并记一条记录（见 runClaimed）。
  * 这两种不检查跑的过程中代码改没改：它们只用于开发中的反馈和计时，通过记录只认 full。
  */
 export async function runRecorded(
@@ -99,17 +122,9 @@ export async function runRecorded(
   args: string[],
   tree: string,
 ): Promise<Recorded | { busy: RunningMarker }> {
-  const startedAt = Date.now()
-  const id = newRunId(startedAt)
-  const log = repo.store.logPath(id)
-  const busy = repo.store.claim({ id, kind, pid: process.pid, worktree: repo.root, tree, startedAt, log })
-  if (busy) return { busy }
-  let execution: Execution
-  try {
-    execution = await execute(command, args, repo.root, log, group => repo.store.update(repo.root, id, { group }))
-  } finally {
-    repo.store.release(repo.root, id)
-  }
+  const run = await runClaimed(repo, kind, command, args, tree)
+  if ('busy' in run) return run
+  const { id, startedAt, log, execution } = run
   const record: RunRecord = {
     id,
     kind,
@@ -129,7 +144,8 @@ export async function runRecorded(
   return { record, execution }
 }
 
-function failureCause(execution: Execution): string {
+/** 命令为什么算失败：退出码、信号，或没能启动。 */
+export function failureCause(execution: Execution): string {
   if (execution.exitCode !== null) return `退出码 ${execution.exitCode}`
   return execution.signal ? `被信号 ${execution.signal} 终止` : '命令没能启动'
 }

@@ -135,7 +135,8 @@ export function landings(root: string, branch: string, sinceMs: number): Landing
     '--numstat',
     '-z',
     '--format=%H %ct',
-    `--since=${Math.floor(sinceMs / 1000)}`,
+    // --since 把很小的数（0、86400 这类）当成"现在"；--max-age 直接按秒算
+    `--max-age=${Math.floor(sinceMs / 1000)}`,
     `refs/heads/${branch}`,
     '--',
   ])

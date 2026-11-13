@@ -10,6 +10,8 @@ import { type RunRecord, testFile } from './store.ts'
 export const FAST_SLOW_MS = 20_000
 
 const WEEK_MS = 7 * 24 * 3600 * 1000
+/** 报告里最多列出几份先失败后通过的代码。 */
+const SHOWN_RETRIED = 5
 
 export interface CommandStats {
   count: number
@@ -65,14 +67,15 @@ export function rerunsAfterFailure(runs: RunRecord[]): number[] {
   return rounds
 }
 
-export interface Flaky {
+/** 同一份代码整组先失败、后通过：可能是测试不稳定，也可能是环境问题（数据库没起来这类），要看失败的日志才分得清。 */
+export interface FailedThenPassed {
   tree: string
-  failedAt: number
-  passedAt: number
+  failed: RunRecord
+  passed: RunRecord
 }
 
 /** 同一份代码内容，整组先失败、后通过。只看跑的过程中代码没改过的运行。 */
-export function flakyTrees(runs: RunRecord[]): Flaky[] {
+export function failedThenPassed(runs: RunRecord[]): FailedThenPassed[] {
   const byTree = new Map<string, RunRecord[]>()
   for (const run of runs) {
     if (run.kind !== 'full' || run.tree !== run.treeAtEnd) continue
@@ -80,14 +83,14 @@ export function flakyTrees(runs: RunRecord[]): Flaky[] {
     list.push(run)
     byTree.set(run.tree, list)
   }
-  const flaky: Flaky[] = []
+  const found: FailedThenPassed[] = []
   for (const [tree, list] of byTree) {
-    const firstFail = list.filter(run => run.result === 'fail').sort((a, b) => a.startedAt - b.startedAt)[0]
-    if (!firstFail) continue
-    const laterPass = list.find(run => run.result === 'pass' && run.startedAt > firstFail.startedAt)
-    if (laterPass) flaky.push({ tree, failedAt: firstFail.startedAt, passedAt: laterPass.startedAt })
+    const failed = list.filter(run => run.result === 'fail').sort((a, b) => a.startedAt - b.startedAt)[0]
+    if (!failed) continue
+    const passed = list.find(run => run.result === 'pass' && run.startedAt > failed.startedAt)
+    if (passed) found.push({ tree, failed, passed })
   }
-  return flaky.sort((a, b) => b.passedAt - a.passedAt)
+  return found.sort((a, b) => b.passed.startedAt - a.passed.startedAt)
 }
 
 const CODE_EXTENSIONS = new Set([
@@ -213,10 +216,17 @@ export function renderReport(input: ReportInput): string {
     }
     const changedDuring = runs.filter(run => run.kind === 'full' && run.result === 'pass' && run.tree !== run.treeAtEnd).length
     if (changedDuring > 0) notes.push(`整组跑的过程中代码改过 ${changedDuring} 次，这些结果没算通过记录`)
-    const flaky = flakyTrees(runs)
-    if (flaky.length > 0) {
-      const latest = flaky[0]!
-      notes.push(`不稳定：${flaky.length} 份代码整组先失败、后通过（最近一次 ${when(latest.passedAt)}，代码 ${short(latest.tree)}）`)
+    const retried = failedThenPassed(runs)
+    if (retried.length > 0) {
+      notes.push(
+        [
+          `先失败后通过：${retried.length} 份代码整组先失败、后通过。可能是测试不稳定，也可能是环境问题（比如数据库没起来），看失败的日志分辨：`,
+          ...retried
+            .slice(0, SHOWN_RETRIED)
+            .map(({ tree, failed, passed }) => `  代码 ${short(tree)}（${when(failed.startedAt)}）：失败用时 ${duration(failed.durationMs)}，之后通过用时 ${duration(passed.durationMs)}，失败日志 ${failed.log}`),
+          ...(retried.length > SHOWN_RETRIED ? [`  另有 ${retried.length - SHOWN_RETRIED} 份没列出`] : []),
+        ].join('\n'),
+      )
     }
     const fast = stats.get('fast')
     if (fast && fast.totalMs / fast.count > FAST_SLOW_MS) {
