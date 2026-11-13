@@ -9,9 +9,18 @@ claude plugin marketplace add coffeecoproject/testpace
 claude plugin install testpace@testpace
 ```
 
-装好后开新会话，在项目里说"给这个项目接入 testpace"，Claude 会按接入说明配好。想按改动选测试，再装上 [layermap](https://github.com/coffeecoproject/layermap) 插件。
+建议同时装上 [layermap](https://github.com/coffeecoproject/layermap)，`testpace focused` 靠它按改动选测试：
 
-`focused` 用 `layermap check --json` 选测试，需要 PATH 里有支持 `--json` 的 `layermap` 命令（layermap 0.1.40 起，装上 layermap 插件并开新会话就有）；没有时提示跑整组，并说装上 layermap 插件就能按改动选测试。合并门、停止门和其余命令不依赖 layermap。
+```bash
+claude plugin marketplace add coffeecoproject/layermap
+claude plugin install layermap@layermap
+```
+
+装好后开新会话，在项目里说"给这个项目接入 testpace"，Claude 会按接入说明配好。
+
+只装 testpace 也能把关：合并门、停止门和其余命令都不依赖 layermap。但开发中没法按改动选测试，`focused` 每次都会建议跑整组。装上 layermap 后只跑和改动相关的测试，在一个整组要跑约 11 分钟的项目里，每次降到 3–5 分钟。
+
+`focused` 调的是 `layermap check --json`（layermap 0.1.40 起），PATH 里要有 `layermap` 命令，装上 layermap 插件并开新会话就有。
 
 ## 项目约定
 
