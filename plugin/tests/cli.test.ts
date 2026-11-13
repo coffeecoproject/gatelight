@@ -167,6 +167,9 @@ describe('配置和报告', () => {
     assert.equal(r.code, 2)
     assert.match(r.out, /没法跑整组：仓库根目录没有 testpace\.json/)
     assert.match(testpace(repo, 'status').out, /配置（testpace\.json）：仓库根目录没有 testpace\.json/)
+    // 指到插件里的接入说明，路径要真的存在
+    const guide = /接入说明见 (\S+SKILL\.md)/.exec(r.out)?.[1]
+    assert.ok(guide && existsSync(guide), r.out)
   })
 
   test('status 标出找不到的命令', () => {

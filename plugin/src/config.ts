@@ -3,10 +3,14 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const CONFIG_FILE = 'testpace.json'
 export const COMMAND_KEYS = ['fast', 'files', 'full'] as const
 export type CommandKey = (typeof COMMAND_KEYS)[number]
+
+/** 接入说明（插件里的 setup 技能）。没有 testpace.json 时指给 agent 看，Codex 这类没有技能的环境也能直接读。 */
+export const SETUP_GUIDE = fileURLToPath(new URL('../skills/setup/SKILL.md', import.meta.url))
 
 export interface Config {
   fast?: string
@@ -23,7 +27,7 @@ export interface LoadedConfig {
 
 export function loadConfig(root: string): LoadedConfig {
   const path = join(root, CONFIG_FILE)
-  if (!existsSync(path)) return { problems: [`仓库根目录没有 ${CONFIG_FILE}`] }
+  if (!existsSync(path)) return { problems: [`仓库根目录没有 ${CONFIG_FILE}，接入说明见 ${SETUP_GUIDE}`] }
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'))

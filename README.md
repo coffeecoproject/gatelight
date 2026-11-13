@@ -6,22 +6,7 @@
 
 ## 项目约定
 
-仓库根目录放 `testpace.json`，进版本库：
-
-```json
-{
-  "fast": "pnpm -s check:fast",
-  "files": "pnpm -s test:files",
-  "full": "pnpm -s test:full",
-  "ignore": ["docs/**"]
-}
-```
-
-- `fast`：类型检查加 lint，应当是增量的。
-- `files`：只跑给定的测试文件（相对仓库根目录），环境自己准备；文件不存在或有文件一个测试都没跑，返回非零。
-- `full`：落地到默认分支前必须通过的全部检查和测试。
-- 三条命令都从仓库根目录运行、不需要交互、退出码 0 表示通过。
-- `ignore`：不影响测试的路径，默认为空。`**` 跨目录，`*` 不跨目录，结尾 `/` 表示整个目录。不要写 `**/*.md` 这类通配。
+仓库根目录放 `testpace.json`，进版本库。字段、三条命令要做到什么、接入步骤见 [plugin/skills/setup/SKILL.md](plugin/skills/setup/SKILL.md)：它随插件安装，是 Claude Code 里的 `testpace:setup` 技能；没有 `testpace.json` 时，命令的报错也指向这个文件。
 
 `examples/sample` 是按约定建的最小示例项目。
 
