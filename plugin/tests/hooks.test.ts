@@ -171,6 +171,28 @@ describe('合并门（git 钩子）', () => {
     sh(trunk, `cp -R ${join(repo, 'src')} ${join(repo, 'testpace.json')} . && git init -q -b trunk && git add -A && git -c user.name=t -c user.email=t@t commit -qm i`)
     assert.match(testpace(trunk, ['status']).out, /合并门：找不到默认分支（没有 origin\/HEAD，本地也没有 main、master），合并门没有生效。/)
   })
+
+  test('项目的钩子目录跟着分支走：分支上还没有钩子的工作区里不检查，说清楚合进默认分支就有', () => {
+    const repo = sampleRepo()
+    sh(repo, 'git branch old && git config core.hooksPath .githooks')
+    assert.equal(testpace(repo, ['install']).code, 0)
+    commit(repo, '提交合并门钩子')
+    const other = join(tempDir('testpace-wt-'), 'wt')
+    sh(repo, `git worktree add -q '${other}' old`)
+    assert.match(
+      testpace(other, ['status']).out,
+      /合并门：这个工作区检出的代码里还没有合并门的钩子（\.githooks\/reference-transaction）：项目的钩子目录跟着分支走，main 上已经有了，把 main 合进这个分支就有。/,
+    )
+    // 说明里讲的缺口是真的：这个工作区里移动 main 不经过钩子
+    change(other)
+    commit(other, 'old 上没测过的提交')
+    assert.equal(agent(other, 'git update-ref refs/heads/main old').code, 0)
+    sh(repo, 'git reset -q --hard main@{1}')
+    sh(other, 'git merge -q --no-edit main')
+    assert.match(testpace(other, ['status']).out, /合并门：已装上/)
+    const after = agent(other, 'git update-ref refs/heads/main old')
+    assert.match(after.out, /testpace 合并门：这次要把 main 更新到/, '合进默认分支后就检查')
+  })
 })
 
 describe('软提示', () => {

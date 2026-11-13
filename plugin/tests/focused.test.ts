@@ -8,7 +8,7 @@ import { fullReasons, type LayermapCheck, parseCheck, parseUntested, select, typ
 import { matcher } from '../src/glob.ts'
 import { commit, ENV, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
 
-const check = (partial: Partial<LayermapCheck>): LayermapCheck => ({ files: [], tests: [], unmapped: [], truncated: false, ...partial })
+const check = (partial: Partial<LayermapCheck>): LayermapCheck => ({ files: [], tests: [], unmapped: [], incomplete: [], ...partial })
 
 describe('选测', () => {
   const exists = (path: string): boolean => !path.includes('deleted')
@@ -35,7 +35,7 @@ describe('选测', () => {
       tests: ['t/a.test.ts', 't/b.test.ts', 't/s.test.ts'],
       indirect: 1,
       unmapped: [],
-      truncated: false,
+      incomplete: [],
       untested: null,
     })
     assert.deepEqual(fullReasons(selection), [])
@@ -55,23 +55,23 @@ describe('选测', () => {
       '选出的测试跑不到 src/a.ts: a f1-3、src/a.ts: b f5-9、src/a.ts: c f11-12 等 4 处',
       '确认选出的测试跑不跑得到改动时，layermap 追踪到上限就停了',
     ])
-    // 选测时已经截断，确认时的截断不再重复
-    selection.truncated = true
+    // 选测时已经没做完，确认时的截断不再重复
+    selection.incomplete = ['the trace stopped at 8 levels or 2000 declarations; continue with project_explore_map from the last ones']
     assert.deepEqual(fullReasons(selection), [
-      '改动影响的范围太大，layermap 追踪到上限就停了',
+      'layermap 这次检查没做完，可能漏选测试：the trace stopped at 8 levels or 2000 declarations; continue with project_explore_map from the last ones',
       '选出的测试跑不到 src/a.ts: a f1-3、src/a.ts: b f5-9、src/a.ts: c f11-12 等 4 处',
     ])
   })
 
-  test('改了地图跟不到的文件、追踪被截断、没找到测试，都建议跑整组', () => {
+  test('改了地图跟不到的文件、layermap 检查没做完、没找到测试，都建议跑整组', () => {
     const selection = select(
-      check({ files: [{ path: 'config.yaml', status: 'MODIFIED' }], unmapped: [{ path: 'config.yaml', kind: 'configuration' }], truncated: true }),
+      check({ files: [{ path: 'config.yaml', status: 'MODIFIED' }], unmapped: [{ path: 'config.yaml', kind: 'configuration' }], incomplete: ['the trace stopped at 8 levels or 2000 declarations; continue with project_explore_map from the last ones'] }),
       () => false,
       exists,
     )
     assert.deepEqual(fullReasons(selection), [
       '改了 config.yaml（configuration），地图跟不到它们影响哪些测试',
-      '改动影响的范围太大，layermap 追踪到上限就停了',
+      'layermap 这次检查没做完，可能漏选测试：the trace stopped at 8 levels or 2000 declarations; continue with project_explore_map from the last ones',
       'layermap 没找到和这次改动相关的测试',
     ])
   })
@@ -105,6 +105,8 @@ describe('选测', () => {
 
   test('layermap 的输出缺字段时说明可能是版本太旧', () => {
     assert.throws(() => parseCheck('{"files":[],"tests":[]}'), /版本太旧/)
+    // 0.1.40 的输出还没有 incomplete
+    assert.throws(() => parseCheck('{"files":[],"tests":[],"unmapped":[],"truncated":false}'), /要 0\.1\.41 以上/)
     assert.throws(() => parseUntested('{"files":[],"tests":[],"unmapped":[],"truncated":false}'), /没有输出 untested/)
     assert.deepEqual(parseUntested('{"untested":{"changed":["src/a.ts: a f1-3"],"routes":[],"truncated":false}}'), {
       changed: ['src/a.ts: a f1-3'],

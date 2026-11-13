@@ -147,6 +147,11 @@ export function commitOf(root: string, rev: string): string | undefined {
   return gitOrUndefined(root, ['rev-parse', '--verify', '--quiet', `${rev}^{commit}`])
 }
 
+/** 提交（或分支）里有没有这个文件（path 相对仓库根目录）。 */
+export function hasFile(root: string, rev: string, path: string): boolean {
+  return gitOrUndefined(root, ['cat-file', '-e', `${rev}:${path}`]) !== undefined
+}
+
 export function isAncestor(root: string, ancestor: string, descendant: string): boolean {
   try {
     git(root, ['merge-base', '--is-ancestor', ancestor, descendant])

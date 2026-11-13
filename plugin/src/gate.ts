@@ -8,7 +8,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { short } from './format.ts'
-import { commitOf, defaultBranch, hooksDir, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
+import { commitOf, defaultBranch, hasFile, hooksDir, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
 import { contractOf, coverageOf, openRepo } from './repo.ts'
 
 const HOOK_NAME = 'reference-transaction'
@@ -68,12 +68,18 @@ export function hookInWorktree(root: string, path: string): boolean {
 
 /** 合并门没在把关时给 agent 的说明；在把关返回 undefined。 */
 export function gateProblem(root: string): string | undefined {
-  if (!defaultBranch(root)) {
+  const branch = defaultBranch(root)
+  if (!branch) {
     return '找不到默认分支（没有 origin/HEAD，本地也没有 main、master），合并门没有生效。设好 origin/HEAD（git remote set-head origin --auto）后才会检查。'
   }
   const state = gateState(root)
   if (state.kind === 'installed') return undefined
   if (state.kind === 'foreign') return `${state.path} 已经有别的 reference-transaction 钩子，合并门没装上。告诉用户，把 testpace 的检查合进那个钩子。`
+  // 项目自己的钩子目录（core.hooksPath 是相对路径）跟着检出的分支走：默认分支上提交了钩子，这个分支还没有
+  const rel = relative(root, state.path)
+  if (state.kind === 'missing' && hookInWorktree(root, state.path) && hasFile(root, `refs/heads/${branch}`, rel)) {
+    return `这个工作区检出的代码里还没有合并门的钩子（${rel}）：项目的钩子目录跟着分支走，${branch} 上已经有了，把 ${branch} 合进这个分支就有。在那之前，在这个工作区里移动 ${branch} 不会检查。`
+  }
   const what = state.kind === 'outdated' ? '是旧版本' : '还没装'
   return `合并门的 git 钩子${what}，提交、合并到默认分支时不会检查。跑 testpace install 装上。`
 }

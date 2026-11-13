@@ -18,7 +18,8 @@ export interface LayermapCheck {
   files: Array<{ path: string; status: string }>
   tests: Array<{ path: string; rank: number; why: string }>
   unmapped: Array<{ path: string; kind: string }>
-  truncated: boolean
+  /** 检查自己没做完的地方（追踪到上限、搜索超时、路径读不了等），漏掉的测试可能就在那里。layermap 0.1.41 起。 */
+  incomplete: string[]
 }
 
 /** layermap check --json 给了测试文件时：这些测试跑不到的改动。 */
@@ -39,15 +40,15 @@ export type Selection =
       /** 间接导入改动、没选上的测试文件数。 */
       indirect: number
       unmapped: Array<{ path: string; kind: string }>
-      truncated: boolean
+      incomplete: string[]
       /** 选出的测试跑不到的改动；没选出测试时为 null。 */
       untested: Untested | null
     }
 
 export function parseCheck(text: string): LayermapCheck {
   const data = JSON.parse(text) as Partial<LayermapCheck>
-  if (!Array.isArray(data.files) || !Array.isArray(data.tests) || !Array.isArray(data.unmapped) || typeof data.truncated !== 'boolean') {
-    throw new Error('layermap check --json 的输出缺少 files、tests、unmapped 或 truncated（layermap 版本太旧？）')
+  if (!Array.isArray(data.files) || !Array.isArray(data.tests) || !Array.isArray(data.unmapped) || !Array.isArray(data.incomplete)) {
+    throw new Error('layermap check --json 的输出缺少 files、tests、unmapped 或 incomplete（layermap 版本太旧，要 0.1.41 以上？）')
   }
   return data as LayermapCheck
 }
@@ -72,7 +73,7 @@ export function select(check: LayermapCheck, isIgnored: (path: string) => boolea
     indirect: check.tests.filter(test => test.rank >= INDIRECT_RANK).length,
     // ignore 里的文件约定不影响测试，地图跟不到它们也无妨
     unmapped: check.unmapped.filter(file => !isIgnored(file.path)),
-    truncated: check.truncated,
+    incomplete: check.incomplete,
     untested: null,
   }
 }
@@ -93,7 +94,7 @@ export function fullReasons(selection: Selection): string[] {
     const more = selection.unmapped.length > 3 ? ` 等 ${selection.unmapped.length} 个` : ''
     reasons.push(`改了 ${files}${more}，地图跟不到它们影响哪些测试`)
   }
-  if (selection.truncated) reasons.push('改动影响的范围太大，layermap 追踪到上限就停了')
+  if (selection.incomplete.length > 0) reasons.push(`layermap 这次检查没做完，可能漏选测试：${selection.incomplete.join('；')}`)
   if (selection.tests.length === 0) reasons.push('layermap 没找到和这次改动相关的测试')
   const untested = selection.untested
   if (untested && untested.changed.length > 0) {
@@ -101,8 +102,8 @@ export function fullReasons(selection: Selection): string[] {
     const more = untested.changed.length > 3 ? ` 等 ${untested.changed.length} 处` : ''
     reasons.push(`选出的测试跑不到 ${names}${more}`)
   }
-  // 选测时已经截断的，确认时多半也截断，不重复说
-  if (untested?.truncated && !selection.truncated) reasons.push('确认选出的测试跑不跑得到改动时，layermap 追踪到上限就停了')
+  // 选测时已经没做完的，确认时多半也一样，不重复说
+  if (untested?.truncated && selection.incomplete.length === 0) reasons.push('确认选出的测试跑不跑得到改动时，layermap 追踪到上限就停了')
   return reasons
 }
 
