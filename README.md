@@ -2,7 +2,11 @@
 
 给 agent 开发用的测试节奏插件（Claude Code）：开发中只跑和改动相关的测试，提交、合并、推送到默认分支前由程序确认整组通过，并记录测试时间花在哪。
 
+把关（合并门、停止门）靠 Claude Code 的 hook，只管 Claude Code 里 agent 执行的命令。Codex 等其他 agent 也能用 testpace 的命令，但它们的提交、合并、推送不会被拦。
+
 ## 安装
+
+需要 Node 22.18 以上：插件直接用 `node` 运行 TypeScript。Node 太旧时 hook 会报错，Claude Code 不会因此拦命令，合并门也就不起作用。
 
 ```bash
 claude plugin marketplace add coffeecoproject/testpace
@@ -18,7 +22,7 @@ claude plugin install layermap@layermap
 
 装好后开新会话，在项目里说"给这个项目接入 testpace"，Claude 会按接入说明配好。
 
-只装 testpace 也能把关：合并门、停止门和其余命令都不依赖 layermap。但开发中没法按改动选测试，`focused` 每次都会建议跑整组。装上 layermap 后只跑和改动相关的测试，在一个整组要跑约 11 分钟的项目里，每次降到 3–5 分钟。
+只装 testpace 也能把关：合并门、停止门和其余命令都不依赖 layermap。但开发中没法按改动选测试，`focused` 每次都会建议跑整组。装上 layermap 后只跑和改动相关的测试。在一个整组要跑约 11 分钟的项目里，相关测试每次在 1 分钟以内到 5 分钟之间（只是这一个项目的实测）。
 
 `focused` 调的是 `layermap check --json`（layermap 0.1.40 起），PATH 里要有 `layermap` 命令，装上 layermap 插件并开新会话就有。
 
@@ -36,7 +40,7 @@ claude plugin install layermap@layermap
 | `testpace files PATH...` | 只跑给定的测试文件，比如重跑失败的文件 |
 | `testpace full` | 跑 `full`，按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑。跑的过程中代码改过，通过也不算记录 |
 | `testpace status` | 当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查、有没有 layermap |
-| `testpace report [--days N]` | 计时诊断：各命令次数和耗时、失败后重跑轮数、不稳定的测试、`fast` 是否过慢、按周的测试行数和整组耗时 |
+| `testpace report [--days N]` | 计时诊断：各命令次数和耗时、失败后重跑轮数、同一份代码整组先失败后通过的次数（可能不稳定）、`fast` 是否过慢、按周的测试行数和整组耗时 |
 
 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；3 已有整组在跑；4 跑了的都通过，但选测靠不住、建议跑整组；130 被中断。
 
