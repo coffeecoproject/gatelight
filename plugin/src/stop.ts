@@ -3,10 +3,12 @@
 // 想跑整组时发现同一个工作区已经在跑、等着用它结果的会话也算。别的会话或用户在终端里起的不管。
 // 顺带检查本地和远程（origin）默认分支在这个会话里有没有落了没测过的代码，有就提示用户：
 // 合并门只在 agent 移动本地默认分支时把关，推送别的分支到默认分支、在 GitHub 上合并 PR 不经过它。
+// 这一项和合并门一样看提交里的 testpace.json：管不管、按哪些 ignore 判断，都不看工作区里的文件。
 
+import { CONFIG_FILE, configExists } from './config.ts'
 import { duration, short, when } from './format.ts'
-import { refTip } from './git.ts'
-import { contractOf, coverageOf, defaultTips, openRepo } from './repo.ts'
+import { hasFile, refTip } from './git.ts'
+import { contractAt, coverageOf, defaultTips, openRepo } from './repo.ts'
 
 export interface StopInput {
   sessionId: string
@@ -27,8 +29,7 @@ export interface StopResult {
 
 export function stopCheck(input: StopInput): StopResult {
   const repo = openRepo(input.cwd)
-  const config = repo && contractOf(repo)
-  if (!repo || !config) return {}
+  if (!repo || !configExists(repo.root)) return {}
   const session = repo.store.session(input.sessionId, input.now, () => defaultTips(repo))
   const result: StopResult = {}
   const place = input.named ? `${repo.root} 这个工作区` : '这个工作区'
@@ -58,7 +59,12 @@ export function stopCheck(input: StopInput): StopResult {
   for (const [ref, commit] of Object.entries(defaultTips(repo))) {
     if (commit === session.tipsAtStart[ref] || warned.includes(commit)) continue
     const tip = refTip(repo.root, ref)
-    if (!tip || coverageOf(repo, config, tip.tree).kind !== 'none') continue
+    if (!tip) continue
+    // 和合并门一样：会话开始时它指向的代码或现在的代码里有 testpace.json 才管
+    const config = contractAt(repo, tip.commit)
+    const start = session.tipsAtStart[ref]
+    if (!config && !(start && hasFile(repo.root, start, CONFIG_FILE))) continue
+    if (coverageOf(repo, config ?? { ignore: [] }, tip.tree).kind !== 'none') continue
     warned.push(commit)
     const name = ref.replace(/^refs\/(heads|remotes)\//, '')
     const how = ref.startsWith('refs/heads/') ? '可能是在 Claude Code 之外提交的，或者合并门没装上' : '可能是推送了别的分支到默认分支，或者在 GitHub 上合并了 PR'

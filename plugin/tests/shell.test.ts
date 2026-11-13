@@ -41,6 +41,14 @@ describe('拆命令', () => {
     assert.equal(invocations('cd ~/p && ls', '/repo')[0]!.cwd, `${homedir()}/p`)
   })
 
+  test('cd 的目录要展开才知道时当作没动，$(...) 里的命令也算命令', () => {
+    assert.deepEqual(invocations('cd $(git rev-parse --show-toplevel) && testpace full', '/r/sub'), [
+      { cwd: '/r/sub', argv: ['git', 'rev-parse', '--show-toplevel'] },
+      { cwd: '/r/sub', argv: ['testpace', 'full'] },
+    ])
+    assert.equal(invocations('cd "$DIR" && ls', '/r')[0]!.cwd, '/r')
+  })
+
   test('按顺序连着跑了目标命令（参数完全一样）才算', () => {
     assert.ok(runsCommand('CI=1 pnpm build && pnpm test 2>&1 | tail', 'pnpm build && pnpm test', '/r'))
     assert.ok(!runsCommand('pnpm build && pnpm lint && pnpm test', 'pnpm build && pnpm test', '/r'))

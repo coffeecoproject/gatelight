@@ -17,7 +17,7 @@ const REDIRECT = /^(?:\d+|&)?(?:>>|>&|>\||>|<<<|<<-?|<&|<>|<)(.*)$/s
 const HEREDOC = /^\d*<<(?!<)(-?)(.*)$/s
 
 /**
- * 拆成词和操作符。$(...) 和反引号里的内容原样留在词里，不展开。
+ * 拆成词和操作符，不做展开：变量、反引号原样留在词里；$(...) 的括号按操作符拆开，里面的命令也当成命令。
  * here-document 的正文跳过：它是给命令的输入，不是命令。
  */
 export function tokenize(command: string): string[] {
@@ -142,7 +142,9 @@ export function invocations(command: string, cwd: string): Invocation[] {
     if (argv.length === 0) return
     const program = basename(argv[0]!)
     if (program === 'cd') {
-      here = resolve(here, expandHome(argv[1] ?? '~'))
+      // 目录要展开才知道（cd "$DIR"、cd $(git rev-parse --show-toplevel)）的，算不出来，当作没动
+      const target = argv[1] ?? '~'
+      if (!/[$`]/.test(target)) here = resolve(here, expandHome(target))
       return
     }
     if (['sh', 'bash', 'zsh', 'dash'].includes(program)) {

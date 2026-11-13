@@ -2,9 +2,9 @@
 // 不在哪个仓库里：会话从仓库外（比如上一级目录）开始时，压缩后补说节奏、停止门都靠它找到仓库。
 // 不在 Claude Code 里跑（没有插件数据目录）时不记，只认会话所在目录的仓库。
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { SESSION_KEEP_MS } from './store.ts'
+import { SESSION_KEEP_MS, writeWhole } from './store.ts'
 
 interface SessionRepos {
   updatedAt: number
@@ -44,12 +44,12 @@ export function noteSessionRepos(id: string, roots: string[], now: number): void
   if (known && roots.every(root => known.repos.includes(root))) return
   mkdirSync(dir, { recursive: true })
   if (!known) {
-    for (const name of readdirSync(dir)) {
+    for (const name of readdirSync(dir).filter(name => name.endsWith('.json'))) {
       const file = join(dir, name)
       const state = read(file)
       if (!state || now - state.updatedAt > SESSION_KEEP_MS) rmSync(file, { force: true })
     }
   }
   const repos = [...new Set([...(known?.repos ?? []), ...roots])]
-  writeFileSync(path, JSON.stringify({ updatedAt: now, repos } satisfies SessionRepos))
+  writeWhole(path, JSON.stringify({ updatedAt: now, repos } satisfies SessionRepos))
 }

@@ -152,6 +152,20 @@ export function hasFile(root: string, rev: string, path: string): boolean {
   return gitOrUndefined(root, ['cat-file', '-e', `${rev}:${path}`]) !== undefined
 }
 
+/** 提交（或分支）里这个文件的内容（path 相对仓库根目录）；没有这个文件返回 undefined。 */
+export function fileAt(root: string, rev: string, path: string): string | undefined {
+  return gitOrUndefined(root, ['cat-file', 'blob', `${rev}:${path}`])
+}
+
+/** 这个路径（相对仓库根目录）被 .gitignore 忽略，进不了版本库。 */
+export function isIgnored(root: string, path: string): boolean {
+  return gitOrUndefined(root, ['check-ignore', '-q', '--', path]) !== undefined
+}
+
+export function hasRemote(root: string): boolean {
+  return (gitOrUndefined(root, ['remote']) ?? '') !== ''
+}
+
 export function isAncestor(root: string, ancestor: string, descendant: string): boolean {
   try {
     git(root, ['merge-base', '--is-ancestor', ancestor, descendant])

@@ -77,7 +77,7 @@ describe('结果的可信度', () => {
     sh(repo, 'git add -A && git -c user.name=t -c user.email=t@t commit -qm config')
     const r = testpace(repo, 'full')
     assert.equal(r.code, 1)
-    assert.match(r.out, /^整组通过，但跑的过程中代码改过，这次不算通过记录/)
+    assert.match(r.out, /^整组通过，但跑的过程中代码改过，这次不算通过记录。变了的文件：src\/touched\.mjs\n是整组自己生成的文件，就加进 \.gitignore 或让它写到仓库外/)
     const status = testpace(repo, 'status')
     assert.match(status.out, /最近一次整组：通过，但跑的过程中代码改过/)
   })

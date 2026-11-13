@@ -2,12 +2,12 @@
 
 import { readFileSync } from 'node:fs'
 import type { CommandKey, Config } from './config.ts'
-import { loadConfig } from './config.ts'
+import { CONFIG_FILE, readConfig } from './config.ts'
 import { type Coverage, findCoverage } from './coverage.ts'
 import { failureExcerpt } from './excerpt.ts'
 import { type Execution, execute } from './execute.ts'
 import { duration, when } from './format.ts'
-import { changedPaths, commonDir, currentBranch, defaultBranch, headCommit, refTip, repoRoot } from './git.ts'
+import { changedPaths, commonDir, currentBranch, defaultBranch, fileAt, headCommit, refTip, repoRoot } from './git.ts'
 import { matcher } from './glob.ts'
 import { newRunId, processAlive, type RunningMarker, type RunRecord, Store } from './store.ts'
 
@@ -21,13 +21,28 @@ export function openRepo(cwd: string): Repo | undefined {
   return root ? { root, store: new Store(commonDir(root)) } : undefined
 }
 
-/** 按项目约定接入了 testpace 的仓库：有能用的 testpace.json。 */
-export function contractOf(repo: Repo): Config | undefined {
-  return loadConfig(repo.root).config
+/**
+ * 一个提交自己带的约定（提交里的 testpace.json）；提交里没有这个文件返回 undefined。
+ * 合并门、停止门判断落到默认分支的代码时用它，不看工作区里的文件：工作区里没提交的改动、
+ * 别的分支检出的旧文件都不该影响判断。文件读不了的按没有 ignore 算（要内容完全一致的通过记录）。
+ */
+export function contractAt(repo: Repo, rev: string): Config | undefined {
+  const text = fileAt(repo.root, rev, CONFIG_FILE)
+  if (text === undefined) return undefined
+  return readConfig(text).config ?? { ignore: [] }
+}
+
+/**
+ * 约定里 ignore 的路径。testpace.json 自己不算：通过记录只在约定相同的代码之间沿用，
+ * 改了约定（包括改 ignore）要在改完的代码上重跑整组。
+ */
+export function ignoredBy(config: Config): (path: string) => boolean {
+  const ignored = matcher(config.ignore)
+  return path => path !== CONFIG_FILE && ignored(path)
 }
 
 export function coverageOf(repo: Repo, config: Config, tree: string, runs: RunRecord[] = repo.store.readRuns()): Coverage {
-  return findCoverage(tree, runs, matcher(config.ignore), (from, to) => changedPaths(repo.root, from, to))
+  return findCoverage(tree, runs, ignoredBy(config), (from, to) => changedPaths(repo.root, from, to))
 }
 
 export function describeCoverage(coverage: Coverage): string {

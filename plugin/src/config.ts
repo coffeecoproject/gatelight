@@ -25,12 +25,22 @@ export interface LoadedConfig {
   problems: string[]
 }
 
+/** 工作区接入了 testpace：根目录有 testpace.json。写坏了也算接入，问题由命令和会话说明讲出来。 */
+export function configExists(root: string): boolean {
+  return existsSync(join(root, CONFIG_FILE))
+}
+
+/** 工作区里的约定。 */
 export function loadConfig(root: string): LoadedConfig {
-  const path = join(root, CONFIG_FILE)
-  if (!existsSync(path)) return { problems: [`仓库根目录没有 ${CONFIG_FILE}，接入说明见 ${SETUP_GUIDE}`] }
+  if (!configExists(root)) return { problems: [`仓库根目录没有 ${CONFIG_FILE}，接入说明见 ${SETUP_GUIDE}`] }
+  return readConfig(readFileSync(join(root, CONFIG_FILE), 'utf8'))
+}
+
+/** 从 testpace.json 的内容读约定（工作区里的文件，或某个提交里的那份）。 */
+export function readConfig(text: string): LoadedConfig {
   let raw: unknown
   try {
-    raw = JSON.parse(readFileSync(path, 'utf8'))
+    raw = JSON.parse(text)
   } catch (error) {
     return { problems: [`${CONFIG_FILE} 不是合法的 JSON：${(error as Error).message}`] }
   }

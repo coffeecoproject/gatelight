@@ -2,13 +2,13 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { handle, RHYTHM, rhythm } from '../src/hook.ts'
 import { Store } from '../src/store.ts'
-import { agent, commit, ENV, gatedRepo, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
+import { agent, commit, ENV, gatedRepo, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
 
 const ENTRY = fileURLToPath(new URL('../hooks/testpace.ts', import.meta.url))
 // Claude Code 给 hook 的插件数据目录：会话碰过哪些仓库记在这里。
@@ -137,6 +137,80 @@ describe('合并门（git 钩子）', () => {
     assert.equal(agent(repo, 'git commit -qam m').code, 0)
   })
 
+  test('管不管、按哪些 ignore 判断都看提交里的 testpace.json，工作区里的文件不影响', () => {
+    const repo = gatedRepo()
+    assert.equal(testpace(repo, ['full']).code, 0)
+    const before = head(repo)
+    const blocked = (script: string, why: string): string => {
+      const r = agent(repo, script)
+      assert.match(r.out, /testpace 合并门：这次要把 main 更新到/, why)
+      assert.equal(head(repo), before, why)
+      sh(repo, 'git reset -q --hard main')
+      return r.out
+    }
+    change(repo)
+    writeFileSync(join(repo, 'testpace.json'), '{')
+    blocked('git add src && git commit -qm m', '工作区里的 testpace.json 写坏了')
+    change(repo)
+    rmSync(join(repo, 'testpace.json'))
+    blocked('git add src && git commit -qm m', '工作区里删了 testpace.json，没提交这个删除')
+    change(repo)
+    setConfig(repo, { ignore: ['**'] })
+    blocked('git add src && git commit -qm m', '工作区里把 ignore 改成了全部，没提交')
+    // 改 ignore 的提交本身也要测过：testpace.json 自己不算忽略路径，通过记录不沿用到约定不一样的代码
+    change(repo)
+    setConfig(repo, { ignore: ['**'] })
+    blocked('git commit -qam m', '把 ignore 改成全部，和没测过的改动一起提交')
+    change(repo)
+    assert.match(blocked('git rm -q testpace.json && git commit -qam m', '删掉 testpace.json 的提交'), /要落地的代码里没有 testpace\.json（main 上有），拿不到整组通过记录。/)
+    // 还没有 testpace.json 的老分支：在它的工作区里移动 main 也一样
+    sh(repo, 'git checkout -qb old && git rm -q testpace.json')
+    change(repo)
+    commit(repo, 'old')
+    sh(repo, 'git checkout -q main')
+    const other = join(tempDir('testpace-wt-'), 'wt')
+    sh(repo, `git worktree add -q '${other}' old`)
+    assert.match(agent(other, 'git update-ref refs/heads/main old').out, /要落地的代码里没有 testpace\.json/)
+    assert.equal(head(repo), before)
+  })
+
+  test('只改了提交里的 ignore 路径的提交放行；分支上给 ignore 加了路径并测过，之后只改那些路径也放行', () => {
+    const repo = gatedRepo()
+    assert.equal(testpace(repo, ['full']).code, 0)
+    mkdirSync(join(repo, 'docs'), { recursive: true })
+    writeFileSync(join(repo, 'docs', 'note.md'), '说明\n')
+    assert.equal(agent(repo, 'git add -A && git commit -qm docs').code, 0, '示例约定里 ignore 是 docs/**')
+    // main 上的约定还没有 notes/**：按要落地的那份约定判断
+    sh(repo, 'git checkout -qb feature')
+    setConfig(repo, { ignore: ['docs/**', 'notes/**'] })
+    mkdirSync(join(repo, 'notes'))
+    writeFileSync(join(repo, 'notes', 'a.md'), '一\n')
+    assert.equal(testpace(repo, ['full']).code, 0)
+    commit(repo, '加 notes，记进 ignore')
+    writeFileSync(join(repo, 'notes', 'a.md'), '一\n二\n')
+    commit(repo, '只改 notes')
+    sh(repo, 'git checkout -q main')
+    const r = agent(repo, 'git merge -q --ff-only feature')
+    assert.equal(r.code, 0, r.out)
+    assert.equal(head(repo), head(repo, 'feature'))
+  })
+
+  test('同步远程：远程跟踪分支和本地默认分支在同一次更新里一起动时放行；不经过远程跟踪分支的照样拦，说明同步的写法', () => {
+    const repo = gatedRepo()
+    const up = join(tempDir('testpace-up-'), 'up')
+    sh(repo, `git clone -q . '${up}' && git remote add origin '${up}' && git fetch -q origin`)
+    change(up)
+    commit(up, '远程的新提交')
+    const tip = head(up)
+    sh(repo, 'git checkout -q --detach')
+    const direct = agent(repo, `git fetch -q '${up}' main:main`)
+    assert.match(direct.out, /只是同步远程的 main 的话：先 git fetch <远程>，再把 main 快进到 <远程>\/main。/)
+    assert.notEqual(head(repo), tip)
+    const synced = agent(repo, 'git fetch -q --atomic origin main:main')
+    assert.equal(synced.code, 0, synced.out)
+    assert.equal(head(repo), tip)
+  })
+
   test('钩子找不到 testpace 命令（插件没启用）时说一句，不挡', () => {
     const repo = gatedRepo()
     change(repo)
@@ -164,8 +238,32 @@ describe('合并门（git 钩子）', () => {
     writeFileSync(hook, '#!/bin/sh\nexit 0\n')
     const foreign = testpace(repo, ['install'])
     assert.equal(foreign.code, 2)
-    assert.match(foreign.out, /已经有别的 reference-transaction 钩子，没有覆盖/)
+    assert.match(foreign.out, /已经有别的 reference-transaction 钩子，没有覆盖。要用合并门，在那个钩子里加上这几行[\s\S]*testpace gate \|\| exit 1/)
     assert.equal(sh(repo, 'cat .githooks/reference-transaction'), '#!/bin/sh\nexit 0\n')
+    // 项目自己的钩子里调用了 testpace gate：算装上了，不动它，也真的在把关
+    const merged = '#!/bin/sh\n# 项目自己的钩子\nif [ "$1" = prepared ] && [ -n "$CLAUDECODE" ]; then\n  testpace gate || exit 1\nfi\n'
+    writeFileSync(hook, merged)
+    const kept = testpace(repo, ['install'])
+    assert.equal(kept.code, 0)
+    assert.match(kept.out, /是项目自己的钩子，里面已经调用了 testpace gate，没有改动它。/)
+    assert.equal(sh(repo, 'cat .githooks/reference-transaction'), merged)
+    assert.match(testpace(repo, ['status']).out, /合并门：已装上/)
+    commit(repo, '提交钩子')
+    change(repo)
+    assert.match(agent(repo, 'git commit -qam m').out, /testpace 合并门：这次要把 main 更新到/)
+
+    // 钩子目录被 .gitignore 忽略（husky 的 .husky/_ 这类）：不说要提交，说每个工作区各装一次
+    const husky = sampleRepo()
+    mkdirSync(join(husky, '.husky', '_'), { recursive: true })
+    writeFileSync(join(husky, '.husky', '_', '.gitignore'), '*\n')
+    sh(husky, 'git config core.hooksPath .husky/_')
+    assert.match(
+      testpace(husky, ['status']).out,
+      /合并门：合并门的 git 钩子还没装，提交、合并到默认分支时不会检查。这个项目的钩子目录（\.husky\/_）不进版本库，每个工作区要各装一次。跑 testpace install 装上。/,
+    )
+    const ignored = testpace(husky, ['install'])
+    assert.match(ignored.out, /合并门已装上：.*\/\.husky\/_\/reference-transaction\n这个钩子目录不进版本库（被 \.gitignore 忽略）：每个工作区、每次重新克隆后都要再跑一次 testpace install。/)
+    assert.match(testpace(husky, ['status']).out, /合并门：已装上/)
 
     const trunk = tempDir('testpace-trunk-')
     sh(trunk, `cp -R ${join(repo, 'src')} ${join(repo, 'testpace.json')} . && git init -q -b trunk && git add -A && git -c user.name=t -c user.email=t@t commit -qm i`)
@@ -225,6 +323,21 @@ describe('软提示', () => {
     assert.match(String(both?.hookSpecificOutput?.additionalContext), /用 testpace 管测试节奏[\s\S]*\n\n这是 testpace.json 里的整组命令/)
   })
 
+  test('testpace.json 写坏了照样说明节奏并讲出问题，停止门和合并门的状态照常', () => {
+    const repo = gatedRepo()
+    assert.equal(fullIn(repo, 'k'), 0)
+    writeFileSync(join(repo, 'testpace.json'), '{')
+    const start = handle({ hook_event_name: 'SessionStart', session_id: 'k', cwd: repo }, Date.now()) as Output
+    assert.match(
+      String(start?.hookSpecificOutput?.additionalContext),
+      /用 testpace 管测试节奏[\s\S]*\ntestpace\.json 有问题：testpace\.json 不是合法的 JSON：.+。$/,
+    )
+    assert.match(stop(repo, 'k')?.reason ?? '', /^这个会话跑的整组已经结束（通过），还没看结果/)
+    const status = testpace(repo, ['status'])
+    assert.equal(status.code, 2)
+    assert.match(status.out, /配置（testpace\.json）：testpace\.json 不是合法的 JSON[\s\S]*合并门：已装上/)
+  })
+
   test('直接跑配置里的整组命令时提示改用 testpace full', () => {
     const repo = sampleRepo()
     assert.match(String(pre(repo, 'node scripts/full.mjs 2>&1 | tail')?.hookSpecificOutput?.additionalContext), /改用 testpace full/)
@@ -274,15 +387,23 @@ describe('停止门', () => {
     }
   })
 
-  test('前台跑完 testpace full 算看过；放到后台的不算', () => {
+  test('前台跑完 testpace full 算看过，失败的（Claude Code 发 PostToolUseFailure）也算；放到后台的不算', () => {
     const repo = sampleRepo()
     handle({ hook_event_name: 'SessionStart', session_id: 'b', cwd: repo }, Date.now())
     assert.equal(fullIn(repo, 'b'), 0)
-    const post = (response: unknown): unknown =>
-      handle({ hook_event_name: 'PostToolUse', session_id: 'b', cwd: repo, tool_name: 'Bash', tool_input: { command: 'testpace full' }, tool_response: response }, Date.now())
-    post({ backgroundTaskId: 'task1' })
+    const post = (event: string, input: Record<string, unknown>, response?: unknown): unknown =>
+      handle({ hook_event_name: event, session_id: 'b', cwd: repo, tool_name: 'Bash', tool_input: { command: 'testpace full', ...input }, tool_response: response }, Date.now())
+    post('PostToolUse', {}, { backgroundTaskId: 'task1' })
     assert.ok(stop(repo, 'b')?.reason)
-    post({ stdout: '整组通过' })
+    post('PostToolUse', { run_in_background: true }, {})
+    assert.ok(stop(repo, 'b')?.reason)
+    post('PostToolUse', {}, { stdout: '整组通过' })
+    assert.equal(stop(repo, 'b'), undefined)
+
+    setConfig(repo, { full: 'false' })
+    assert.equal(fullIn(repo, 'b'), 1)
+    assert.match(stop(repo, 'b')?.reason ?? '', /^这个会话跑的整组已经结束（失败），还没看结果/)
+    post('PostToolUseFailure', {})
     assert.equal(stop(repo, 'b'), undefined)
   })
 
@@ -354,6 +475,30 @@ describe('停止门', () => {
     sh(repo, 'git update-ref refs/remotes/origin/main HEAD')
     assert.equal(stop(repo, 'e'), undefined, '测过的不提示')
   })
+
+  test('默认分支的新提交和合并门一样按提交里的 testpace.json 判断，工作区里的文件不影响', () => {
+    const repo = sampleRepo()
+    assert.equal(testpace(repo, ['full']).code, 0)
+    handle({ hook_event_name: 'SessionStart', session_id: 'f', cwd: repo }, Date.now())
+    mkdirSync(join(repo, 'docs'), { recursive: true })
+    writeFileSync(join(repo, 'docs', 'note.md'), '说明\n')
+    commit(repo, '只改了提交里 ignore 的路径')
+    writeFileSync(join(repo, 'testpace.json'), '{')
+    assert.equal(stop(repo, 'f'), undefined, '工作区里的 testpace.json 写坏了，照样按提交里的 ignore 算')
+    // 提交里去掉、工作区里留着（记进 .git/info/exclude，git add -A 不再带上它）
+    sh(repo, 'git checkout -q testpace.json && git rm -q --cached testpace.json && echo testpace.json >> .git/info/exclude')
+    commit(repo, '提交里去掉了 testpace.json')
+    assert.match(stop(repo, 'f')?.systemMessage ?? '', /^testpace：main 的最新提交 [0-9a-f]{10} 没有整组通过记录/, '会话开始时提交里还有')
+
+    // 提交里从来没有 testpace.json（工作区里刚写好还没提交）：合并门不管，这里也不提示
+    const fresh = sampleRepo()
+    sh(fresh, 'git rm -q --cached testpace.json && echo testpace.json >> .git/info/exclude')
+    commit(fresh, '还没接入')
+    handle({ hook_event_name: 'SessionStart', session_id: 'g', cwd: fresh }, Date.now())
+    change(fresh)
+    sh(fresh, `git add src && git -c user.name=t -c user.email=t@t commit -qm '只提交代码'`)
+    assert.equal(stop(fresh, 'g'), undefined)
+  })
 })
 
 test('hook 入口：从标准输入读事件，把判断写到标准输出', () => {
@@ -368,4 +513,15 @@ test('hook 入口：从标准输入读事件，把判断写到标准输出', () 
   const broken = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', ENTRY], { input: '{', env: ENV, encoding: 'utf8' })
   assert.equal(broken.status, 0)
   assert.equal(broken.stdout, '')
+})
+
+test('hooks.json 把用到的事件都交给入口：Bash 的三个工具事件只看 Bash', () => {
+  const { hooks } = JSON.parse(readFileSync(fileURLToPath(new URL('../hooks/hooks.json', import.meta.url)), 'utf8')) as {
+    hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>
+  }
+  const registered = Object.fromEntries(Object.entries(hooks).map(([event, entries]) => [event, entries.map(entry => entry.matcher ?? '')]))
+  assert.deepEqual(registered, { SessionStart: [''], PreToolUse: ['Bash'], PostToolUse: ['Bash'], PostToolUseFailure: ['Bash'], Stop: [''] })
+  for (const entries of Object.values(hooks)) {
+    for (const entry of entries) assert.match(entry.hooks[0]!.command, /"\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/testpace\.ts"$/)
+  }
 })

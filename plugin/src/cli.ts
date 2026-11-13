@@ -1,16 +1,15 @@
-// testpace 命令行：focused、files、full、status、report。
+// testpace 命令行：focused、files、full、status、report、install，以及 git 钩子调用的 gate。
 
 import { readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
-import { COMMAND_KEYS, commandExists, CONFIG_FILE, loadConfig } from './config.ts'
+import { COMMAND_KEYS, commandExists, CONFIG_FILE, configExists, loadConfig } from './config.ts'
 import { execute } from './execute.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT } from './focused.ts'
 import { duration, short, when } from './format.ts'
-import { checkRefUpdates, gateProblem, hookInWorktree, installGate } from './gate.ts'
-import { commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
-import { matcher } from './glob.ts'
+import { checkRefUpdates, gateProblem, hookPlace, installGate, MERGE_HINT } from './gate.ts'
+import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { renderReport } from './report.ts'
-import { busyText, coverageOf, defaultTips, describeCoverage, failureText, openRepo, type Repo, runRecorded, started } from './repo.ts'
+import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runRecorded, started } from './repo.ts'
 import { LOCATED, newRunId } from './store.ts'
 
 const USAGE = `用法：
@@ -112,7 +111,15 @@ async function full(): Promise<number> {
     return EXIT.ok
   }
   if (result === 'pass') {
-    console.log(`整组通过，但跑的过程中代码改过，这次不算通过记录。代码不再改动时重跑 testpace full。\n用时 ${took} · 日志：${log}`)
+    const changed = changedPaths(ctx.root, tree, treeAtEnd)
+    const more = changed.length > 5 ? ` 等 ${changed.length} 个` : ''
+    console.log(
+      [
+        `整组通过，但跑的过程中代码改过，这次不算通过记录。变了的文件：${changed.slice(0, 5).join('、')}${more}`,
+        '是整组自己生成的文件，就加进 .gitignore 或让它写到仓库外；是别处改的，代码不再改动时重跑 testpace full。',
+        `用时 ${took} · 日志：${log}`,
+      ].join('\n'),
+    )
     return EXIT.fail
   }
   console.log(failureText('整组失败', log, execution))
@@ -152,8 +159,7 @@ async function focused(args: string[]): Promise<number> {
   // 不在默认分支上（包括分离的 HEAD）：要落地还得合并，合并前的整组兜底，选测靠不住也不用现在跑整组
   const onBranch = branch !== undefined && currentBranch(ctx.root) !== branch
   const base = at !== -1 ? args[at + 1]! : (branch && commitOf(ctx.root, 'HEAD') && mergeBase(ctx.root, 'HEAD', `refs/heads/${branch}`)) || 'HEAD'
-  const ignored = matcher(config.ignore)
-  const selection = askLayermap(ctx.root, base, ignored)
+  const selection = askLayermap(ctx.root, base, ignoredBy(config))
   const reasons = fullReasons(selection)
 
   let code: number = EXIT.ok
@@ -260,7 +266,8 @@ function status(): number {
     }
     if (config.ignore.length) lines.push(`  ignore: ${config.ignore.join(', ')}`)
   }
-  if (config) lines.push(`合并门：${gateProblem(ctx.root) ?? '已装上，agent 移动默认分支时检查'}`)
+  // 合并门看提交里的 testpace.json，工作区里这份写坏了它也照常把关
+  if (configExists(ctx.root)) lines.push(`合并门：${gateProblem(ctx.root) ?? '已装上，agent 移动默认分支时检查'}`)
   // 版本太旧不在这里查：focused 读输出时会说
   lines.push(`layermap：${commandExists(ctx.root, 'layermap') ? '找到' : `找不到，focused 没法按改动选测试，每次都会建议跑整组。${LAYERMAP_HINT}`}`)
 
@@ -303,11 +310,21 @@ function install(): number {
   if (!ctx) return EXIT.usage
   const state = installGate(ctx.root)
   if (state.kind === 'foreign') {
-    console.error(`${state.path} 已经有别的 reference-transaction 钩子，没有覆盖。要用合并门，把 testpace 的检查合进那个钩子（内容见 testpace 插件的 src/gate.ts 里的 HOOK_SCRIPT）。`)
+    console.error(`${state.path} 已经有别的 reference-transaction 钩子，没有覆盖。要用合并门，${MERGE_HINT}`)
     return EXIT.usage
   }
-  const commit = hookInWorktree(ctx.root, state.path) ? '\n这个钩子在项目目录里（core.hooksPath），和 testpace.json 一样要提交进仓库。' : ''
-  console.log(`合并门已装上：${state.path}${commit}`)
+  if (state.kind === 'merged') {
+    console.log(`${state.path} 是项目自己的钩子，里面已经调用了 testpace gate，没有改动它。`)
+  } else {
+    const place = hookPlace(ctx.root, state.path)
+    const note =
+      place === 'project'
+        ? '\n这个钩子在项目目录里（core.hooksPath），和 testpace.json 一样要提交进仓库。'
+        : place === 'ignored'
+          ? '\n这个钩子目录不进版本库（被 .gitignore 忽略）：每个工作区、每次重新克隆后都要再跑一次 testpace install。'
+          : ''
+    console.log(`合并门已装上：${state.path}${note}`)
+  }
   const problem = gateProblem(ctx.root)
   if (problem) console.log(problem)
   return EXIT.ok

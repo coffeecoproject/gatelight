@@ -172,9 +172,7 @@ export class Store {
     const path = this.markerPath(worktree)
     const marker = readMarker(path)
     if (marker?.id !== id) return
-    const next = tempPath(path)
-    writeFileSync(next, JSON.stringify({ ...marker, ...change }))
-    renameSync(next, path)
+    writeWhole(path, JSON.stringify({ ...marker, ...change }))
   }
 
   /** 放开这个工作区，返回等着用这次结果的会话。 */
@@ -236,7 +234,8 @@ export class Store {
       }
     }
     mkdirSync(dir, { recursive: true })
-    for (const name of readdirSync(dir)) {
+    // 只看 .json：别的进程正在写的临时文件不碰
+    for (const name of readdirSync(dir).filter(name => name.endsWith('.json'))) {
       const file = join(dir, name)
       try {
         if (now - (JSON.parse(readFileSync(file, 'utf8')) as SessionState).startedAt > SESSION_KEEP_MS) rmSync(file, { force: true })
@@ -245,14 +244,14 @@ export class Store {
       }
     }
     const state: SessionState = { startedAt: now, tipsAtStart: tips(), warned: [] }
-    writeFileSync(path, JSON.stringify(state))
+    writeWhole(path, JSON.stringify(state))
     return state
   }
 
   saveSession(id: string, state: SessionState): void {
     const dir = join(this.dir, 'sessions')
     mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, `${id.replace(/[^\w.-]/g, '_')}.json`), JSON.stringify(state))
+    writeWhole(join(dir, `${id.replace(/[^\w.-]/g, '_')}.json`), JSON.stringify(state))
   }
 
   /** 各工作区正在跑的命令。进程都不在了的登记不算，留给下一次 claim 清掉。 */
@@ -268,6 +267,16 @@ export class Store {
 /** 和 path 同目录、不会撞名的临时文件名（同目录才能原子地 rename、link）。 */
 function tempPath(path: string): string {
   return `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+}
+
+/**
+ * 整份换掉一个文件：先写到同目录的临时文件再改名。同一会话的几个 hook 会同时读写这些状态文件，
+ * 直接覆盖写时别人可能读到写了一半的，当成坏了重新开始。
+ */
+export function writeWhole(path: string, text: string): void {
+  const next = tempPath(path)
+  writeFileSync(next, text)
+  renameSync(next, path)
 }
 
 function readMarker(path: string): RunningMarker | undefined {

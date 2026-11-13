@@ -1,11 +1,12 @@
 // Claude Code hook 的判断：SessionStart 注入节奏说明，PreToolUse 补说节奏和软提示，
-// PostToolUse 记下 agent 在前台看到了整组结果，Stop 跑停止门。
+// PostToolUse、PostToolUseFailure 记下 agent 在前台看到了整组结果（通过的走前者，失败的走后者），Stop 跑停止门。
 // 合并门不在这里：它是 git 的钩子（gate.ts），git 移动默认分支时检查。
 // 入口在 plugin/hooks/testpace.ts。
 
 import { basename } from 'node:path'
+import { CONFIG_FILE, configExists, loadConfig } from './config.ts'
 import { gateProblem } from './gate.ts'
-import { contractOf, defaultTips, openRepo, type Repo } from './repo.ts'
+import { defaultTips, openRepo, type Repo } from './repo.ts'
 import { noteSessionRepos, sessionRepos } from './sessions.ts'
 import { invocations, runsCommand } from './shell.ts'
 import { stopCheck } from './stop.ts'
@@ -35,27 +36,29 @@ export function rhythm(repo = '这个仓库'): string {
 
 export const RHYTHM = rhythm()
 
-/** 给 agent 的节奏说明，合并门没在把关时加上原因。 */
+/** 给 agent 的节奏说明；testpace.json 有问题、合并门没在把关时加上原因。 */
 function told(repo: Repo, label?: string): string {
-  const problem = gateProblem(repo.root)
-  return [label ? rhythm(label) : RHYTHM, ...(problem ? [problem] : [])].join('\n')
+  const { problems } = loadConfig(repo.root)
+  const broken = problems.length ? `${CONFIG_FILE} 有问题：${problems.join('；')}。` : undefined
+  const gate = gateProblem(repo.root)
+  return [label ? rhythm(label) : RHYTHM, ...(broken ? [broken] : []), ...(gate ? [gate] : [])].join('\n')
 }
 
 /** 直接跑配置里的整组命令不会留下记录，合并门不认。 */
 function fullCommandHint(command: string, cwd: string): string | undefined {
   const repo = openRepo(cwd)
-  const config = repo && contractOf(repo)
+  const full = repo && loadConfig(repo.root).config?.full
   const calls = invocations(command, cwd)
-  if (!config?.full || calls.some(call => basename(call.argv[0] ?? '') === 'testpace') || !runsCommand(command, config.full, cwd)) return undefined
+  if (!full || calls.some(call => basename(call.argv[0] ?? '') === 'testpace') || !runsCommand(command, full, cwd)) return undefined
   return '这是 testpace.json 里的整组命令。直接跑不会留下通过记录，合并门不认；改用 testpace full（放后台跑），结果会按当前代码记录。'
 }
 
-/** 这些目录所在的、接入了 testpace 的仓库，按根目录去重。 */
+/** 这些目录所在的、接入了 testpace 的仓库（工作区根目录有 testpace.json），按根目录去重。 */
 function contractRepos(dirs: Iterable<string>): Repo[] {
   const roots = new Map<string, Repo>()
   for (const dir of new Set(dirs)) {
     const repo = openRepo(dir)
-    if (repo && !roots.has(repo.root) && contractOf(repo)) roots.set(repo.root, repo)
+    if (repo && !roots.has(repo.root) && configExists(repo.root)) roots.set(repo.root, repo)
   }
   return [...roots.values()]
 }
@@ -106,9 +109,12 @@ export function handle(input: HookInput, now: number): unknown {
     return undefined
   }
 
-  if (event === 'PostToolUse' && input.tool_name === 'Bash' && command) {
+  // 命令退出码非零时 Claude Code 发的是 PostToolUseFailure：整组失败的输出 agent 同样看到了
+  if ((event === 'PostToolUse' || event === 'PostToolUseFailure') && input.tool_name === 'Bash' && command) {
     // 在前台跑完 testpace full，agent 已经看到了结果；放到后台的要等它看 testpace status
-    const background = typeof (input.tool_response as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId === 'string'
+    const background =
+      input.tool_input?.run_in_background === true ||
+      typeof (input.tool_response as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId === 'string'
     if (background) return undefined
     for (const call of invocations(command, cwd)) {
       if (basename(call.argv[0] ?? '') !== 'testpace' || call.argv[1] !== 'full') continue
