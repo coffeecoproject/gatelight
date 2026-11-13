@@ -19,7 +19,7 @@ const USAGE = `用法：
   testpace full                  跑整组（testpace.json 的 full），按当前工作区完整内容记录结果。适合放到后台跑
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace report [--days N]     计时诊断，默认最近 28 天
-  testpace verify [测试文件]     核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号
+  testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
   testpace install               在全局 git 配置里配上合并门（这台机器配一次）：agent 移动默认分支时，要求落地的代码有整组通过记录`
 
 /**
@@ -309,10 +309,6 @@ function report(args: string[]): number {
 
 /** 由程序核对这个项目的接入守不守约定（见 verify.ts）。整组太长，不在这里跑。 */
 async function verify(args: string[]): Promise<number> {
-  if (args.length > 1) {
-    console.error(USAGE)
-    return EXIT.usage
-  }
   const ctx = context()
   if (!ctx) return EXIT.usage
   const { config, problems } = loadConfig(ctx.root)
@@ -320,15 +316,15 @@ async function verify(args: string[]): Promise<number> {
     console.error(`${CONFIG_FILE} 读不出来，先修好：${problems.join('；')}`)
     return EXIT.usage
   }
-  let test: { path: string; text: string } | undefined
-  if (args[0] !== undefined) {
-    const absolute = resolve(args[0])
+  const tests: { path: string; text: string }[] = []
+  for (const arg of args) {
+    const absolute = resolve(arg)
     const path = relative(ctx.root, absolute)
     if (!existsSync(absolute) || !statSync(absolute).isFile() || path.startsWith('..')) {
-      console.error(`找不到测试文件 ${args[0]}（要是这个仓库里的文件）`)
+      console.error(`找不到测试文件 ${arg}（要是这个仓库里的文件）`)
       return EXIT.usage
     }
-    test = { path, text: readFileSync(absolute, 'utf8') }
+    if (!tests.some(test => test.path === path)) tests.push({ path, text: readFileSync(absolute, 'utf8') })
   }
 
   const say = (line: string): void => console.log(line)
@@ -351,7 +347,7 @@ async function verify(args: string[]): Promise<number> {
     return EXIT.fail
   }
   const tree = workTreeId(ctx.root)
-  const result = await verifyFiles(ctx, config.files, tree, test, say)
+  const result = await verifyFiles(ctx, config.files, tree, tests, say)
   if (result.kind === 'busy') {
     console.log(busyText(result.marker, tree))
     return EXIT.busy

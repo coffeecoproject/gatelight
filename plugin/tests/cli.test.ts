@@ -322,7 +322,7 @@ describe('testpace verify', () => {
     const r = testpace(repo, 'verify', 'tests/price.test.mjs')
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /^通过　testpace\.json 写得对\n通过　找得到 fast 的命令（node scripts\/check\.mjs）\n通过　找得到 files 的命令[\s\S]*\n通过　合并门在把关\n/)
-    assert.match(r.out, /\n通过　files 给了不存在的文件要失败（testpace-verify-no-such-file\.test\.js）\n通过　files 跑 tests\/price\.test\.mjs 要通过\n通过　真文件里混进一个不存在的路径要失败\n通过　文件:行号 要能用（tests\/price\.test\.mjs:5）\n通过　文件:行号:列号 要能用（tests\/price\.test\.mjs:5:1）\n没查　整组（node scripts\/full\.mjs）/)
+    assert.match(r.out, /\n通过　files 给了不存在的文件要失败（testpace-verify-no-such-file\.test\.js）\n通过　files 跑 tests\/price\.test\.mjs 要通过\n通过　tests\/price\.test\.mjs 里混进一个不存在的路径要失败\n通过　文件:行号 要能用（tests\/price\.test\.mjs:5）\n通过　文件:行号:列号 要能用（tests\/price\.test\.mjs:5:1）\n没查　整组（node scripts\/full\.mjs）/)
     assert.match(r.out, /\n接入核对：查了的都通过，1 项没查。\n$/)
     assert.deepEqual(runs(repo), [], '核对跑的 files 不算开发中的测试')
     // 路径按当前目录算
@@ -332,7 +332,7 @@ describe('testpace verify', () => {
   test('没给测试文件：只查不存在的文件，说清楚其余没查', () => {
     const r = testpace(gatedRepo(), 'verify')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /通过　files 给了不存在的文件要失败[\s\S]*没查　其余几项要一个测试文件：testpace verify <测试文件>[\s\S]*接入核对：查了的都通过，2 项没查。/)
+    assert.match(r.out, /通过　files 给了不存在的文件要失败[\s\S]*没查　其余几项要测试文件：testpace verify <测试文件>\.\.\.，每种测试[\s\S]*接入核对：查了的都通过，2 项没查。/)
   })
 
   test('files 不守约定时逐项说出来', () => {
@@ -343,13 +343,13 @@ describe('testpace verify', () => {
     const lax = testpace(repo, 'verify', 'tests/price.test.mjs')
     assert.equal(lax.code, 1)
     assert.match(lax.out, /没通过　files 给了不存在的文件要失败（testpace-verify-no-such-file\.test\.js）：实际通过了，日志 .+\.log/)
-    assert.match(lax.out, /没通过　真文件里混进一个不存在的路径要失败：实际通过了/)
+    assert.match(lax.out, /没通过　tests\/price\.test\.mjs 里混进一个不存在的路径要失败：实际通过了/)
     // 文件都要在，但不认 文件:行号
     writeFileSync(join(repo, 'scripts', 'strict.mjs'), "import { spawnSync } from 'node:child_process'\nimport { existsSync } from 'node:fs'\nconst files = process.argv.slice(2)\nif (files.some(f => !existsSync(f))) process.exit(2)\nprocess.exit(spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' }).status)\n")
     setConfigWith(repo, { files: 'node scripts/strict.mjs' })
     const strict = testpace(repo, 'verify', 'tests/price.test.mjs')
     assert.equal(strict.code, 1)
-    assert.match(strict.out, /通过　真文件里混进一个不存在的路径要失败\n没通过　文件:行号 要能用（tests\/price\.test\.mjs:5）：实际失败了（退出码 2）/)
+    assert.match(strict.out, /通过　tests\/price\.test\.mjs 里混进一个不存在的路径要失败\n没通过　文件:行号 要能用（tests\/price\.test\.mjs:5）：实际失败了（退出码 2）/)
     assert.match(strict.out, /接入核对：2 项没通过，1 项没查。/)
   })
 
@@ -358,13 +358,37 @@ describe('testpace verify', () => {
     writeFileSync(join(repo, 'tests', 'broken.test.mjs'), "import { test } from 'node:test'\ntest('坏的', () => { throw new Error('x') })\n")
     const r = testpace(repo, 'verify', 'tests/broken.test.mjs')
     assert.equal(r.code, 1)
-    assert.match(r.out, /没通过　files 跑 tests\/broken\.test\.mjs 要通过：实际失败了[\s\S]*没查　其余几项要这个文件先能通过/)
+    assert.match(r.out, /没通过　files 跑 tests\/broken\.test\.mjs 要通过：实际失败了[\s\S]*没查　tests\/broken\.test\.mjs 的其余几项要这个文件先能通过/)
     const missing = testpace(repo, 'verify', 'tests/nope.test.mjs')
     assert.equal(missing.code, 2)
     assert.match(missing.out, /找不到测试文件 tests\/nope\.test\.mjs/)
     const outside = join(tempDir('testpace-outside-'), 'x.test.mjs')
     writeFileSync(outside, '')
     assert.equal(testpace(repo, 'verify', outside).code, 2, '仓库外的文件不算')
+  })
+
+  test('几个测试文件：逐个核对，再核对一起交给 files；一个不通过不影响别的', () => {
+    const repo = gatedRepo()
+    const r = testpace(repo, 'verify', 'tests/price.test.mjs', 'tests/format.test.mjs', 'tests/price.test.mjs')
+    assert.equal(r.code, 0, r.out)
+    assert.equal(r.out.split('files 跑 tests/price.test.mjs 要通过').length, 2, '重复给的文件只核对一次')
+    assert.match(r.out, /通过　文件:行号:列号 要能用（tests\/price\.test\.mjs:5:1）\n通过　files 跑 tests\/format\.test\.mjs 要通过\n通过　tests\/format\.test\.mjs 里混进一个不存在的路径要失败\n/)
+    assert.match(r.out, /\n通过　几个文件一起交给 files 要通过（tests\/price\.test\.mjs tests\/format\.test\.mjs）\n没查　整组/)
+    assert.match(r.out, /接入核对：查了的都通过，1 项没查。/)
+
+    writeFileSync(join(repo, 'tests', 'broken.test.mjs'), "import { test } from 'node:test'\ntest('坏的', () => { throw new Error('x') })\n")
+    const broken = testpace(repo, 'verify', 'tests/broken.test.mjs', 'tests/price.test.mjs')
+    assert.equal(broken.code, 1)
+    assert.match(broken.out, /没查　tests\/broken\.test\.mjs 的其余几项要这个文件先能通过[^\n]*\n通过　files 跑 tests\/price\.test\.mjs 要通过\n/)
+    assert.doesNotMatch(broken.out, /几个文件一起/, '能通过的只剩一个，不用一起交')
+
+    // 一次只接得住一个文件：分开核对都对，一起交给它就失败
+    writeFileSync(join(repo, 'scripts', 'single.mjs'), "import { spawnSync } from 'node:child_process'\nimport { existsSync } from 'node:fs'\nconst args = process.argv.slice(2)\nconst file = (args[0] ?? '').replace(/(:\\d+){1,2}$/, '')\nif (args.length !== 1 || !existsSync(file)) process.exit(2)\nprocess.exit(spawnSync(process.execPath, ['--test', file], { stdio: 'inherit' }).status)\n")
+    setConfigWith(repo, { files: 'node scripts/single.mjs' })
+    const single = testpace(repo, 'verify', 'tests/price.test.mjs', 'tests/format.test.mjs')
+    assert.equal(single.code, 1, single.out)
+    assert.match(single.out, /没通过　几个文件一起交给 files 要通过（tests\/price\.test\.mjs tests\/format\.test\.mjs）：实际失败了（退出码 2）/)
+    assert.match(single.out, /接入核对：1 项没通过，1 项没查。/)
   })
 
   test('合并门没在把关、testpace.json 有问题都算没通过', () => {

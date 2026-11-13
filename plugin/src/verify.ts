@@ -36,14 +36,15 @@ class Stopped {
 }
 
 /**
- * 核对 files 命令：不存在的文件要失败；给了测试文件（相对仓库根目录）时，再核对它能通过、混进不存在的路径要失败、
- * 文件:行号 和 文件:行号:列号 能用。text 是那个文件的内容。每项结果交给 say。
+ * 核对 files 命令：不存在的文件要失败；给了测试文件（相对仓库根目录，text 是文件内容）时，逐个核对它能通过、
+ * 混进不存在的路径要失败、文件:行号 和 文件:行号:列号 能用；给了几个时，再核对它们一起交给 files 能通过
+ * （focused 会把不同种类的测试一起交过去）。每项结果交给 say。
  */
 export async function verifyFiles(
   repo: Repo,
   command: string,
   tree: string,
-  test: { path: string; text: string } | undefined,
+  tests: { path: string; text: string }[],
   say: (line: string) => void,
 ): Promise<VerifyResult> {
   let failed = 0
@@ -65,22 +66,27 @@ export async function verifyFiles(
 
   try {
     await probe(`files 给了不存在的文件要失败（${MISSING}）`, [MISSING], false)
-    if (!test) {
-      skip('其余几项要一个测试文件：testpace verify <测试文件>，挑一个跑得快、不依赖外部服务的')
+    if (tests.length === 0) {
+      skip('其余几项要测试文件：testpace verify <测试文件>...，每种测试（交给不同工具或配置跑的）各挑一个跑得快、不依赖外部服务的')
       return { kind: 'done', failed, skipped }
     }
-    if (!(await probe(`files 跑 ${test.path} 要通过`, [test.path], true))) {
-      skip('其余几项要这个文件先能通过：先看日志，或换一个能通过的测试文件')
-      return { kind: 'done', failed, skipped }
+    const passing: string[] = []
+    for (const test of tests) {
+      if (!(await probe(`files 跑 ${test.path} 要通过`, [test.path], true))) {
+        skip(`${test.path} 的其余几项要这个文件先能通过：先看日志，或换一个能通过的测试文件`)
+        continue
+      }
+      passing.push(test.path)
+      await probe(`${test.path} 里混进一个不存在的路径要失败`, [test.path, MISSING], false)
+      const at = firstTest(test.text)
+      if (!at) {
+        skip(`${test.path} 的 文件:行号：没找到测试声明（test(、it(、describe(、def test_、func Test），换一个测试文件`)
+      } else {
+        await probe(`文件:行号 要能用（${test.path}:${at.line}）`, [`${test.path}:${at.line}`], true)
+        await probe(`文件:行号:列号 要能用（${test.path}:${at.line}:${at.column}）`, [`${test.path}:${at.line}:${at.column}`], true)
+      }
     }
-    await probe('真文件里混进一个不存在的路径要失败', [test.path, MISSING], false)
-    const at = firstTest(test.text)
-    if (!at) {
-      skip(`文件:行号：${test.path} 里没找到测试声明（test(、it(、describe(、def test_、func Test），换一个测试文件`)
-    } else {
-      await probe(`文件:行号 要能用（${test.path}:${at.line}）`, [`${test.path}:${at.line}`], true)
-      await probe(`文件:行号:列号 要能用（${test.path}:${at.line}:${at.column}）`, [`${test.path}:${at.line}:${at.column}`], true)
-    }
+    if (passing.length > 1) await probe(`几个文件一起交给 files 要通过（${passing.join(' ')}）`, passing, true)
     return { kind: 'done', failed, skipped }
   } catch (error) {
     if (error instanceof Stopped) return error.result
