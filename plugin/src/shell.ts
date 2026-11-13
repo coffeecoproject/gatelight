@@ -1,6 +1,6 @@
-// 读懂 agent 要跑的 Bash 命令：拆成一条条命令，跟着 cd 和 git -C 算出每条在哪个目录跑。
-// 只做合并门需要的程度：引号、转义、&& || ; | & 换行、cd、环境变量前缀、sh -c。
-// 认不出来的写法（变量展开出来的命令、脚本里的 git）由停止门的事后检查兜底。
+// 大致读懂 agent 要跑的 Bash 命令：拆成一条条命令，跟着 cd 算出每条在哪个目录跑。
+// 只用于提示（节奏说明、直接跑整组命令时的提醒、前台跑完整组算看过结果），不用来把关：
+// 引号、转义、&& || ; | & 换行、cd、环境变量前缀、sh -c。
 
 import { homedir } from 'node:os'
 import { basename, resolve } from 'node:path'
@@ -171,57 +171,4 @@ export function runsCommand(command: string, target: string, cwd: string): boole
     if (want.every((argv, j) => have[i + j] === argv)) return true
   }
   return false
-}
-
-/** git 在子命令前的全局选项：-C 改目录，其余跳过。 */
-export function gitSubcommand(invocation: Invocation): { cwd: string; sub: string; args: string[] } | undefined {
-  if (basename(invocation.argv[0]!) !== 'git') return undefined
-  let cwd = invocation.cwd
-  const argv = invocation.argv
-  let i = 1
-  while (i < argv.length && argv[i]!.startsWith('-')) {
-    const option = argv[i]!
-    if (option === '-C') {
-      cwd = resolve(cwd, expandHome(argv[i + 1] ?? '.'))
-      i += 2
-    } else if (option === '-c' || option === '--git-dir' || option === '--work-tree' || option === '--namespace' || option === '--exec-path') {
-      i += 2
-    } else {
-      i += 1
-    }
-  }
-  const sub = argv[i]
-  return sub === undefined ? undefined : { cwd, sub, args: argv.slice(i + 1) }
-}
-
-/**
- * 选项和位置参数分开。takesValue 里的选项吃掉下一个参数（--x=y、-mmsg 写法不吃）。
- * 合在一起的短选项（-am）拆开记成 -a、-m。`--` 之后都是位置参数。
- */
-export function splitArgs(args: string[], takesValue: Set<string>): { options: string[]; positionals: string[] } {
-  const options: string[] = []
-  const positionals: string[] = []
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!
-    if (arg === '--') {
-      positionals.push(...args.slice(i + 1))
-      break
-    }
-    if (/^-[A-Za-z0-9]{2,}$/.test(arg)) {
-      for (let j = 1; j < arg.length; j++) {
-        const flag = `-${arg[j]}`
-        options.push(flag)
-        if (takesValue.has(flag)) {
-          if (j === arg.length - 1) i++
-          break
-        }
-      }
-    } else if (arg.startsWith('-') && arg !== '-') {
-      options.push(arg.replace(/=.*$/s, ''))
-      if (takesValue.has(arg)) i++
-    } else {
-      positionals.push(arg)
-    }
-  }
-  return { options, positionals }
 }

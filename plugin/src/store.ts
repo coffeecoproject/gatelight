@@ -1,14 +1,14 @@
 // 结果记录：放在仓库共用的 .git/testpace/ 下，不进版本库，也不影响工作区内容哈希。
 //   runs.jsonl   每次运行一行，只追加
-//   running/     正在跑的命令，每个一份，结束时删掉
+//   running/     每个工作区正在跑的命令一份，结束时删掉；等着用整组结果的会话另记一份
 //   logs/        每次运行的完整输出
 
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CommandKey } from './config.ts'
 
-export type RunResult = 'pass' | 'fail' | 'interrupted'
+export type RunResult = 'pass' | 'fail'
 
 /** files 的参数可以是 文件:行号，只跑那一行的测试；测试框架输出里常见的 文件:行号:列号 也算。 */
 export const LOCATED = /:\d+(?::\d+)?$/
@@ -44,25 +44,28 @@ export interface RunRecord {
 export interface RunningMarker {
   id: string
   kind: CommandKey
+  /** testpace 进程。 */
   pid: number
+  /** 测试命令的进程组：testpace 被强杀后测试可能还在跑，看它才知道这个工作区是不是真的空出来了。 */
+  group?: number
   worktree: string
   tree: string
   startedAt: number
   /** 同 RunRecord.session。 */
   session?: string
-  /** 同 RunRecord.waiting。 */
-  waiting?: string[]
   log: string
 }
 
 export interface SessionState {
   startedAt: number
-  /** 会话开始时默认分支的最新提交：之后变了才检查有没有绕过合并门。 */
-  tipAtStart?: string
+  /** 会话开始时本地和远程默认分支（引用 → 提交）：之后变了才检查落地的代码有没有整组通过记录。 */
+  tipsAtStart: Record<string, string>
   /** 已经提示过的、没有整组通过记录的默认分支提交。 */
   warned: string[]
   /** 已经给这个会话说过这个仓库的测试节奏。 */
   rhythm?: boolean
+  /** 这个会话在各工作区最近一次看到整组结果的时间（跑了 testpace status，或在前台等到了 testpace full）。 */
+  read?: Record<string, number>
 }
 
 /** 会话记录留多久。 */
@@ -118,49 +121,118 @@ export class Store {
     return runs
   }
 
-  markRunning(marker: RunningMarker): void {
+  private markerPath(worktree: string): string {
+    return join(this.runningDir, `${worktreeKey(worktree)}.json`)
+  }
+
+  /**
+   * 占住这个工作区来跑 marker 这次命令：原子地创建这个工作区唯一的一份登记。
+   * 已经有在跑的，返回它，不占；登记的进程都不在了的（被强杀、机器重启）清掉再占。
+   */
+  claim(marker: RunningMarker): RunningMarker | undefined {
     mkdirSync(this.runningDir, { recursive: true })
-    writeFileSync(join(this.runningDir, `${marker.id}.json`), JSON.stringify(marker))
-  }
-
-  /** 记下这个会话在等正在跑的那次结果。那次已经结束（记录删了）就不记。 */
-  waitOn(id: string, session: string): void {
-    const path = join(this.runningDir, `${id}.json`)
-    let marker: RunningMarker
+    const path = this.markerPath(marker.worktree)
+    // 先写好一份完整的，再用 link 原子地放到位：别人看到的登记总是完整的，不会把写了一半的当成坏了清掉
+    const ready = tempPath(path)
+    writeFileSync(ready, JSON.stringify(marker))
     try {
-      marker = JSON.parse(readFileSync(path, 'utf8')) as RunningMarker
-    } catch {
-      return
+      for (;;) {
+        try {
+          linkSync(ready, path)
+          return undefined
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+        }
+        const existing = readMarker(path)
+        if (existing && markerAlive(existing)) return existing
+        // 清掉过期的登记：先改名挪开再核对，挪走的要是别人刚占上的，放回去
+        const moved = tempPath(path)
+        try {
+          renameSync(path, moved)
+        } catch {
+          continue
+        }
+        const taken = readMarker(moved)
+        if (taken && markerAlive(taken)) {
+          try {
+            linkSync(moved, path)
+          } catch {
+            // 又有别人占上了，下一轮看它
+          }
+        }
+        rmSync(moved, { force: true })
+      }
+    } finally {
+      rmSync(ready, { force: true })
     }
-    if (marker.session === session || marker.waiting?.includes(session)) return
-    writeFileSync(path, JSON.stringify({ ...marker, waiting: [...(marker.waiting ?? []), session] }))
   }
 
-  clearRunning(id: string): void {
-    rmSync(join(this.runningDir, `${id}.json`), { force: true })
+  /** 更新自己占着的登记（比如记下测试的进程组）。整份换掉，别人读不到写了一半的。 */
+  update(worktree: string, id: string, change: Partial<RunningMarker>): void {
+    const path = this.markerPath(worktree)
+    const marker = readMarker(path)
+    if (marker?.id !== id) return
+    const next = tempPath(path)
+    writeFileSync(next, JSON.stringify({ ...marker, ...change }))
+    renameSync(next, path)
   }
 
-  /** agent 最近一次看到整组结果的时间（跑了 testpace status，或在前台等到了 testpace full）。 */
-  markRead(worktree: string, at: number): void {
-    const dir = join(this.dir, 'read')
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, worktreeKey(worktree)), String(at))
+  /** 放开这个工作区，返回等着用这次结果的会话。 */
+  release(worktree: string, id: string): string[] {
+    const path = this.markerPath(worktree)
+    // 先把等待名单整个挪走再放开工作区：放开之后下一次运行的等待记录写进新的名单，不会被这里删掉
+    const waitingPath = this.waitingPath(worktree)
+    const taken = tempPath(waitingPath)
+    let lines: string[] = []
+    try {
+      renameSync(waitingPath, taken)
+      lines = readFileSync(taken, 'utf8').split('\n')
+      rmSync(taken, { force: true })
+    } catch {
+      // 没有人等
+    }
+    if (readMarker(path)?.id === id) rmSync(path, { force: true })
+    const sessions = lines.filter(line => line.startsWith(`${id} `)).map(line => line.slice(id.length + 1))
+    return [...new Set(sessions)]
   }
 
-  readAt(worktree: string): number {
-    const path = join(this.dir, 'read', worktreeKey(worktree))
-    return existsSync(path) ? Number(readFileSync(path, 'utf8')) || 0 : 0
+  /** 记下这个会话在等这个工作区正在跑的那次结果（只追加一行，不改登记）。 */
+  waitOn(marker: RunningMarker, session: string): void {
+    if (marker.session === session) return
+    appendFileSync(this.waitingPath(marker.worktree), `${marker.id} ${session}\n`)
   }
 
-  /** 会话第一次被 testpace 看到时的状态。第一次读时记下现在和 tip() 给的默认分支最新提交。 */
-  session(id: string, now: number, tip: () => string | undefined = () => undefined): SessionState {
+  private waitingPath(worktree: string): string {
+    return join(this.runningDir, `${worktreeKey(worktree)}.waiting`)
+  }
+
+  /** 正在等这次运行结果的会话。 */
+  waiting(marker: RunningMarker): string[] {
+    const path = this.waitingPath(marker.worktree)
+    if (!existsSync(path)) return []
+    return readFileSync(path, 'utf8')
+      .split('\n')
+      .filter(line => line.startsWith(`${marker.id} `))
+      .map(line => line.slice(marker.id.length + 1))
+  }
+
+  /** 这个会话看到了这个工作区的整组结果。 */
+  markRead(id: string, worktree: string, at: number, tips: () => Record<string, string>): void {
+    const state = this.session(id, at, tips)
+    this.saveSession(id, { ...state, read: { ...state.read, [worktree]: at } })
+  }
+
+  /** 会话第一次被 testpace 看到时的状态。第一次读时记下现在和 tips() 给的默认分支最新提交。 */
+  session(id: string, now: number, tips: () => Record<string, string> = () => ({})): SessionState {
     const dir = join(this.dir, 'sessions')
     const path = join(dir, `${id.replace(/[^\w.-]/g, '_')}.json`)
     if (existsSync(path)) {
       try {
-        return JSON.parse(readFileSync(path, 'utf8')) as SessionState
+        const state = JSON.parse(readFileSync(path, 'utf8')) as SessionState
+        // 写坏了、或是旧版本的格式，就重新开始
+        if (typeof state.tipsAtStart === 'object' && state.tipsAtStart !== null && Array.isArray(state.warned)) return state
       } catch {
-        // 写坏了就重新开始
+        // 同上
       }
     }
     mkdirSync(dir, { recursive: true })
@@ -172,8 +244,7 @@ export class Store {
         rmSync(file, { force: true })
       }
     }
-    const tipAtStart = tip()
-    const state: SessionState = { startedAt: now, ...(tipAtStart ? { tipAtStart } : {}), warned: [] }
+    const state: SessionState = { startedAt: now, tipsAtStart: tips(), warned: [] }
     writeFileSync(path, JSON.stringify(state))
     return state
   }
@@ -184,25 +255,35 @@ export class Store {
     writeFileSync(join(dir, `${id.replace(/[^\w.-]/g, '_')}.json`), JSON.stringify(state))
   }
 
-  /** 正在跑的命令；进程已经不在的（被强杀、机器重启）顺手清掉。 */
+  /** 各工作区正在跑的命令。进程都不在了的登记不算，留给下一次 claim 清掉。 */
   running(): RunningMarker[] {
     if (!existsSync(this.runningDir)) return []
-    const markers: RunningMarker[] = []
-    for (const name of readdirSync(this.runningDir)) {
-      const path = join(this.runningDir, name)
-      let marker: RunningMarker
-      try {
-        marker = JSON.parse(readFileSync(path, 'utf8')) as RunningMarker
-      } catch {
-        continue
-      }
-      if (processAlive(marker.pid)) markers.push(marker)
-      else rmSync(path, { force: true })
-    }
-    return markers
+    return readdirSync(this.runningDir)
+      .filter(name => name.endsWith('.json'))
+      .map(name => readMarker(join(this.runningDir, name)))
+      .filter((marker): marker is RunningMarker => marker !== undefined && markerAlive(marker))
   }
 }
 
+/** 和 path 同目录、不会撞名的临时文件名（同目录才能原子地 rename、link）。 */
+function tempPath(path: string): string {
+  return `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+}
+
+function readMarker(path: string): RunningMarker | undefined {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as RunningMarker
+  } catch {
+    return undefined
+  }
+}
+
+/** testpace 进程或测试的进程组还有一个在。 */
+function markerAlive(marker: RunningMarker): boolean {
+  return processAlive(marker.pid) || (marker.group !== undefined && processAlive(-marker.group))
+}
+
+/** 进程（pid 为负时是进程组）还在。 */
 export function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)

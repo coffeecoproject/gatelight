@@ -80,8 +80,8 @@ describe('通过记录', () => {
     assert.deepEqual(findCoverage('A', [pass], () => false, noDiff), { kind: 'exact', run: pass })
   })
 
-  test('失败、中断、跑的过程中改过代码的都不算', () => {
-    const runs = [run({ tree: 'A', result: 'fail', exitCode: 1 }), run({ tree: 'A', result: 'interrupted' }), run({ tree: 'A', treeAtEnd: 'B' })]
+  test('失败、跑的过程中改过代码的都不算', () => {
+    const runs = [run({ tree: 'A', result: 'fail', exitCode: 1 }), run({ tree: 'A', treeAtEnd: 'B' })]
     assert.deepEqual(findCoverage('A', runs, () => false, () => []), { kind: 'none' })
   })
 
@@ -148,7 +148,6 @@ describe('报告的统计', () => {
     const runs = [
       run({ kind: 'files', files: ['a.test.ts', 'b.test.ts'] }),
       run({ kind: 'files', files: ['a.test.ts'] }),
-      run({ kind: 'files', files: ['a.test.ts', 'c.test.ts'], result: 'interrupted' }),
       run({ kind: 'files', files: ['b.test.ts'] }),
       run({ kind: 'files', files: ['b.test.ts'] }),
     ]

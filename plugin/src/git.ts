@@ -110,49 +110,32 @@ export interface Landing {
 
 /** 默认分支上每次落地（第一父链上的提交，合并按相对第一父的改动算）新增的行数。 */
 export function landings(root: string, branch: string, sinceMs: number): Landing[] {
+  // -z：路径原样输出（不加引号、不转义中文）。每个提交是一个 "<id> <时间>" 字段，后面跟着它的 "新增\t删除\t路径" 字段
   const out = gitOrUndefined(root, [
     'log',
     '--first-parent',
     '--diff-merges=first-parent',
     '--no-renames',
     '--numstat',
-    '--format=%x00%H %ct',
+    '-z',
+    '--format=%H %ct',
     `--since=${Math.floor(sinceMs / 1000)}`,
     `refs/heads/${branch}`,
     '--',
   ])
   if (!out) return []
   const result: Landing[] = []
-  for (const chunk of out.split('\0').filter(Boolean)) {
-    const [header = '', ...lines] = chunk.split('\n')
-    const [commit = '', seconds = '0'] = header.split(' ')
-    const files: LandingFile[] = []
-    for (const line of lines) {
-      const [added, , path] = line.split('\t')
-      if (path === undefined || added === undefined || added === '-') continue
-      files.push({ path, added: Number(added) })
+  for (const field of out.split('\0')) {
+    const header = /^\n?([0-9a-f]{40,64}) (\d+)$/.exec(field)
+    if (header) {
+      result.push({ commit: header[1]!, time: Number(header[2]) * 1000, files: [] })
+      continue
     }
-    result.push({ commit, time: Number(seconds) * 1000, files })
+    const stat = /^\n?(\d+|-)\t(?:\d+|-)\t(.+)$/s.exec(field)
+    if (!stat || stat[1] === '-') continue
+    result.at(-1)?.files.push({ path: stat[2]!, added: Number(stat[1]) })
   }
   return result
-}
-
-/** 真实索引（暂存区）的树：不带 -a 的 git commit 会提交的内容。不改索引。 */
-export function indexTree(root: string): string {
-  return git(root, ['write-tree'])
-}
-
-/**
- * 一次提交会提交的内容：在临时索引上按顺序预演同一条命令里排在前面的 git add（各自的目录和参数），
- * all 时再加上已跟踪文件的改动（git commit -a，和它一样不管 assume-unchanged 的文件）。
- */
-export function commitTree(root: string, adds: Array<{ cwd: string; args: string[] }>, all: boolean): string {
-  if (adds.length === 0 && !all) return indexTree(root)
-  return withTempIndex(root, env => {
-    for (const add of adds) git(add.cwd, ['add', ...add.args], env)
-    if (all) git(root, ['add', '--update', '--', '.'], env)
-    return git(root, ['write-tree'], env)
-  })
 }
 
 /** 一个提交（或分支、标签）的树；找不到返回 undefined。 */
@@ -177,18 +160,17 @@ export function mergeBase(root: string, a: string, b: string): string | undefine
   return gitOrUndefined(root, ['merge-base', a, b])
 }
 
-/** 把 rev 合进 HEAD 的结果树；有冲突（合并会停下来等解决）时返回 undefined。 */
-export function mergedTree(root: string, rev: string): string | undefined {
-  const out = gitOrUndefined(root, ['merge-tree', '--write-tree', 'HEAD', rev])
-  return out?.split('\n')[0]
+/** 一个引用（比如 refs/heads/main、refs/remotes/origin/main）指向的提交和它的树；引用不存在返回 undefined。 */
+export function refTip(root: string, ref: string): { commit: string; tree: string } | undefined {
+  const out = gitOrUndefined(root, ['log', '-1', '--format=%H %T', ref, '--'])
+  if (!out) return undefined
+  const [commit = '', tree = ''] = out.split(' ')
+  return { commit, tree }
 }
 
-/** 分支最新提交的 id、提交时间和树。 */
-export function branchTip(root: string, branch: string): { commit: string; time: number; tree: string } | undefined {
-  const out = gitOrUndefined(root, ['log', '-1', '--format=%H %ct %T', `refs/heads/${branch}`, '--'])
-  if (!out) return undefined
-  const [commit = '', seconds = '0', tree = ''] = out.split(' ')
-  return { commit, time: Number(seconds) * 1000, tree }
+/** git 钩子所在的目录（考虑了 core.hooksPath），所有 worktree 共用。 */
+export function hooksDir(root: string): string {
+  return git(root, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks'])
 }
 
 /** 远程上的同名分支（refs/remotes/<远程>/<分支>）里有没有一个已经包含这个提交。 */

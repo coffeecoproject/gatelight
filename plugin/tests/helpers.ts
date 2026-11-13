@@ -8,11 +8,14 @@ import { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 export const BIN = fileURLToPath(new URL('../bin/testpace', import.meta.url))
+/** 插件的 bin 目录：Claude Code 里它在 Bash 工具的 PATH 上，合并门的 git 钩子靠它找到 testpace。 */
+export const BIN_DIR = fileURLToPath(new URL('../bin', import.meta.url))
 export const SAMPLE = fileURLToPath(new URL('../../examples/sample', import.meta.url))
 
 // node:test 会把 NODE_TEST_CONTEXT 传给子进程，示例项目里的 node --test 看到它就跳过所有测试文件。
-// 插件数据目录也不带：测试不写真实的会话记录。会话号也不带（在 Claude Code 里跑测试时有），要的测试自己给。
-const { NODE_TEST_CONTEXT: _, CLAUDE_PLUGIN_DATA: __, CLAUDE_CODE_SESSION_ID: ___, ...rest } = process.env
+// 插件数据目录也不带：测试不写真实的会话记录。会话号、CLAUDECODE 也不带（在 Claude Code 里跑测试时有）：
+// 测试里的 git 命令默认是用户在终端里的操作，要当成 agent 的命令时测试自己给。
+const { NODE_TEST_CONTEXT: _, CLAUDE_PLUGIN_DATA: __, CLAUDE_CODE_SESSION_ID: ___, CLAUDECODE: ____, ...rest } = process.env
 export const ENV: NodeJS.ProcessEnv = rest
 
 export interface Result {
@@ -59,6 +62,24 @@ export function sampleRepo(): string {
   sh(dir, 'git init -q -b main')
   commit(dir, 'init')
   return dir
+}
+
+/** 示例项目副本，装好合并门的 git 钩子。 */
+export function gatedRepo(): string {
+  const dir = sampleRepo()
+  const r = testpace(dir, ['install'])
+  if (r.code !== 0) throw new Error(r.out)
+  return dir
+}
+
+/** 当成 agent 在 Claude Code 里跑的命令：带着 CLAUDECODE，PATH 上有 testpace。 */
+export function agent(cwd: string, script: string, env: NodeJS.ProcessEnv = {}): Result {
+  const r = spawnSync('/bin/sh', ['-c', script], {
+    cwd,
+    env: { ...ENV, CLAUDECODE: '1', PATH: `${BIN_DIR}:${ENV.PATH}`, ...env },
+    encoding: 'utf8',
+  })
+  return { code: r.status, out: r.stdout + r.stderr }
 }
 
 after(() => {

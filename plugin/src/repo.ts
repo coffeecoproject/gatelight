@@ -7,9 +7,9 @@ import { type Coverage, findCoverage } from './coverage.ts'
 import { failureExcerpt } from './excerpt.ts'
 import { type Execution, execute } from './execute.ts'
 import { duration, when } from './format.ts'
-import { changedPaths, commonDir, currentBranch, headCommit, repoRoot } from './git.ts'
+import { changedPaths, commonDir, currentBranch, defaultBranch, headCommit, refTip, repoRoot } from './git.ts'
 import { matcher } from './glob.ts'
-import { newRunId, type RunningMarker, type RunRecord, Store } from './store.ts'
+import { newRunId, processAlive, type RunningMarker, type RunRecord, Store } from './store.ts'
 
 export interface Repo {
   root: string
@@ -41,40 +41,59 @@ export function describeCoverage(coverage: Coverage): string {
 }
 
 export interface Recorded {
+  /** 这次运行的记录；被中断（execution.interrupted）的不写进记录。 */
   record: RunRecord
   execution: Execution
 }
 
-/**
- * 这个工作区里正在跑的 testpace 命令。同一个工作区一次只跑一轮测试：
- * 两轮同时跑会抢端口、测试库这些资源，互相拖慢，失败了也分不清是谁的问题。
- */
-export function runningHere(repo: Repo): RunningMarker | undefined {
-  return repo.store.running().find(marker => marker.worktree === repo.root)
+/** 本地和远程（origin）默认分支现在指向的提交，按引用名。找不到默认分支时为空。 */
+export function defaultTips(repo: Repo): Record<string, string> {
+  const branch = defaultBranch(repo.root)
+  const tips: Record<string, string> = {}
+  for (const ref of branch ? [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`] : []) {
+    const tip = refTip(repo.root, ref)
+    if (tip) tips[ref] = tip.commit
+  }
+  return tips
+}
+
+/** 在跑的那次是什么时候、哪个进程起的。testpace 被强杀后测试可能还在跑，说清楚怎么停。 */
+export function started(marker: RunningMarker): string {
+  const owner = processAlive(marker.pid)
+    ? `进程 ${marker.pid}`
+    : `起它的 testpace 已经退出，测试进程组 ${marker.group} 还在跑，不要了用 kill -- -${marker.group} 停掉`
+  return `开始于 ${when(marker.startedAt)}，${owner}`
 }
 
 /** 因为这个工作区已经在跑测试而不跑时的说明。 */
 export function busyText(marker: RunningMarker, tree: string): string {
   const what = marker.kind === 'full' ? '整组' : ` ${marker.kind} `
   const stale = marker.kind === 'full' && marker.tree !== tree ? '那次整组开始后代码改过，它跑完的结果不算当前代码的记录。' : ''
-  return `这个工作区正在跑${what}（开始于 ${when(marker.startedAt)}，进程 ${marker.pid}），同一个工作区一次只跑一轮测试，等它结束再跑。${stale}`
+  return `这个工作区正在跑${what}（${started(marker)}），同一个工作区一次只跑一轮测试，等它结束再跑。${stale}`
 }
 
 /**
- * 跑 fast 或 files 并记一条记录。这两种不检查跑的过程中代码改没改：
- * 它们只用于开发中的反馈和计时，通过记录只认 full。
+ * 跑 fast 或 files 并记一条记录。同一个工作区一次只跑一轮测试（两轮同时跑会抢端口、测试库这些资源，
+ * 失败了也分不清是谁的问题）：已经有在跑的，不跑，返回它。
+ * 这两种不检查跑的过程中代码改没改：它们只用于开发中的反馈和计时，通过记录只认 full。
  */
-export async function runRecorded(repo: Repo, kind: Exclude<CommandKey, 'full'>, command: string, args: string[], tree: string): Promise<Recorded> {
+export async function runRecorded(
+  repo: Repo,
+  kind: Exclude<CommandKey, 'full'>,
+  command: string,
+  args: string[],
+  tree: string,
+): Promise<Recorded | { busy: RunningMarker }> {
   const startedAt = Date.now()
   const id = newRunId(startedAt)
   const log = repo.store.logPath(id)
+  const busy = repo.store.claim({ id, kind, pid: process.pid, worktree: repo.root, tree, startedAt, log })
+  if (busy) return { busy }
   let execution: Execution
   try {
-    execution = await execute(command, args, repo.root, log, () =>
-      repo.store.markRunning({ id, kind, pid: process.pid, worktree: repo.root, tree, startedAt, log }),
-    )
+    execution = await execute(command, args, repo.root, log, group => repo.store.update(repo.root, id, { group }))
   } finally {
-    repo.store.clearRunning(id)
+    repo.store.release(repo.root, id)
   }
   const record: RunRecord = {
     id,
@@ -87,7 +106,7 @@ export async function runRecorded(repo: Repo, kind: Exclude<CommandKey, 'full'>,
     startedAt,
     durationMs: execution.durationMs,
     exitCode: execution.exitCode,
-    result: execution.interrupted ? 'interrupted' : execution.exitCode === 0 ? 'pass' : 'fail',
+    result: execution.exitCode === 0 ? 'pass' : 'fail',
     ...(kind === 'files' ? { files: args } : {}),
     log,
   }

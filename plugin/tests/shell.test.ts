@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { homedir } from 'node:os'
 import { describe, test } from 'node:test'
-import { gitSubcommand, invocations, splitArgs, tokenize } from '../src/shell.ts'
+import { invocations, runsCommand, tokenize } from '../src/shell.ts'
 
 describe('拆命令', () => {
   test('引号、转义、注释和操作符', () => {
@@ -41,29 +41,9 @@ describe('拆命令', () => {
     assert.equal(invocations('cd ~/p && ls', '/repo')[0]!.cwd, `${homedir()}/p`)
   })
 
-  test('git 的 -C 改目录，-c 和其他全局选项跳过', () => {
-    const [call] = invocations('git -C ../other -c user.name=x --no-pager commit -m m', '/repo/a')
-    assert.deepEqual(gitSubcommand(call!), { cwd: '/repo/other', sub: 'commit', args: ['-m', 'm'] })
-    assert.equal(gitSubcommand({ cwd: '/', argv: ['gitx', 'commit'] }), undefined)
-  })
-})
-
-describe('分开选项和参数', () => {
-  const values = new Set(['-m', '--message'])
-
-  test('带值的选项吃掉下一个参数，--x=y 和 -mmsg 不吃', () => {
-    assert.deepEqual(splitArgs(['-m', 'msg', '--message=x', '-mmsg', 'path'], values), {
-      options: ['-m', '--message', '-m'],
-      positionals: ['path'],
-    })
-  })
-
-  test('合在一起的短选项拆开，最后一个带值时吃掉下一个参数', () => {
-    assert.deepEqual(splitArgs(['-am', 'wip'], values), { options: ['-a', '-m'], positionals: [] })
-    assert.deepEqual(splitArgs(['-av', 'file'], values), { options: ['-a', '-v'], positionals: ['file'] })
-  })
-
-  test('-- 之后都是位置参数', () => {
-    assert.deepEqual(splitArgs(['-a', '--', '-m'], values), { options: ['-a'], positionals: ['-m'] })
+  test('按顺序连着跑了目标命令（参数完全一样）才算', () => {
+    assert.ok(runsCommand('CI=1 pnpm build && pnpm test 2>&1 | tail', 'pnpm build && pnpm test', '/r'))
+    assert.ok(!runsCommand('pnpm build && pnpm lint && pnpm test', 'pnpm build && pnpm test', '/r'))
+    assert.ok(!runsCommand('pnpm test --watch', 'pnpm test', '/r'))
   })
 })

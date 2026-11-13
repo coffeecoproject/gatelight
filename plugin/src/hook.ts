@@ -1,13 +1,14 @@
-// Claude Code hook 的判断：SessionStart 注入节奏说明，PreToolUse 跑合并门和软提示，
+// Claude Code hook 的判断：SessionStart 注入节奏说明，PreToolUse 补说节奏和软提示，
 // PostToolUse 记下 agent 在前台看到了整组结果，Stop 跑停止门。
+// 合并门不在这里：它是 git 的钩子（gate.ts），git 移动默认分支时检查。
 // 入口在 plugin/hooks/testpace.ts。
 
 import { basename } from 'node:path'
-import { checkCommand } from './gate.ts'
-import { contractOf, openRepo, type Repo } from './repo.ts'
+import { gateProblem } from './gate.ts'
+import { contractOf, defaultTips, openRepo, type Repo } from './repo.ts'
 import { noteSessionRepos, sessionRepos } from './sessions.ts'
-import { invocations } from './shell.ts'
-import { defaultTip, stopCheck } from './stop.ts'
+import { invocations, runsCommand } from './shell.ts'
+import { stopCheck } from './stop.ts'
 import type { SessionState } from './store.ts'
 
 interface HookInput {
@@ -28,11 +29,26 @@ export function rhythm(repo = '这个仓库'): string {
     '2. 改完跑 testpace focused：fast 检查加上和改动相关的测试。在分支上不跑整组。',
     '3. 有失败，用 testpace files <文件:行号> 只重跑失败的那几个测试（位置看失败输出）。',
     '4. 整组在合回默认分支时跑：做完的几个分支一起合，合并后的代码跑一次 testpace full（放后台，run_in_background），通过了再落地（testpace:merge 技能）。',
-    '提交、合并或推送到默认分支前必须有落地那份代码的整组通过记录，合并门会检查；直接跑项目自己的整组命令不留记录。',
+    '落到默认分支的代码必须有整组通过记录：合并门在 git 移动默认分支时检查，没测过的提交、合并、cherry-pick、reset 都会被取消。直接跑项目自己的整组命令不留记录。',
   ].join('\n')
 }
 
 export const RHYTHM = rhythm()
+
+/** 给 agent 的节奏说明，合并门没在把关时加上原因。 */
+function told(repo: Repo, label?: string): string {
+  const problem = gateProblem(repo.root)
+  return [label ? rhythm(label) : RHYTHM, ...(problem ? [problem] : [])].join('\n')
+}
+
+/** 直接跑配置里的整组命令不会留下记录，合并门不认。 */
+function fullCommandHint(command: string, cwd: string): string | undefined {
+  const repo = openRepo(cwd)
+  const config = repo && contractOf(repo)
+  const calls = invocations(command, cwd)
+  if (!config?.full || calls.some(call => basename(call.argv[0] ?? '') === 'testpace') || !runsCommand(command, config.full, cwd)) return undefined
+  return '这是 testpace.json 里的整组命令。直接跑不会留下通过记录，合并门不认；改用 testpace full（放后台跑），结果会按当前代码记录。'
+}
 
 /** 这些目录所在的、接入了 testpace 的仓库，按根目录去重。 */
 function contractRepos(dirs: Iterable<string>): Repo[] {
@@ -53,7 +69,7 @@ function untoldRepos(command: string, cwd: string, sessionId: string, now: numbe
   noteSessionRepos(sessionId, repos.map(repo => repo.root), now)
   const untold: Array<{ repo: Repo; state: SessionState }> = []
   for (const repo of repos) {
-    const state = repo.store.session(sessionId, now, () => defaultTip(repo))
+    const state = repo.store.session(sessionId, now, () => defaultTips(repo))
     if (!state.rhythm) untold.push({ repo, state })
   }
   return untold
@@ -70,35 +86,22 @@ export function handle(input: HookInput, now: number): unknown {
     const repos = contractRepos([cwd, ...sessionRepos(sessionId)])
     if (repos.length === 0) return undefined
     for (const repo of repos) {
-      const state = repo.store.session(sessionId, now, () => defaultTip(repo))
+      const state = repo.store.session(sessionId, now, () => defaultTips(repo))
       repo.store.saveSession(sessionId, { ...state, rhythm: true })
     }
     noteSessionRepos(sessionId, repos.map(repo => repo.root), now)
-    const context = repos.map(repo => (repo.root === here ? RHYTHM : rhythm(`${repo.root} 这个仓库`))).join('\n\n')
+    const context = repos.map(repo => (repo.root === here ? told(repo) : told(repo, `${repo.root} 这个仓库`))).join('\n\n')
     return { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }
   }
 
   const command = typeof input.tool_input?.command === 'string' ? input.tool_input.command : undefined
   if (event === 'PreToolUse' && input.tool_name === 'Bash' && command) {
     // 记下会话第一次出现的时间：停止门只管这之后起的整组。会话不在仓库里开始（SessionStart 没说节奏）时，
-    // 第一次碰到接入的仓库就补说一次。记不下来也不影响合并门。
-    let untold: Array<{ repo: Repo; state: SessionState }> = []
-    try {
-      untold = untoldRepos(command, cwd, sessionId, now)
-    } catch {
-      // 忽略
-    }
-    const result = checkCommand(command, cwd)
-    if (result.deny) {
-      return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: result.deny } }
-    }
-    // 拦下的命令没执行，节奏留到下一条命令再说。
-    try {
-      for (const { repo, state } of untold) repo.store.saveSession(sessionId, { ...state, rhythm: true })
-    } catch {
-      // 忽略：下一条命令再说一次
-    }
-    const context = [...untold.map(({ repo }) => rhythm(`${repo.root} 这个仓库`)), ...(result.context ? [result.context] : [])].join('\n\n')
+    // 第一次碰到接入的仓库就补说一次。
+    const untold = untoldRepos(command, cwd, sessionId, now)
+    for (const { repo, state } of untold) repo.store.saveSession(sessionId, { ...state, rhythm: true })
+    const hint = fullCommandHint(command, cwd)
+    const context = [...untold.map(({ repo }) => told(repo, `${repo.root} 这个仓库`)), ...(hint ? [hint] : [])].join('\n\n')
     if (context) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }
     return undefined
   }
@@ -110,7 +113,7 @@ export function handle(input: HookInput, now: number): unknown {
     for (const call of invocations(command, cwd)) {
       if (basename(call.argv[0] ?? '') !== 'testpace' || call.argv[1] !== 'full') continue
       const repo = openRepo(call.cwd)
-      repo?.store.markRead(repo.root, now)
+      if (repo) repo.store.markRead(sessionId, repo.root, now, () => defaultTips(repo))
     }
     return undefined
   }

@@ -1,5 +1,5 @@
 {
-  "description": "testpace：会话开始时说明测试节奏；提交、合并、推送到默认分支前要求整组通过记录；整组没跑完或结果没看时拦一次结束。",
+  "description": "testpace：会话开始时说明测试节奏，直接跑整组命令时提醒改用 testpace full；整组没跑完或结果没看时拦一次结束。合并门是 git 钩子（testpace install）。",
   "hooks": {
     "SessionStart": [
       {
@@ -12,7 +12,7 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}/hooks/testpace.ts\"", "timeout": 120 }
+          { "type": "command", "command": "node --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}/hooks/testpace.ts\"", "timeout": 30 }
         ]
       }
     ],

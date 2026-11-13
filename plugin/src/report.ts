@@ -21,7 +21,6 @@ export interface CommandStats {
 export function commandStats(runs: RunRecord[]): Map<string, CommandStats> {
   const stats = new Map<string, CommandStats>()
   for (const run of runs) {
-    if (run.result === 'interrupted') continue
     const s = stats.get(run.kind) ?? { count: 0, pass: 0, fail: 0, totalMs: 0 }
     s.count += 1
     s.totalMs += run.durationMs
@@ -36,7 +35,7 @@ export function commandStats(runs: RunRecord[]): Map<string, CommandStats> {
 export function repeatedFiles(runs: RunRecord[]): Array<[string, number]> {
   const counts = new Map<string, number>()
   for (const run of runs) {
-    if (run.kind !== 'files' || run.result === 'interrupted') continue
+    if (run.kind !== 'files') continue
     // 文件:行号 算那个文件；一次里给了同一文件的几行，算跑了一次
     for (const file of new Set((run.files ?? []).map(testFile))) counts.set(file, (counts.get(file) ?? 0) + 1)
   }
@@ -47,7 +46,7 @@ export function repeatedFiles(runs: RunRecord[]): Array<[string, number]> {
 export function rerunsAfterFailure(runs: RunRecord[]): number[] {
   const byWorktree = new Map<string, RunRecord[]>()
   for (const run of runs) {
-    if (run.kind !== 'full' || run.result === 'interrupted') continue
+    if (run.kind !== 'full') continue
     const list = byWorktree.get(run.worktree) ?? []
     list.push(run)
     byWorktree.set(run.worktree, list)
@@ -76,7 +75,7 @@ export interface Flaky {
 export function flakyTrees(runs: RunRecord[]): Flaky[] {
   const byTree = new Map<string, RunRecord[]>()
   for (const run of runs) {
-    if (run.kind !== 'full' || run.result === 'interrupted' || run.tree !== run.treeAtEnd) continue
+    if (run.kind !== 'full' || run.tree !== run.treeAtEnd) continue
     const list = byTree.get(run.tree) ?? []
     list.push(run)
     byTree.set(run.tree, list)

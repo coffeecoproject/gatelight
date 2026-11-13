@@ -5,6 +5,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { before, describe, test } from 'node:test'
+import { landings } from '../src/git.ts'
 import { BIN, ENV, runs, sampleRepo, setConfig as setConfigWith, sh, tempDir, testpace as run } from './helpers.ts'
 
 const testpace = (cwd: string, ...args: string[]) => run(cwd, args)
@@ -159,6 +160,38 @@ describe('结果的可信度', () => {
     assert.equal(sh(running, 'ls').trim(), '', 'files 跑完删掉在跑的记录')
   })
 
+  test('同时起两个整组，只有一个跑', async () => {
+    const repo = sampleRepo()
+    const go = join(tempDir('testpace-go-'), 'go')
+    setConfig(repo, `while [ ! -f '${go}' ]; do sleep 0.1; done; node scripts/full.mjs`)
+    sh(repo, `git add -A && git -c user.name=t -c user.email=t@t commit -qm slow`)
+    const start = (): Promise<number | null> =>
+      new Promise(resolve => spawn(BIN, ['full'], { cwd: repo, env: ENV }).on('close', resolve))
+    const both = [start(), start()]
+    await new Promise(r => setTimeout(r, 1500))
+    writeFileSync(go, '')
+    assert.deepEqual((await Promise.all(both)).sort(), [0, 3])
+  })
+
+  test('testpace 被强杀后测试还在跑，这个工作区照样算在跑，说清楚怎么停', { timeout: 60_000 }, async () => {
+    const repo = sampleRepo()
+    const go = join(tempDir('testpace-go-'), 'go')
+    setConfig(repo, `while [ ! -f '${go}' ]; do sleep 0.1; done; node scripts/full.mjs`)
+    sh(repo, `git add -A && git -c user.name=t -c user.email=t@t commit -qm slow`)
+    const first = spawn(BIN, ['full'], { cwd: repo, env: ENV })
+    const running = join(repo, '.git', 'testpace', 'running')
+    const group = async (): Promise<boolean> => /"group"/.test(sh(running, 'cat *.json 2>/dev/null || true'))
+    for (let i = 0; i < 100 && !(existsSync(running) && (await group())); i++) await new Promise(r => setTimeout(r, 50))
+    first.kill('SIGKILL')
+    await new Promise(resolve => first.on('close', resolve))
+    const second = testpace(repo, 'full')
+    assert.equal(second.code, 3)
+    assert.match(second.out, /起它的 testpace 已经退出，测试进程组 (\d+) 还在跑，不要了用 kill -- -\1 停掉/)
+    writeFileSync(go, '')
+    for (let i = 0; i < 100 && testpace(repo, 'status').out.includes('正在跑'); i++) await new Promise(r => setTimeout(r, 100))
+    assert.equal(testpace(repo, 'full').code, 0, '测试进程组结束后可以再跑')
+  })
+
   test('标了 assume-unchanged 的文件改了也算改动', () => {
     const repo = sampleRepo()
     assert.equal(testpace(repo, 'full').code, 0)
@@ -259,6 +292,21 @@ describe('配置和报告', () => {
     assert.match(r.out, /^2 处测试通过 · 用时/)
     assert.deepEqual(runs(repo).at(-1)!.files, ['tests/format.test.mjs:5', 'tests/price.test.mjs:9:1'])
     assert.match(readFileSync(runs(repo).at(-1)!.log as string, 'utf8'), /不能按行跑，这些跑整个文件：tests\/format.test.mjs:5/)
+  })
+
+  test('files 的路径按当前目录算', () => {
+    const repo = sampleRepo()
+    const r = testpace(join(repo, 'tests'), 'files', 'format.test.mjs:5')
+    assert.equal(r.code, 0, r.out)
+    assert.deepEqual(runs(repo).at(-1)!.files, ['tests/format.test.mjs:5'])
+  })
+
+  test('落地统计里的中文路径原样读出', () => {
+    const repo = sampleRepo()
+    writeFileSync(join(repo, 'tests', '价格.test.mjs'), 'a\nb\n')
+    sh(repo, 'git add -A && git -c user.name=t -c user.email=t@t commit -qm zh')
+    const files = landings(sh(repo, 'git rev-parse --show-toplevel').trim(), 'main', 0)[0]!.files
+    assert.deepEqual(files, [{ path: 'tests/价格.test.mjs', added: 2 }])
   })
 
   test('report 的 --days 要是正整数', () => {

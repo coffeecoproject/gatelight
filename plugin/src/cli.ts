@@ -1,13 +1,16 @@
 // testpace 命令行：focused、files、full、status、report。
 
+import { readFileSync } from 'node:fs'
+import { relative, resolve } from 'node:path'
 import { COMMAND_KEYS, commandExists, CONFIG_FILE, loadConfig } from './config.ts'
 import { execute } from './execute.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT } from './focused.ts'
 import { duration, short, when } from './format.ts'
+import { checkRefUpdates, gateProblem, hookInWorktree, installGate } from './gate.ts'
 import { commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { matcher } from './glob.ts'
 import { renderReport } from './report.ts'
-import { busyText, coverageOf, describeCoverage, failureText, openRepo, type Repo, runningHere, runRecorded } from './repo.ts'
+import { busyText, coverageOf, defaultTips, describeCoverage, failureText, openRepo, type Repo, runRecorded, started } from './repo.ts'
 import { LOCATED, newRunId } from './store.ts'
 
 const USAGE = `用法：
@@ -15,11 +18,12 @@ const USAGE = `用法：
   testpace files PATH[:行号]...  只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试
   testpace full                  跑整组（testpace.json 的 full），按当前工作区完整内容记录结果。适合放到后台跑
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
-  testpace report [--days N]     计时诊断，默认最近 28 天`
+  testpace report [--days N]     计时诊断，默认最近 28 天
+  testpace install               装上合并门的 git 钩子：agent 移动默认分支时，要求落地的代码有整组通过记录`
 
 /**
- * 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；3 这个工作区已有测试在跑，或别处在跑同一份代码的整组；
- * 4 在默认分支上，跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
+ * 退出码：0 通过；1 失败或没得到通过记录（gate：拒绝这次更新）；2 用法或配置问题；
+ * 3 这个工作区已有测试在跑，或别处在跑同一份代码的整组；4 在默认分支上，跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
  */
 const EXIT = { ok: 0, fail: 1, usage: 2, busy: 3, fullNeeded: 4, interrupted: 130 } as const
 
@@ -49,18 +53,9 @@ async function full(): Promise<number> {
 
   // Claude Code 给 agent 的命令带上会话号：停止门只拦起这次整组的会话，和等着用它结果的会话
   const sessionId = process.env.CLAUDE_CODE_SESSION_ID
-  const running = ctx.store.running()
-  const busy =
-    running.find(marker => marker.kind === 'full' && (marker.worktree === ctx.root || marker.tree === tree)) ??
-    running.find(marker => marker.worktree === ctx.root)
-  if (busy?.kind === 'full') {
-    if (sessionId && busy.worktree === ctx.root) ctx.store.waitOn(busy.id, sessionId)
-    const where = busy.worktree === ctx.root ? '这个工作区已有整组在跑' : `工作区 ${busy.worktree} 正在跑同一份代码的整组`
-    console.log(`${where}（开始于 ${when(busy.startedAt)}，进程 ${busy.pid}）。等它结束后用 testpace status 看结果。`)
-    return EXIT.busy
-  }
-  if (busy) {
-    console.log(busyText(busy, tree))
+  const elsewhere = ctx.store.running().find(marker => marker.kind === 'full' && marker.tree === tree && marker.worktree !== ctx.root)
+  if (elsewhere) {
+    console.log(`工作区 ${elsewhere.worktree} 正在跑同一份代码的整组（${started(elsewhere)}）。等它结束后用 testpace status 看结果。`)
     return EXIT.busy
   }
 
@@ -68,15 +63,23 @@ async function full(): Promise<number> {
   const id = newRunId(startedAt)
   const log = ctx.store.logPath(id)
   const session = sessionId ? { session: sessionId } : {}
+  const busy = ctx.store.claim({ id, kind: 'full', pid: process.pid, worktree: ctx.root, tree, startedAt, ...session, log })
+  if (busy?.kind === 'full') {
+    if (sessionId) ctx.store.waitOn(busy, sessionId)
+    console.log(`这个工作区已有整组在跑（${started(busy)}）。等它结束后用 testpace status 看结果。`)
+    return EXIT.busy
+  }
+  if (busy) {
+    console.log(busyText(busy, tree))
+    return EXIT.busy
+  }
+
   let execution
-  let waiting: string[] | undefined
+  let waiting: string[]
   try {
-    execution = await execute(config.full, [], ctx.root, log, () =>
-      ctx.store.markRunning({ id, kind: 'full', pid: process.pid, worktree: ctx.root, tree, startedAt, ...session, log }),
-    )
+    execution = await execute(config.full, [], ctx.root, log, group => ctx.store.update(ctx.root, id, { group }))
   } finally {
-    waiting = ctx.store.running().find(marker => marker.id === id)?.waiting
-    ctx.store.clearRunning(id)
+    waiting = ctx.store.release(ctx.root, id)
   }
 
   if (execution.interrupted) {
@@ -99,7 +102,7 @@ async function full(): Promise<number> {
     exitCode: execution.exitCode,
     result,
     ...session,
-    ...(waiting ? { waiting } : {}),
+    ...(waiting.length ? { waiting } : {}),
     log,
   })
 
@@ -131,14 +134,13 @@ async function focused(args: string[]): Promise<number> {
   }
 
   const tree = workTreeId(ctx.root)
-  const busy = runningHere(ctx)
-  if (busy) {
-    console.log(busyText(busy, tree))
-    return EXIT.busy
-  }
   const lines: string[] = []
   const fast = await runRecorded(ctx, 'fast', config.fast, [], tree)
-  if (fast.record.result === 'interrupted') return EXIT.interrupted
+  if ('busy' in fast) {
+    console.log(busyText(fast.busy, tree))
+    return EXIT.busy
+  }
+  if (fast.execution.interrupted) return EXIT.interrupted
   if (fast.record.result === 'fail') {
     console.log(failureText('fast 失败', fast.record.log, fast.execution))
     return EXIT.fail
@@ -165,7 +167,11 @@ async function focused(args: string[]): Promise<number> {
     const indirect = selection.indirect ? `；另有 ${selection.indirect} 个只是间接导入改动，没选` : ''
     lines.push(`相关测试 ${selection.tests.length} 个（对比 ${short(base)}${indirect}）：`, ...shown)
     const related = await runRecorded(ctx, 'files', config.files, selection.tests, tree)
-    if (related.record.result === 'interrupted') return EXIT.interrupted
+    if ('busy' in related) {
+      console.log([...lines, busyText(related.busy, tree)].join('\n'))
+      return EXIT.busy
+    }
+    if (related.execution.interrupted) return EXIT.interrupted
     if (related.record.result === 'fail') {
       console.log([...lines, failureText('相关测试失败', related.record.log, related.execution)].join('\n'))
       return EXIT.fail
@@ -196,15 +202,19 @@ async function files(paths: string[]): Promise<number> {
     return EXIT.usage
   }
   const tree = workTreeId(ctx.root)
-  const busy = runningHere(ctx)
-  if (busy) {
-    console.log(busyText(busy, tree))
+  // 路径按当前目录算，交给项目命令时换成相对仓库根目录（项目命令在根目录跑）；文件:行号 的行号原样带上
+  const targets = paths.map(path => {
+    const location = LOCATED.exec(path)?.[0] ?? ''
+    return relative(ctx.root, resolve(path.slice(0, path.length - location.length))) + location
+  })
+  const run = await runRecorded(ctx, 'files', config.files, targets, tree)
+  if ('busy' in run) {
+    console.log(busyText(run.busy, tree))
     return EXIT.busy
   }
-  const run = await runRecorded(ctx, 'files', config.files, paths, tree)
   // 文件:行号 只跑那一行的测试
-  const what = paths.some(path => LOCATED.test(path)) ? `${paths.length} 处测试` : `${paths.length} 个测试文件`
-  if (run.record.result === 'interrupted') return EXIT.interrupted
+  const what = targets.some(target => LOCATED.test(target)) ? `${targets.length} 处测试` : `${targets.length} 个测试文件`
+  if (run.execution.interrupted) return EXIT.interrupted
   if (run.record.result === 'fail') {
     console.log(failureText(`${what}失败`, run.record.log, run.execution))
     return EXIT.fail
@@ -226,12 +236,12 @@ function status(): number {
 
     for (const marker of ctx.store.running().filter(m => m.worktree === ctx.root)) {
       const changed = marker.tree === tree ? '开始后代码没改过' : '开始后代码改过，跑完的结果不算当前代码的记录'
-      lines.push(`正在跑：${marker.kind}，开始于 ${when(marker.startedAt)}（已 ${duration(Date.now() - marker.startedAt)}），${changed}`)
+      lines.push(`正在跑：${marker.kind}，${started(marker)}（已 ${duration(Date.now() - marker.startedAt)}），${changed}`)
     }
 
     const last = runs.filter(run => run.kind === 'full' && run.worktree === ctx.root).sort((a, b) => b.startedAt - a.startedAt)[0]
     if (last) {
-      const outcome = { pass: '通过', fail: '失败', interrupted: '中断' }[last.result]
+      const outcome = last.result === 'pass' ? '通过' : '失败'
       const changed = last.result === 'pass' && last.tree !== last.treeAtEnd ? '，但跑的过程中代码改过' : ''
       const current = last.tree === tree ? '是当前代码' : '不是当前代码'
       lines.push(`最近一次整组：${outcome}${changed}（${when(last.startedAt)}，用时 ${duration(last.durationMs)}，${current}）`)
@@ -250,12 +260,14 @@ function status(): number {
     }
     if (config.ignore.length) lines.push(`  ignore: ${config.ignore.join(', ')}`)
   }
+  if (config) lines.push(`合并门：${gateProblem(ctx.root) ?? '已装上，agent 移动默认分支时检查'}`)
   // 版本太旧不在这里查：focused 读输出时会说
   lines.push(`layermap：${commandExists(ctx.root, 'layermap') ? '找到' : `找不到，focused 没法按改动选测试，每次都会建议跑整组。${LAYERMAP_HINT}`}`)
 
   console.log(lines.join('\n'))
-  // 停止门据此判断 agent 有没有看过整组的结果
-  ctx.store.markRead(ctx.root, Date.now())
+  // 停止门据此判断这个会话有没有看过整组的结果；不在 Claude Code 里（没有会话号）不记
+  const sessionId = process.env.CLAUDE_CODE_SESSION_ID
+  if (sessionId) ctx.store.markRead(sessionId, ctx.root, Date.now(), () => defaultTips(ctx))
   return config ? EXIT.ok : EXIT.usage
 }
 
@@ -286,6 +298,33 @@ function report(args: string[]): number {
   return EXIT.ok
 }
 
+function install(): number {
+  const ctx = context()
+  if (!ctx) return EXIT.usage
+  const state = installGate(ctx.root)
+  if (state.kind === 'foreign') {
+    console.error(`${state.path} 已经有别的 reference-transaction 钩子，没有覆盖。要用合并门，把 testpace 的检查合进那个钩子（内容见 testpace 插件的 src/gate.ts 里的 HOOK_SCRIPT）。`)
+    return EXIT.usage
+  }
+  const commit = hookInWorktree(ctx.root, state.path) ? '\n这个钩子在项目目录里（core.hooksPath），和 testpace.json 一样要提交进仓库。' : ''
+  console.log(`合并门已装上：${state.path}${commit}`)
+  const problem = gateProblem(ctx.root)
+  if (problem) console.log(problem)
+  return EXIT.ok
+}
+
+/** git 的 reference-transaction 钩子调用：标准输入是要更新的引用，拒绝时退出码非零，git 就取消这次更新。 */
+function gate(): number {
+  try {
+    const reason = checkRefUpdates(process.cwd(), readFileSync(0, 'utf8'))
+    if (!reason) return EXIT.ok
+    console.error(reason)
+  } catch (error) {
+    console.error(`testpace 合并门：没能确认要落地的代码测过（${(error as Error).message.split('\n')[0]}），这次不更新。`)
+  }
+  return EXIT.fail
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv
   switch (command) {
@@ -299,6 +338,10 @@ async function main(argv: string[]): Promise<number> {
       return status()
     case 'report':
       return report(rest)
+    case 'install':
+      return install()
+    case 'gate':
+      return gate()
     case undefined:
     case '-h':
     case '--help':
