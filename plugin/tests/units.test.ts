@@ -5,7 +5,7 @@ import { findCoverage } from '../src/coverage.ts'
 import { cleanLines, failureExcerpt } from '../src/excerpt.ts'
 import { duration } from '../src/format.ts'
 import { matcher } from '../src/glob.ts'
-import { fileRole, flakyTrees, renderReport, repeatedFiles, rerunsAfterFailure, weekly } from '../src/report.ts'
+import { fileRole, flakyTrees, landingCost, renderReport, repeatedFiles, rerunsAfterFailure, weekly } from '../src/report.ts'
 import { KEEP_LOGS, type RunRecord, Store } from '../src/store.ts'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -153,6 +153,23 @@ describe('报告的统计', () => {
       run({ kind: 'files', files: ['b.test.ts'] }),
     ]
     assert.deepEqual(repeatedFiles(runs), [['b.test.ts', 3], ['a.test.ts', 2]])
+  })
+
+  test('平均每次落地的测试耗时和整组次数，落地从第一次运行算起', () => {
+    const t = 1_000_000_000_000
+    const runs = [
+      run({ kind: 'fast', startedAt: t, durationMs: 60_000 }),
+      run({ kind: 'full', startedAt: t + 1, durationMs: 600_000 }),
+      run({ kind: 'full', startedAt: t + 2, durationMs: 540_000 }),
+    ]
+    const landing = (time: number) => ({ commit: 'c', time, files: [] })
+    // 第一次运行之前的落地不摊
+    assert.equal(
+      landingCost(runs, [landing(t - 1), landing(t + 10), landing(t + 20)], 'main'),
+      '落地到 main 2 次，平均每次落地跑测试 10分00秒、整组 1.0 次（从这段时间第一次运行算起，含分支上还没落地的）',
+    )
+    assert.equal(landingCost(runs, [landing(t - 1)], 'main'), undefined)
+    assert.equal(landingCost([], [landing(t)], 'main'), undefined)
   })
 
   test('文件:行号 算那个文件，一次里给了同一文件的几行算一次', () => {

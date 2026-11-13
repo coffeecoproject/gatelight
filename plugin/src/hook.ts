@@ -24,10 +24,11 @@ interface HookInput {
 export function rhythm(repo = '这个仓库'): string {
   return [
     `${repo}用 testpace 管测试节奏（testpace.json）：`,
-    '1. 改完先跑 testpace focused：fast 检查加上和改动相关的测试。它提示跑整组时照做。',
-    '2. 一个阶段做完，就把 testpace full 放到后台跑（run_in_background），同时做复查，不等到收尾才跑。',
-    '3. 有失败，先用 testpace files <文件:行号> 只重跑失败的那几个测试（位置看失败输出），修好后再交一次整组。',
-    '提交、合并或推送到默认分支前必须有整组通过的记录，合并门会检查；直接跑项目自己的整组命令不留记录。',
+    '1. 每个任务在自己的分支上做，最好是自己的 worktree，不和别的会话挤在同一个目录里。',
+    '2. 改完跑 testpace focused：fast 检查加上和改动相关的测试。在分支上不跑整组。',
+    '3. 有失败，用 testpace files <文件:行号> 只重跑失败的那几个测试（位置看失败输出）。',
+    '4. 整组在合回默认分支时跑：做完的几个分支一起合，合并后的代码跑一次 testpace full（放后台，run_in_background），通过了再落地（testpace:merge 技能）。',
+    '提交、合并或推送到默认分支前必须有落地那份代码的整组通过记录，合并门会检查；直接跑项目自己的整组命令不留记录。',
   ].join('\n')
 }
 

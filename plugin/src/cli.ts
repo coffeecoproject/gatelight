@@ -11,7 +11,7 @@ import { busyText, coverageOf, describeCoverage, failureText, openRepo, type Rep
 import { LOCATED, newRunId } from './store.ts'
 
 const USAGE = `用法：
-  testpace focused [--base REF]  改完先跑：fast，再跑 layermap 选出的相关测试。默认对比和默认分支的分叉点
+  testpace focused [--base REF]  改完先跑：fast，再跑 layermap 选出的相关测试。默认对比和默认分支的分叉点；在默认分支上选测靠不住时建议跑整组
   testpace files PATH[:行号]...  只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试
   testpace full                  跑整组（testpace.json 的 full），按当前工作区完整内容记录结果。适合放到后台跑
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
@@ -19,7 +19,7 @@ const USAGE = `用法：
 
 /**
  * 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；3 这个工作区已有测试在跑，或别处在跑同一份代码的整组；
- * 4 跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
+ * 4 在默认分支上，跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
  */
 const EXIT = { ok: 0, fail: 1, usage: 2, busy: 3, fullNeeded: 4, interrupted: 130 } as const
 
@@ -147,6 +147,8 @@ async function focused(args: string[]): Promise<number> {
 
   // 对比和默认分支的分叉点：分支上已经提交的改动也算这次的改动。
   const branch = defaultBranch(ctx.root)
+  // 不在默认分支上（包括分离的 HEAD）：要落地还得合并，合并前的整组兜底，选测靠不住也不用现在跑整组
+  const onBranch = branch !== undefined && currentBranch(ctx.root) !== branch
   const base = at !== -1 ? args[at + 1]! : (branch && commitOf(ctx.root, 'HEAD') && mergeBase(ctx.root, 'HEAD', `refs/heads/${branch}`)) || 'HEAD'
   const ignored = matcher(config.ignore)
   const selection = askLayermap(ctx.root, base, ignored)
@@ -170,11 +172,13 @@ async function focused(args: string[]): Promise<number> {
     }
     lines.push(`相关测试通过 · 用时 ${duration(related.execution.durationMs)}`)
   }
-  if (reasons.length > 0) {
+  if (reasons.length > 0 && onBranch) {
+    lines.push(`这次选测不完全可靠：${reasons.join('；')}。在分支上不用现在跑整组，合回 ${branch} 时的整组会覆盖。`)
+  } else if (reasons.length > 0) {
     lines.push(`建议跑整组（testpace full，放后台）：${reasons.join('；')}。`)
-    if (selection.kind === 'unavailable' && selection.missing) lines.push(LAYERMAP_HINT)
     code = EXIT.fullNeeded
   }
+  if (reasons.length > 0 && selection.kind === 'unavailable' && selection.missing) lines.push(LAYERMAP_HINT)
   console.log(lines.join('\n'))
   return code
 }

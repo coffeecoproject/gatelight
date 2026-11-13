@@ -235,6 +235,23 @@ describe('testpace focused', () => {
     assert.doesNotMatch(r.out, /装上 layermap 插件/)
   })
 
+  test('在分支上选测靠不住时不建议现在跑整组，退出码 0；合并时的整组会覆盖', () => {
+    const repo = sampleRepo()
+    sh(repo, 'git checkout -qb feature')
+    const layermap = fakeLayermap({ ...FORMAT_CHANGE, unmapped: [{ path: 'package.json', kind: 'build or dependency file' }] })
+    const r = testpace(repo, ['focused'], layermap.env)
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /相关测试通过 · 用时 \d+秒\n这次选测不完全可靠：改了 package\.json（build or dependency file），地图跟不到它们影响哪些测试。在分支上不用现在跑整组，合回 main 时的整组会覆盖。\n$/)
+    assert.doesNotMatch(r.out, /建议跑整组/)
+
+    // 分离的 HEAD 也不在默认分支上
+    sh(repo, 'git checkout -q --detach')
+    const node = sh(repo, 'dirname "$(command -v node)"').trim()
+    const noLayermap = testpace(repo, ['focused'], { ...ENV, PATH: `${node}:/usr/bin:/bin` })
+    assert.equal(noLayermap.code, 0, noLayermap.out)
+    assert.match(noLayermap.out, /这次选测不完全可靠：找不到 layermap 命令，没法按改动选测试。在分支上不用现在跑整组，合回 main 时的整组会覆盖。\n装上 layermap 插件/)
+  })
+
   test('status 说明有没有 layermap', () => {
     const repo = sampleRepo()
     const node = sh(repo, 'dirname "$(command -v node)"').trim()

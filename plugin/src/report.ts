@@ -152,6 +152,20 @@ export function weekly(runs: RunRecord[], landingList: Landing[], since: number,
   return rows
 }
 
+/**
+ * 平均每次落地花在测试上的时间和整组次数：看工作方式（比如攒几个分支一起合）有没有降下测试成本。
+ * 落地从这段时间里 testpace 第一次运行算起，接入前的落地不摊；分支上跑了、还没落地的也算在里面。
+ */
+export function landingCost(runs: RunRecord[], landings: Landing[], branch: string | undefined): string | undefined {
+  if (!branch || runs.length === 0) return undefined
+  const from = Math.min(...runs.map(run => run.startedAt))
+  const landed = landings.filter(landing => landing.time >= from).length
+  if (landed === 0) return undefined
+  const total = runs.reduce((sum, run) => sum + run.durationMs, 0)
+  const fulls = runs.filter(run => run.kind === 'full').length
+  return `落地到 ${branch} ${landed} 次，平均每次落地跑测试 ${duration(total / landed)}、整组 ${(fulls / landed).toFixed(1)} 次（从这段时间第一次运行算起，含分支上还没落地的）`
+}
+
 export interface ReportInput {
   repo: string
   days: number
@@ -190,6 +204,8 @@ export function renderReport(input: ReportInput): string {
     lines.push('', ...table(rows))
 
     const notes: string[] = []
+    const cost = landingCost(runs, input.landings, input.defaultBranch)
+    if (cost) notes.push(cost)
     const full = stats.get('full')
     if (full && full.fail > 0) {
       const rounds = rerunsAfterFailure(runs)
