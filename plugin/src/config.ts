@@ -1,4 +1,4 @@
-// 读项目根目录的 testpace.json（项目约定，方案第 4 节）。
+// 读项目根目录的 testpace.json（项目约定）。
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'

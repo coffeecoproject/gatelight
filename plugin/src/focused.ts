@@ -1,5 +1,5 @@
 // testpace focused 的选测：问 layermap 这次改动的相关测试，再问选出的测试跑不跑得到每处改动，
-// 判断选得靠不靠得住。靠不住的时候不假装选准了，提示跑整组（方案 5.1）。
+// 判断选得靠不靠得住。靠不住的时候不假装选准了，提示跑整组。
 
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'

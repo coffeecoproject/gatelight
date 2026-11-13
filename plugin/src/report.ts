@@ -1,4 +1,4 @@
-// 计时诊断（方案 5.5）：只汇总和报告，不替项目改任何东西。
+// 计时诊断：只汇总和报告，不替项目改任何东西。
 
 import { COMMAND_KEYS } from './config.ts'
 import { isValidPass } from './coverage.ts'

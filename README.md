@@ -1,8 +1,17 @@
 # testpace
 
-给 agent 开发用的测试节奏插件（Claude Code）。完整方案见 [测试提速方案.md](测试提速方案.md)。
+给 agent 开发用的测试节奏插件（Claude Code）：开发中只跑和改动相关的测试，提交、合并、推送到默认分支前由程序确认整组通过，并记录测试时间花在哪。
 
-已完成第 1、3 期：项目约定，`focused`、`files`、`full`、`status`、`report` 五条命令，结果记录和精简输出，合并门、停止门和软提示。`focused` 用 `layermap check --json` 选测试，需要 PATH 里有支持 `--json` 的 `layermap` 命令（见方案 5.7）；没有时提示跑整组，并说装上 layermap 插件就能按改动选测试。
+## 安装
+
+```bash
+claude plugin marketplace add coffeecoproject/testpace
+claude plugin install testpace@testpace
+```
+
+装好后开新会话，在项目里说"给这个项目接入 testpace"，Claude 会按接入说明配好。想按改动选测试，再装上 [layermap](https://github.com/coffeecoproject/layermap) 插件。
+
+`focused` 用 `layermap check --json` 选测试，需要 PATH 里有支持 `--json` 的 `layermap` 命令（layermap 0.1.40 起，装上 layermap 插件并开新会话就有）；没有时提示跑整组，并说装上 layermap 插件就能按改动选测试。合并门、停止门和其余命令不依赖 layermap。
 
 ## 项目约定
 

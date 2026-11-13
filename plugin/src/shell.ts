@@ -1,6 +1,6 @@
 // 读懂 agent 要跑的 Bash 命令：拆成一条条命令，跟着 cd 和 git -C 算出每条在哪个目录跑。
 // 只做合并门需要的程度：引号、转义、&& || ; | & 换行、cd、环境变量前缀、sh -c。
-// 认不出来的写法（变量展开出来的命令、脚本里的 git）由停止门的事后检查兜底（方案 5.3）。
+// 认不出来的写法（变量展开出来的命令、脚本里的 git）由停止门的事后检查兜底。
 
 import { homedir } from 'node:os'
 import { basename, resolve } from 'node:path'
