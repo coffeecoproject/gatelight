@@ -41,11 +41,20 @@ fi
 printf '%s' "$updates" | testpace gate
 `
 
+/**
+ * 那个位置已经有别的钩子时，加进它开头的检查。git 把要更新的引用写在标准输入里，只给一次：
+ * 先存进临时文件交给 testpace gate，再把标准输入换成这个文件，钩子原来的内容照样读得到。
+ * 文件打开后就删掉，读不受影响。
+ */
+export const GATE_SNIPPET = `if [ "$1" = prepared ] && [ -n "$CLAUDECODE" ] && command -v testpace >/dev/null 2>&1; then
+  testpace_refs=$(mktemp) && cat >"$testpace_refs" && testpace gate <"$testpace_refs" || { rm -f "$testpace_refs"; exit 1; }
+  exec <"$testpace_refs"
+  rm -f "$testpace_refs"
+fi`
+
 /** 那个位置已经有别的钩子时，把检查加进去的写法。 */
-export const MERGE_HINT = `在那个钩子里加上这几行（放在它读标准输入之前，testpace gate 要读 git 给的引用更新）：
-  if [ "$1" = prepared ] && [ -n "$CLAUDECODE" ] && command -v testpace >/dev/null 2>&1; then
-    testpace gate || exit 1
-  fi`
+export const MERGE_HINT = `在那个钩子开头（#!/bin/sh 下一行，它读标准输入之前）加上这几行；它们读完 git 给的引用更新后会原样放回标准输入，钩子原来的内容照常读得到：
+${GATE_SNIPPET.replace(/^/gm, '  ')}`
 
 export type GateState =
   | { kind: 'installed'; path: string }

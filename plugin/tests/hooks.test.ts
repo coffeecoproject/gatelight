@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { handle, RHYTHM, rhythm } from '../src/hook.ts'
+import { GATE_SNIPPET } from '../src/gate.ts'
 import { Store } from '../src/store.ts'
 import { agent, commit, ENV, gatedRepo, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
 
@@ -238,10 +239,12 @@ describe('合并门（git 钩子）', () => {
     writeFileSync(hook, '#!/bin/sh\nexit 0\n')
     const foreign = testpace(repo, ['install'])
     assert.equal(foreign.code, 2)
-    assert.match(foreign.out, /已经有别的 reference-transaction 钩子，没有覆盖。要用合并门，在那个钩子里加上这几行[\s\S]*testpace gate \|\| exit 1/)
+    assert.match(foreign.out, /已经有别的 reference-transaction 钩子，没有覆盖。要用合并门，在那个钩子开头/)
+    assert.ok(foreign.out.includes(GATE_SNIPPET.replace(/^/gm, '  ')), '说明里给出完整的检查片段')
     assert.equal(sh(repo, 'cat .githooks/reference-transaction'), '#!/bin/sh\nexit 0\n')
-    // 项目自己的钩子里调用了 testpace gate：算装上了，不动它，也真的在把关
-    const merged = '#!/bin/sh\n# 项目自己的钩子\nif [ "$1" = prepared ] && [ -n "$CLAUDECODE" ]; then\n  testpace gate || exit 1\nfi\n'
+    // 照说明把检查加进项目自己的钩子：算装上了，不动它，真的在把关，钩子原来的内容也照样读得到 git 给的引用更新
+    const seen = join(tempDir('testpace-seen-'), 'refs')
+    const merged = `#!/bin/sh\n${GATE_SNIPPET}\n# 项目自己的钩子：记下要更新的引用\n[ "$1" = prepared ] && cat >> '${seen}'\nexit 0\n`
     writeFileSync(hook, merged)
     const kept = testpace(repo, ['install'])
     assert.equal(kept.code, 0)
@@ -251,6 +254,8 @@ describe('合并门（git 钩子）', () => {
     commit(repo, '提交钩子')
     change(repo)
     assert.match(agent(repo, 'git commit -qam m').out, /testpace 合并门：这次要把 main 更新到/)
+    assert.equal(agent(repo, 'git checkout -qb fix && git commit -qam m').code, 0, '分支上的提交照常放行')
+    assert.match(sh(repo, `cat '${seen}'`), /^[0-9a-f]+ [0-9a-f]+ refs\/heads\/fix$/m, '钩子原来的内容读到了 testpace gate 读过的引用更新')
 
     // 钩子目录被 .gitignore 忽略（husky 的 .husky/_ 这类）：不说要提交，说每个工作区各装一次
     const husky = sampleRepo()

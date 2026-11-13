@@ -48,7 +48,7 @@ claude plugin install layermap@layermap
 | `testpace full` | 跑 `full`，按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑（`testpace.json` 自己不算忽略路径，改了它要重跑）。跑的过程中代码改过，通过也不算记录，输出里列出变了的文件 |
 | `testpace status` | 当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查、有没有 layermap |
 | `testpace report [--days N]` | 计时诊断：各命令次数和耗时、平均每次落地的测试耗时和整组次数、失败后重跑轮数、同一份代码整组先失败后通过的次数（可能不稳定）、`fast` 是否过慢、按周的测试行数和整组耗时 |
-| `testpace install` | 装上合并门的 git 钩子（`reference-transaction`），装进 git 实际用的钩子目录。设了 `core.hooksPath` 的装进那里：目录进版本库的，钩子是项目文件，要提交；目录被 `.gitignore` 忽略的（比如 husky 的 `.husky/_`），每个工作区、每次重新克隆后各装一次。那里已有别的同名钩子时不覆盖，输出里给出要加进那个钩子的几行（调用 `testpace gate`）；加上之后就算装好了 |
+| `testpace install` | 装上合并门的 git 钩子（`reference-transaction`），装进 git 实际用的钩子目录。设了 `core.hooksPath` 的装进那里：目录进版本库的，钩子是项目文件，要提交；目录被 `.gitignore` 忽略的（比如 husky 的 `.husky/_`），每个工作区、每次重新克隆后各装一次。那里已有别的同名钩子时不覆盖，输出里给出要加在那个钩子开头的几行（调用 `testpace gate`，读完 git 给的引用更新后原样放回标准输入，那个钩子原来的内容照常读得到）；加上之后就算装好了 |
 
 同一个工作区一次只跑一轮测试：`focused`、`files`、`full` 发现这个工作区已经有 testpace 的命令在跑时直接退出，不抢端口、测试库这些资源。testpace 被强杀后测试进程还在跑的，照样算在跑，提示里给出停掉它的命令。`files` 的路径按当前目录算。
 
