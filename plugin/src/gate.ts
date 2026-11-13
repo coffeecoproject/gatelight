@@ -65,25 +65,53 @@ export type GateState =
   /** 那个位置已经有别的 reference-transaction 钩子，里面没有调用 testpace gate。 */
   | { kind: 'foreign'; path: string }
   | { kind: 'missing'; path: string }
+  /**
+   * 项目的钩子目录跟着分支走：默认分支上提交了这个钩子，这个工作区检出的分支还没有。
+   * 不在这里装：装出来的是未跟踪文件，之后把默认分支合进来时 git 会因为它拒绝合并。
+   */
+  | { kind: 'onDefault'; path: string; branch: string }
+  /**
+   * core.hooksPath 指向工作区里的目录，这个工作区里还没有它（比如 husky 装依赖时才生成的 .husky/_）。
+   * 不在这里装：现在看不出它进不进版本库，装出来可能是个该忽略却没被忽略的文件，会被当成项目文件提交。
+   */
+  | { kind: 'noDir'; path: string }
 
-function gateState(root: string): GateState {
+/** 合并门钩子在这个工作区的状况。branch 是默认分支，不给时要用到才找。 */
+function gateState(root: string, branch?: string): GateState {
   const path = join(hooksDir(root), HOOK_NAME)
-  if (!existsSync(path)) return { kind: 'missing', path }
-  const content = readFileSync(path, 'utf8')
-  if (content === HOOK_SCRIPT) return { kind: 'installed', path }
-  if (content.includes(MARK)) return { kind: 'outdated', path }
-  const callsGate = content.split('\n').some(line => !line.trimStart().startsWith('#') && /\btestpace gate\b/.test(line))
-  return { kind: callsGate ? 'merged' : 'foreign', path }
+  if (existsSync(path)) {
+    const content = readFileSync(path, 'utf8')
+    if (content === HOOK_SCRIPT) return { kind: 'installed', path }
+    if (content.includes(MARK)) return { kind: 'outdated', path }
+    const callsGate = content.split('\n').some(line => !line.trimStart().startsWith('#') && /\btestpace gate\b/.test(line))
+    return { kind: callsGate ? 'merged' : 'foreign', path }
+  }
+  if (inGitDir(root, path)) return { kind: 'missing', path }
+  // 检出的提交里就有、只是工作区里删了的，照常装回去
+  const rel = relative(root, path)
+  const main = branch ?? defaultBranch(root)
+  if (main && !hasFile(root, 'HEAD', rel) && hasFile(root, `refs/heads/${main}`, rel)) return { kind: 'onDefault', path, branch: main }
+  if (!existsSync(dirname(path))) return { kind: 'noDir', path }
+  return { kind: 'missing', path }
 }
 
-/** 装上（或更新）合并门的钩子。那个位置已经有别人的钩子时不动它，返回 merged 或 foreign。 */
+/**
+ * 装上（或更新）合并门的钩子。只在钩子没装、或是旧版本时写；别的状况（别人的钩子、不该在这个工作区装）
+ * 原样返回，说明用 gateStateProblem。
+ */
 export function installGate(root: string): GateState {
   const state = gateState(root)
   if (state.kind !== 'missing' && state.kind !== 'outdated') return state
-  mkdirSync(join(state.path, '..'), { recursive: true })
+  mkdirSync(dirname(state.path), { recursive: true })
   writeFileSync(state.path, HOOK_SCRIPT)
   chmodSync(state.path, 0o755)
   return { kind: 'installed', path: state.path }
+}
+
+/** 钩子在 git 自己的目录里（.git/hooks 或工作区外的目录），不是项目文件。 */
+function inGitDir(root: string, path: string): boolean {
+  const rel = relative(root, path)
+  return rel.startsWith('..') || rel.startsWith('.git/') || rel === '.git'
 }
 
 /**
@@ -91,9 +119,8 @@ export function installGate(root: string): GateState {
  * 项目的钩子目录但被 .gitignore 忽略（比如 husky 的 .husky/_），进不了版本库，每个工作区各装一次。
  */
 export function hookPlace(root: string, path: string): 'git' | 'project' | 'ignored' {
-  const rel = relative(root, path)
-  if (rel.startsWith('..') || rel.startsWith('.git/') || rel === '.git') return 'git'
-  return isIgnored(root, rel) ? 'ignored' : 'project'
+  if (inGitDir(root, path)) return 'git'
+  return isIgnored(root, relative(root, path)) ? 'ignored' : 'project'
 }
 
 /** 合并门没在把关时给 agent 的说明；在把关返回 undefined。 */
@@ -102,18 +129,29 @@ export function gateProblem(root: string): string | undefined {
   if (!branch) {
     return '找不到默认分支（没有 origin/HEAD，本地也没有 main、master），合并门没有生效。设好 origin/HEAD（git remote set-head origin --auto）后才会检查。'
   }
-  const state = gateState(root)
-  if (state.kind === 'installed' || state.kind === 'merged') return undefined
-  if (state.kind === 'foreign') return `${state.path} 已经有别的 reference-transaction 钩子，合并门没装上。告诉用户，要在那个钩子里调用 testpace gate（写法跑 testpace install 看）。`
-  if (state.kind === 'outdated') return '合并门的 git 钩子是旧版本，跑 testpace install 更新。'
+  return gateStateProblem(root, gateState(root, branch))
+}
+
+/** 钩子的这个状况下合并门为什么没在把关、该怎么办；在把关返回 undefined。status、会话说明和 install 共用。 */
+export function gateStateProblem(root: string, state: GateState): string | undefined {
   const rel = relative(root, state.path)
-  const place = hookPlace(root, state.path)
-  // 项目自己的钩子目录（core.hooksPath 是相对路径）跟着检出的分支走：默认分支上提交了钩子，这个分支还没有
-  if (place === 'project' && hasFile(root, `refs/heads/${branch}`, rel)) {
-    return `这个工作区检出的代码里还没有合并门的钩子（${rel}）：项目的钩子目录跟着分支走，${branch} 上已经有了，把 ${branch} 合进这个分支就有。在那之前，在这个工作区里移动 ${branch} 不会检查。`
+  switch (state.kind) {
+    case 'installed':
+    case 'merged':
+      return undefined
+    case 'foreign':
+      return `${state.path} 已经有别的 reference-transaction 钩子，合并门没装上。告诉用户，要在那个钩子里调用 testpace gate（写法跑 testpace install 看）。`
+    case 'outdated':
+      return '合并门的 git 钩子是旧版本，跑 testpace install 更新。'
+    case 'onDefault':
+      return `这个工作区检出的代码里还没有合并门的钩子（${rel}）：项目的钩子目录跟着分支走，${state.branch} 上已经有了，把 ${state.branch} 合进这个分支就有，不用在这里装。在那之前，在这个工作区里移动 ${state.branch} 不会检查。`
+    case 'noDir':
+      return `钩子目录 ${dirname(rel)}（core.hooksPath）在这个工作区里还不存在，git 不会跑那里的任何钩子，合并门没有生效。是工具生成的目录（比如 husky 装依赖时生成 .husky/_），先装依赖再跑 testpace install；是项目要新建的钩子目录，先建好这个目录再跑。`
+    case 'missing': {
+      const each = hookPlace(root, state.path) === 'ignored' ? `这个项目的钩子目录（${dirname(rel)}）不进版本库，每个工作区要各装一次。` : ''
+      return `合并门的 git 钩子还没装，提交、合并到默认分支时不会检查。${each}跑 testpace install 装上。`
+    }
   }
-  const each = place === 'ignored' ? `这个项目的钩子目录（${dirname(rel)}）不进版本库，每个工作区要各装一次。` : ''
-  return `合并门的 git 钩子还没装，提交、合并到默认分支时不会检查。${each}跑 testpace install 装上。`
 }
 
 /**
@@ -138,7 +176,7 @@ export function checkRefUpdates(cwd: string, input: string): string | undefined 
     // 接入了约定的仓库才管：默认分支现在的代码或要落地的代码里有 testpace.json
     const incoming = contractAt(repo, next)
     if (!incoming && !hasFile(root, `refs/heads/${branch}`, CONFIG_FILE)) continue
-    const config = incoming ?? { ignore: [] }
+    const config = incoming?.config ?? { ignore: [] }
     const current = commitOf(root, `refs/heads/${branch}`)
     // 退回默认分支以前的提交，或同步远程默认分支已有的提交：没有新内容落地
     if (current && isAncestor(root, next, current)) continue
@@ -148,8 +186,13 @@ export function checkRefUpdates(cwd: string, input: string): string | undefined 
     if (coverageOf(repo, config, tree).kind !== 'none') continue
     const worktree = workTreeId(root)
     const notes = !incoming
-      ? [`要落地的代码里没有 ${CONFIG_FILE}（${branch} 上有），拿不到整组通过记录。不是要退出接入，就把 ${branch} 合进这个分支再测；要退出接入，由用户自己在终端里提交。`]
-      : worktree !== tree && coverageOf(repo, config, worktree).kind !== 'none'
+      ? // 要落地的提交接在默认分支现在的提交后面：是这些提交删掉了它；不然是接入之前分出去的分支，本来就没有
+        current && isAncestor(root, current, next)
+        ? [`要落地的提交删掉了 ${CONFIG_FILE}，拿不到整组通过记录。要退出接入，由用户自己在终端里提交；不是要退出，就把它恢复回来。`]
+        : [`要落地的代码里没有 ${CONFIG_FILE}（${branch} 上有），拿不到整组通过记录：这个分支是接入之前分出去的。把 ${branch} 合进这个分支再测。`]
+      : !incoming.config?.full
+        ? [`要落地的代码里的 ${CONFIG_FILE} 有问题：${incoming.problems.join('；')}。testpace full 跑不了，拿不到整组通过记录：先修好它，在改好的代码上跑整组。`]
+        : worktree !== tree && coverageOf(repo, config, worktree).kind !== 'none'
         ? ['工作区的整组通过了，但要落地的内容和工作区不一样：还有没提交的改动或未跟踪的文件。把它们一起提交，或者删掉、加进 .gitignore 后重跑整组。']
         : [
             '先在要落地的这份代码上跑 testpace full（放后台），通过后再落地；几个分支一起合用 testpace:merge 技能，在合并分支上测过再快进。',

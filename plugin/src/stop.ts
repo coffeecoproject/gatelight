@@ -61,10 +61,10 @@ export function stopCheck(input: StopInput): StopResult {
     const tip = refTip(repo.root, ref)
     if (!tip) continue
     // 和合并门一样：会话开始时它指向的代码或现在的代码里有 testpace.json 才管
-    const config = contractAt(repo, tip.commit)
+    const contract = contractAt(repo, tip.commit)
     const start = session.tipsAtStart[ref]
-    if (!config && !(start && hasFile(repo.root, start, CONFIG_FILE))) continue
-    if (coverageOf(repo, config ?? { ignore: [] }, tip.tree).kind !== 'none') continue
+    if (!contract && !(start && hasFile(repo.root, start, CONFIG_FILE))) continue
+    if (coverageOf(repo, contract?.config ?? { ignore: [] }, tip.tree).kind !== 'none') continue
     warned.push(commit)
     const name = ref.replace(/^refs\/(heads|remotes)\//, '')
     const how = ref.startsWith('refs/heads/') ? '可能是在 Claude Code 之外提交的，或者合并门没装上' : '可能是推送了别的分支到默认分支，或者在 GitHub 上合并了 PR'

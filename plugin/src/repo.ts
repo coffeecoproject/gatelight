@@ -1,7 +1,7 @@
 // 命令行和 hook 共用的部分：找到仓库、读约定、判断通过记录、跑命令并记录。
 
 import { readFileSync } from 'node:fs'
-import type { CommandKey, Config } from './config.ts'
+import type { CommandKey, Config, LoadedConfig } from './config.ts'
 import { CONFIG_FILE, readConfig } from './config.ts'
 import { type Coverage, findCoverage } from './coverage.ts'
 import { failureExcerpt } from './excerpt.ts'
@@ -24,12 +24,12 @@ export function openRepo(cwd: string): Repo | undefined {
 /**
  * 一个提交自己带的约定（提交里的 testpace.json）；提交里没有这个文件返回 undefined。
  * 合并门、停止门判断落到默认分支的代码时用它，不看工作区里的文件：工作区里没提交的改动、
- * 别的分支检出的旧文件都不该影响判断。文件读不了的按没有 ignore 算（要内容完全一致的通过记录）。
+ * 别的分支检出的旧文件都不该影响判断。写坏了的，problems 里是原因；没有 config 时按没有 ignore 算
+ * （要内容完全一致的通过记录）。
  */
-export function contractAt(repo: Repo, rev: string): Config | undefined {
+export function contractAt(repo: Repo, rev: string): LoadedConfig | undefined {
   const text = fileAt(repo.root, rev, CONFIG_FILE)
-  if (text === undefined) return undefined
-  return readConfig(text).config ?? { ignore: [] }
+  return text === undefined ? undefined : readConfig(text)
 }
 
 /**

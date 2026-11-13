@@ -6,7 +6,7 @@ import { COMMAND_KEYS, commandExists, CONFIG_FILE, configExists, loadConfig } fr
 import { execute } from './execute.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT } from './focused.ts'
 import { duration, short, when } from './format.ts'
-import { checkRefUpdates, gateProblem, hookPlace, installGate, MERGE_HINT } from './gate.ts'
+import { checkRefUpdates, gateProblem, gateStateProblem, hookPlace, installGate, MERGE_HINT } from './gate.ts'
 import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { renderReport } from './report.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runRecorded, started } from './repo.ts'
@@ -311,6 +311,10 @@ function install(): number {
   const state = installGate(ctx.root)
   if (state.kind === 'foreign') {
     console.error(`${state.path} 已经有别的 reference-transaction 钩子，没有覆盖。要用合并门，${MERGE_HINT}`)
+    return EXIT.usage
+  }
+  if (state.kind === 'onDefault' || state.kind === 'noDir') {
+    console.error(`没有装：${gateStateProblem(ctx.root, state)}`)
     return EXIT.usage
   }
   if (state.kind === 'merged') {

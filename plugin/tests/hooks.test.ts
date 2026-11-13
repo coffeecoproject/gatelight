@@ -163,15 +163,27 @@ describe('合并门（git 钩子）', () => {
     setConfig(repo, { ignore: ['**'] })
     blocked('git commit -qam m', '把 ignore 改成全部，和没测过的改动一起提交')
     change(repo)
-    assert.match(blocked('git rm -q testpace.json && git commit -qam m', '删掉 testpace.json 的提交'), /要落地的代码里没有 testpace\.json（main 上有），拿不到整组通过记录。/)
-    // 还没有 testpace.json 的老分支：在它的工作区里移动 main 也一样
-    sh(repo, 'git checkout -qb old && git rm -q testpace.json')
+    assert.match(
+      blocked('git rm -q testpace.json && git commit -qam m', '删掉 testpace.json 的提交'),
+      /要落地的提交删掉了 testpace\.json，拿不到整组通过记录。要退出接入，由用户自己在终端里提交；不是要退出，就把它恢复回来。/,
+    )
+    change(repo)
+    writeFileSync(join(repo, 'testpace.json'), '{')
+    assert.match(
+      blocked('git commit -qam m', '提交了写坏的 testpace.json'),
+      /要落地的代码里的 testpace\.json 有问题：testpace\.json 不是合法的 JSON：.*。testpace full 跑不了，拿不到整组通过记录：先修好它/,
+    )
+    // 接入之前分出去的老分支（和 main 后来的提交不在一条线上，也没有 testpace.json）：在它的工作区里移动 main 也一样
+    sh(repo, 'git checkout -q --orphan old && git rm -qf testpace.json')
     change(repo)
     commit(repo, 'old')
     sh(repo, 'git checkout -q main')
     const other = join(tempDir('testpace-wt-'), 'wt')
     sh(repo, `git worktree add -q '${other}' old`)
-    assert.match(agent(other, 'git update-ref refs/heads/main old').out, /要落地的代码里没有 testpace\.json/)
+    assert.match(
+      agent(other, 'git update-ref refs/heads/main old').out,
+      /要落地的代码里没有 testpace\.json（main 上有），拿不到整组通过记录：这个分支是接入之前分出去的。把 main 合进这个分支再测。/,
+    )
     assert.equal(head(repo), before)
   })
 
@@ -227,6 +239,14 @@ describe('合并门（git 钩子）', () => {
     assert.match(String(start?.hookSpecificOutput?.additionalContext), /^.*用 testpace 管测试节奏[\s\S]*跑 testpace install 装上。$/)
 
     sh(repo, 'git config core.hooksPath .githooks')
+    // core.hooksPath 指的目录还不存在：看不出它进不进版本库，不装
+    const noDir = /钩子目录 \.githooks（core\.hooksPath）在这个工作区里还不存在，git 不会跑那里的任何钩子，合并门没有生效。/
+    assert.match(testpace(repo, ['status']).out, noDir)
+    const refused = testpace(repo, ['install'])
+    assert.equal(refused.code, 2)
+    assert.match(refused.out, /^没有装：钩子目录 \.githooks/)
+    assert.equal(sh(repo, 'ls -a').includes('.githooks'), false)
+    mkdirSync(join(repo, '.githooks'))
     const installed = testpace(repo, ['install'])
     assert.equal(installed.code, 0)
     assert.match(installed.out, /合并门已装上：.*\/\.githooks\/reference-transaction\n这个钩子在项目目录里（core.hooksPath），和 testpace.json 一样要提交进仓库。/)
@@ -269,6 +289,12 @@ describe('合并门（git 钩子）', () => {
     const ignored = testpace(husky, ['install'])
     assert.match(ignored.out, /合并门已装上：.*\/\.husky\/_\/reference-transaction\n这个钩子目录不进版本库（被 \.gitignore 忽略）：每个工作区、每次重新克隆后都要再跑一次 testpace install。/)
     assert.match(testpace(husky, ['status']).out, /合并门：已装上/)
+    // 新的工作区里还没装依赖、.husky/_ 还没生成：不装，免得写出一个没被忽略、会被当成项目文件提交的钩子
+    const fresh = join(tempDir('testpace-wt-'), 'wt')
+    sh(husky, `git worktree add -q '${fresh}' -b fresh`)
+    assert.match(testpace(fresh, ['status']).out, /合并门：钩子目录 \.husky\/_（core\.hooksPath）在这个工作区里还不存在[\s\S]*先装依赖再跑 testpace install/)
+    assert.equal(testpace(fresh, ['install']).code, 2)
+    assert.equal(sh(fresh, 'git status --porcelain --untracked-files=all'), '')
 
     const trunk = tempDir('testpace-trunk-')
     sh(trunk, `cp -R ${join(repo, 'src')} ${join(repo, 'testpace.json')} . && git init -q -b trunk && git add -A && git -c user.name=t -c user.email=t@t commit -qm i`)
@@ -277,15 +303,25 @@ describe('合并门（git 钩子）', () => {
 
   test('项目的钩子目录跟着分支走：分支上还没有钩子的工作区里不检查，说清楚合进默认分支就有', () => {
     const repo = sampleRepo()
-    sh(repo, 'git branch old && git config core.hooksPath .githooks')
+    sh(repo, 'git branch old && git config core.hooksPath .githooks && mkdir .githooks')
     assert.equal(testpace(repo, ['install']).code, 0)
     commit(repo, '提交合并门钩子')
+    // 检出的提交里有钩子、只是工作区里删了：照常提示安装，装回去和提交的一样
+    rmSync(join(repo, '.githooks', 'reference-transaction'))
+    assert.match(testpace(repo, ['status']).out, /合并门：合并门的 git 钩子还没装/)
+    assert.equal(testpace(repo, ['install']).code, 0)
+    assert.equal(sh(repo, 'git status --porcelain'), '')
     const other = join(tempDir('testpace-wt-'), 'wt')
     sh(repo, `git worktree add -q '${other}' old`)
     assert.match(
       testpace(other, ['status']).out,
-      /合并门：这个工作区检出的代码里还没有合并门的钩子（\.githooks\/reference-transaction）：项目的钩子目录跟着分支走，main 上已经有了，把 main 合进这个分支就有。/,
+      /合并门：这个工作区检出的代码里还没有合并门的钩子（\.githooks\/reference-transaction）：项目的钩子目录跟着分支走，main 上已经有了，把 main 合进这个分支就有，不用在这里装。/,
     )
+    // 在这里装会写出未跟踪的钩子文件，之后把 main 合进来时 git 会因为它拒绝合并：不装
+    const refused = testpace(other, ['install'])
+    assert.equal(refused.code, 2)
+    assert.match(refused.out, /^没有装：这个工作区检出的代码里还没有合并门的钩子/)
+    assert.equal(sh(other, 'git status --porcelain --untracked-files=all'), '')
     // 说明里讲的缺口是真的：这个工作区里移动 main 不经过钩子
     change(other)
     commit(other, 'old 上没测过的提交')
