@@ -26,7 +26,7 @@ export function rhythm(repo = '这个仓库'): string {
     `${repo}用 testpace 管测试节奏（testpace.json）：`,
     '1. 改完先跑 testpace focused：fast 检查加上和改动相关的测试。它提示跑整组时照做。',
     '2. 一个阶段做完，就把 testpace full 放到后台跑（run_in_background），同时做复查，不等到收尾才跑。',
-    '3. 有失败，先用 testpace files <测试文件> 只重跑失败的文件，修好后再交一次整组。',
+    '3. 有失败，先用 testpace files <文件:行号> 只重跑失败的那几个测试（位置看失败输出），修好后再交一次整组。',
     '提交、合并或推送到默认分支前必须有整组通过的记录，合并门会检查；直接跑项目自己的整组命令不留记录。',
   ].join('\n')
 }

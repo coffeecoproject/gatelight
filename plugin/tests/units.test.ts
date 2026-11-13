@@ -155,6 +155,11 @@ describe('报告的统计', () => {
     assert.deepEqual(repeatedFiles(runs), [['b.test.ts', 3], ['a.test.ts', 2]])
   })
 
+  test('文件:行号 算那个文件，一次里给了同一文件的几行算一次', () => {
+    const runs = [run({ kind: 'files', files: ['a.test.ts:12', 'a.test.ts:30:5'] }), run({ kind: 'files', files: ['a.test.ts'] })]
+    assert.deepEqual(repeatedFiles(runs), [['a.test.ts', 2]])
+  })
+
   test('区分测试代码、主代码和非代码文件', () => {
     assert.equal(fileRole('src/a.test.ts'), 'test')
     assert.equal(fileRole('e2e/login.ts'), 'test')

@@ -123,6 +123,42 @@ describe('结果的可信度', () => {
     assert.match(testpace(other, 'full').out, /^这份代码有整组通过记录/)
   })
 
+  test('同一个工作区一次只跑一轮：整组在跑时 files、focused 不跑，files 在跑时整组不跑', { timeout: 60_000 }, async () => {
+    const repo = sampleRepo()
+    const go = join(tempDir('testpace-go-'), 'go')
+    const wait = `while [ ! -f '${go}' ]; do sleep 0.1; done;`
+    setConfigWith(repo, { full: `${wait} node scripts/full.mjs`, files: `${wait} node scripts/test-files.mjs` })
+    sh(repo, `git add -A && git -c user.name=t -c user.email=t@t commit -qm slow`)
+    const running = join(repo, '.git', 'testpace', 'running')
+    const started = async (): Promise<void> => {
+      for (let i = 0; i < 100 && !(existsSync(running) && sh(running, 'ls').trim()); i++) await new Promise(r => setTimeout(r, 50))
+    }
+
+    const full = spawn(BIN, ['full'], { cwd: repo, env: ENV })
+    await started()
+    const files = testpace(repo, 'files', 'tests/format.test.mjs')
+    assert.equal(files.code, 3)
+    assert.match(files.out, /^这个工作区正在跑整组（开始于 .+，进程 \d+），同一个工作区一次只跑一轮测试，等它结束再跑。$/m)
+    writeFileSync(join(repo, 'src', 'extra.mjs'), 'export const x = 1\n')
+    const focused = testpace(repo, 'focused')
+    assert.equal(focused.code, 3)
+    assert.match(focused.out, /那次整组开始后代码改过，它跑完的结果不算当前代码的记录。/)
+    assert.deepEqual(runs(repo), [], '没跑的不留记录')
+    writeFileSync(go, '')
+    await new Promise(resolve => full.on('close', resolve))
+
+    rmSync(go)
+    const slowFiles = spawn(BIN, ['files', 'tests/format.test.mjs'], { cwd: repo, env: ENV })
+    await started()
+    assert.match(testpace(repo, 'status').out, /正在跑：files/)
+    const second = testpace(repo, 'full')
+    assert.equal(second.code, 3)
+    assert.match(second.out, /^这个工作区正在跑 files （开始于/)
+    writeFileSync(go, '')
+    assert.equal(await new Promise(resolve => slowFiles.on('close', resolve)), 0)
+    assert.equal(sh(running, 'ls').trim(), '', 'files 跑完删掉在跑的记录')
+  })
+
   test('标了 assume-unchanged 的文件改了也算改动', () => {
     const repo = sampleRepo()
     assert.equal(testpace(repo, 'full').code, 0)
@@ -211,6 +247,18 @@ describe('配置和报告', () => {
     assert.equal(files('tests/format.test.mjs'), 0)
     assert.equal(files('tests/missing.test.mjs'), 2)
     assert.equal(files('tests/format.test.mjs', 'tests/empty.test.mjs'), 1)
+    // 文件:行号：node --test 不能按行跑，跑整个文件；文件不存在照样失败
+    assert.equal(files('tests/format.test.mjs:5'), 0)
+    assert.equal(files('tests/missing.test.mjs:5'), 2)
+  })
+
+  test('files 接受 文件:行号，原样交给项目的命令并记下', () => {
+    const repo = sampleRepo()
+    const r = testpace(repo, 'files', 'tests/format.test.mjs:5', 'tests/price.test.mjs:9:1')
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /^2 处测试通过 · 用时/)
+    assert.deepEqual(runs(repo).at(-1)!.files, ['tests/format.test.mjs:5', 'tests/price.test.mjs:9:1'])
+    assert.match(readFileSync(runs(repo).at(-1)!.log as string, 'utf8'), /不能按行跑，这些跑整个文件：tests\/format.test.mjs:5/)
   })
 
   test('report 的 --days 要是正整数', () => {

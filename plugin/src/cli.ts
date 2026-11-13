@@ -7,18 +7,18 @@ import { duration, short, when } from './format.ts'
 import { commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { matcher } from './glob.ts'
 import { renderReport } from './report.ts'
-import { coverageOf, describeCoverage, failureText, openRepo, type Repo, runRecorded } from './repo.ts'
-import { newRunId } from './store.ts'
+import { busyText, coverageOf, describeCoverage, failureText, openRepo, type Repo, runningHere, runRecorded } from './repo.ts'
+import { LOCATED, newRunId } from './store.ts'
 
 const USAGE = `用法：
   testpace focused [--base REF]  改完先跑：fast，再跑 layermap 选出的相关测试。默认对比和默认分支的分叉点
-  testpace files PATH...         只跑给定的测试文件（testpace.json 的 files），比如重跑失败的文件
+  testpace files PATH[:行号]...  只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试
   testpace full                  跑整组（testpace.json 的 full），按当前工作区完整内容记录结果。适合放到后台跑
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace report [--days N]     计时诊断，默认最近 28 天`
 
 /**
- * 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；3 已有整组在跑；
+ * 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；3 这个工作区已有测试在跑，或别处在跑同一份代码的整组；
  * 4 跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
  */
 const EXIT = { ok: 0, fail: 1, usage: 2, busy: 3, fullNeeded: 4, interrupted: 130 } as const
@@ -49,11 +49,18 @@ async function full(): Promise<number> {
 
   // Claude Code 给 agent 的命令带上会话号：停止门只拦起这次整组的会话，和等着用它结果的会话
   const sessionId = process.env.CLAUDE_CODE_SESSION_ID
-  const busy = ctx.store.running().find(marker => marker.kind === 'full' && (marker.worktree === ctx.root || marker.tree === tree))
-  if (busy) {
+  const running = ctx.store.running()
+  const busy =
+    running.find(marker => marker.kind === 'full' && (marker.worktree === ctx.root || marker.tree === tree)) ??
+    running.find(marker => marker.worktree === ctx.root)
+  if (busy?.kind === 'full') {
     if (sessionId && busy.worktree === ctx.root) ctx.store.waitOn(busy.id, sessionId)
     const where = busy.worktree === ctx.root ? '这个工作区已有整组在跑' : `工作区 ${busy.worktree} 正在跑同一份代码的整组`
     console.log(`${where}（开始于 ${when(busy.startedAt)}，进程 ${busy.pid}）。等它结束后用 testpace status 看结果。`)
+    return EXIT.busy
+  }
+  if (busy) {
+    console.log(busyText(busy, tree))
     return EXIT.busy
   }
 
@@ -124,6 +131,11 @@ async function focused(args: string[]): Promise<number> {
   }
 
   const tree = workTreeId(ctx.root)
+  const busy = runningHere(ctx)
+  if (busy) {
+    console.log(busyText(busy, tree))
+    return EXIT.busy
+  }
   const lines: string[] = []
   const fast = await runRecorded(ctx, 'fast', config.fast, [], tree)
   if (fast.record.result === 'interrupted') return EXIT.interrupted
@@ -179,13 +191,21 @@ async function files(paths: string[]): Promise<number> {
     console.error(`没法跑测试文件：${problems.join('；')}`)
     return EXIT.usage
   }
-  const run = await runRecorded(ctx, 'files', config.files, paths, workTreeId(ctx.root))
+  const tree = workTreeId(ctx.root)
+  const busy = runningHere(ctx)
+  if (busy) {
+    console.log(busyText(busy, tree))
+    return EXIT.busy
+  }
+  const run = await runRecorded(ctx, 'files', config.files, paths, tree)
+  // 文件:行号 只跑那一行的测试
+  const what = paths.some(path => LOCATED.test(path)) ? `${paths.length} 处测试` : `${paths.length} 个测试文件`
   if (run.record.result === 'interrupted') return EXIT.interrupted
   if (run.record.result === 'fail') {
-    console.log(failureText(`${paths.length} 个测试文件失败`, run.record.log, run.execution))
+    console.log(failureText(`${what}失败`, run.record.log, run.execution))
     return EXIT.fail
   }
-  console.log(`${paths.length} 个测试文件通过 · 用时 ${duration(run.execution.durationMs)}`)
+  console.log(`${what}通过 · 用时 ${duration(run.execution.durationMs)}`)
   return EXIT.ok
 }
 

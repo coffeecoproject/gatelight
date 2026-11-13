@@ -9,7 +9,7 @@ import { type Execution, execute } from './execute.ts'
 import { duration, when } from './format.ts'
 import { changedPaths, commonDir, currentBranch, headCommit, repoRoot } from './git.ts'
 import { matcher } from './glob.ts'
-import { newRunId, type RunRecord, Store } from './store.ts'
+import { newRunId, type RunningMarker, type RunRecord, Store } from './store.ts'
 
 export interface Repo {
   root: string
@@ -46,6 +46,21 @@ export interface Recorded {
 }
 
 /**
+ * 这个工作区里正在跑的 testpace 命令。同一个工作区一次只跑一轮测试：
+ * 两轮同时跑会抢端口、测试库这些资源，互相拖慢，失败了也分不清是谁的问题。
+ */
+export function runningHere(repo: Repo): RunningMarker | undefined {
+  return repo.store.running().find(marker => marker.worktree === repo.root)
+}
+
+/** 因为这个工作区已经在跑测试而不跑时的说明。 */
+export function busyText(marker: RunningMarker, tree: string): string {
+  const what = marker.kind === 'full' ? '整组' : ` ${marker.kind} `
+  const stale = marker.kind === 'full' && marker.tree !== tree ? '那次整组开始后代码改过，它跑完的结果不算当前代码的记录。' : ''
+  return `这个工作区正在跑${what}（开始于 ${when(marker.startedAt)}，进程 ${marker.pid}），同一个工作区一次只跑一轮测试，等它结束再跑。${stale}`
+}
+
+/**
  * 跑 fast 或 files 并记一条记录。这两种不检查跑的过程中代码改没改：
  * 它们只用于开发中的反馈和计时，通过记录只认 full。
  */
@@ -53,7 +68,14 @@ export async function runRecorded(repo: Repo, kind: Exclude<CommandKey, 'full'>,
   const startedAt = Date.now()
   const id = newRunId(startedAt)
   const log = repo.store.logPath(id)
-  const execution = await execute(command, args, repo.root, log)
+  let execution: Execution
+  try {
+    execution = await execute(command, args, repo.root, log, () =>
+      repo.store.markRunning({ id, kind, pid: process.pid, worktree: repo.root, tree, startedAt, log }),
+    )
+  } finally {
+    repo.store.clearRunning(id)
+  }
   const record: RunRecord = {
     id,
     kind,

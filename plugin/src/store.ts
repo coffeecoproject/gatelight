@@ -10,6 +10,14 @@ import type { CommandKey } from './config.ts'
 
 export type RunResult = 'pass' | 'fail' | 'interrupted'
 
+/** files 的参数可以是 文件:行号，只跑那一行的测试；测试框架输出里常见的 文件:行号:列号 也算。 */
+export const LOCATED = /:\d+(?::\d+)?$/
+
+/** files 的一个参数对应的测试文件。 */
+export function testFile(target: string): string {
+  return target.replace(LOCATED, '')
+}
+
 export interface RunRecord {
   id: string
   kind: CommandKey
@@ -24,7 +32,7 @@ export interface RunRecord {
   durationMs: number
   exitCode: number | null
   result: RunResult
-  /** files 命令跑的测试文件。 */
+  /** files 命令的参数：测试文件，或 文件:行号。 */
   files?: string[]
   /** 起这次整组的 Claude Code 会话；不是从 Claude Code 里起的没有。 */
   session?: string

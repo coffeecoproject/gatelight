@@ -4,7 +4,7 @@ import { COMMAND_KEYS } from './config.ts'
 import { isValidPass } from './coverage.ts'
 import { duration, day, short, when } from './format.ts'
 import type { Landing } from './git.ts'
-import type { RunRecord } from './store.ts'
+import { type RunRecord, testFile } from './store.ts'
 
 /** fast 平均超过这个时长，提示它可能不是增量的。 */
 export const FAST_SLOW_MS = 20_000
@@ -37,7 +37,8 @@ export function repeatedFiles(runs: RunRecord[]): Array<[string, number]> {
   const counts = new Map<string, number>()
   for (const run of runs) {
     if (run.kind !== 'files' || run.result === 'interrupted') continue
-    for (const file of run.files ?? []) counts.set(file, (counts.get(file) ?? 0) + 1)
+    // 文件:行号 算那个文件；一次里给了同一文件的几行，算跑了一次
+    for (const file of new Set((run.files ?? []).map(testFile))) counts.set(file, (counts.get(file) ?? 0) + 1)
   }
   return [...counts].filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
 }
