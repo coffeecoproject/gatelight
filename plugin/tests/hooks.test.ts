@@ -232,6 +232,23 @@ describe('合并门（git 钩子）', () => {
     assert.match(r.out, /找不到 testpace 命令/)
   })
 
+  test('会话里的 testpace 是还没有 gate 命令的旧版本（插件更新后没重开会话）时说一句，不挡', () => {
+    const repo = gatedRepo()
+    const old = tempDir('testpace-old-')
+    writeFileSync(join(old, 'testpace'), '#!/bin/sh\necho "不认识的命令 \\"$1\\"" >&2\nexit 2\n', { mode: 0o755 })
+    const env = { PATH: `${old}:/usr/bin:/bin` }
+    change(repo)
+    const r = agent(repo, 'git commit -qam m', env)
+    assert.equal(r.code, 0, r.out)
+    assert.equal(r.out.trim(), 'testpace 合并门：这个会话用的 testpace 是旧版本，没有合并门的检查，这次没有检查。插件更新后，开着的会话要重开才换成新版本。')
+    // 加进项目自己钩子里的检查也一样
+    writeFileSync(join(sh(repo, 'git rev-parse --path-format=absolute --git-path hooks').trim(), 'reference-transaction'), `#!/bin/sh\n${GATE_SNIPPET}\nexit 0\n`, { mode: 0o755 })
+    change(repo)
+    const merged = agent(repo, 'git commit -qam m', env)
+    assert.equal(merged.code, 0, merged.out)
+    assert.match(merged.out, /这个会话用的 testpace 是旧版本/)
+  })
+
   test('install 装进 core.hooksPath 指的目录，不覆盖别人的钩子；status 和会话开始时说出合并门没在把关的原因', () => {
     const repo = sampleRepo()
     assert.match(testpace(repo, ['status']).out, /合并门：合并门的 git 钩子还没装，提交、合并到默认分支时不会检查。跑 testpace install 装上。/)

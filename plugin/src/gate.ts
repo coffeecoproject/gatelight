@@ -17,6 +17,12 @@ import { contractAt, coverageOf, openRepo } from './repo.ts'
 const HOOK_NAME = 'reference-transaction'
 const MARK = '# testpace 合并门'
 
+/**
+ * testpace gate 只用退出码 0（放行）和 1（拦下）。退出码 2 是还没有 gate 命令的旧版 testpace
+ * （插件更新后，开着的会话要重开才换成新版本）：钩子说一句，不挡，和找不到 testpace 命令时一样。
+ */
+const OLD_TESTPACE = 'testpace 合并门：这个会话用的 testpace 是旧版本，没有合并门的检查，这次没有检查。插件更新后，开着的会话要重开才换成新版本。'
+
 export const HOOK_SCRIPT = `#!/bin/sh
 ${MARK}（testpace install 写入，会被覆盖，不要手改）
 # Claude Code 里的命令要移动分支时交给 testpace gate 检查；它拒绝，git 就取消这次更新。
@@ -38,7 +44,14 @@ if ! command -v testpace >/dev/null 2>&1; then
   echo 'testpace 合并门：找不到 testpace 命令（插件没启用），这次没有检查。' >&2
   exit 0
 fi
-printf '%s' "$updates" | testpace gate
+msg=$(printf '%s' "$updates" | testpace gate 2>&1)
+code=$?
+if [ "$code" = 2 ]; then
+  echo '${OLD_TESTPACE}' >&2
+  exit 0
+fi
+[ -z "$msg" ] || printf '%s\n' "$msg" >&2
+exit "$code"
 `
 
 /**
@@ -47,7 +60,15 @@ printf '%s' "$updates" | testpace gate
  * 文件打开后就删掉，读不受影响。
  */
 export const GATE_SNIPPET = `if [ "$1" = prepared ] && [ -n "$CLAUDECODE" ] && command -v testpace >/dev/null 2>&1; then
-  testpace_refs=$(mktemp) && cat >"$testpace_refs" && testpace gate <"$testpace_refs" || { rm -f "$testpace_refs"; exit 1; }
+  testpace_refs=$(mktemp) && cat >"$testpace_refs" || { rm -f "$testpace_refs"; exit 1; }
+  testpace_msg=$(testpace gate <"$testpace_refs" 2>&1)
+  testpace_code=$?
+  if [ "$testpace_code" = 2 ]; then
+    echo '${OLD_TESTPACE}' >&2
+  else
+    [ -z "$testpace_msg" ] || printf '%s\n' "$testpace_msg" >&2
+    [ "$testpace_code" = 0 ] || { rm -f "$testpace_refs"; exit 1; }
+  fi
   exec <"$testpace_refs"
   rm -f "$testpace_refs"
 fi`

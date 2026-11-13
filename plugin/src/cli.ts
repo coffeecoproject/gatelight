@@ -334,7 +334,10 @@ function install(): number {
   return EXIT.ok
 }
 
-/** git 的 reference-transaction 钩子调用：标准输入是要更新的引用，拒绝时退出码非零，git 就取消这次更新。 */
+/**
+ * git 的 reference-transaction 钩子调用：标准输入是要更新的引用，拒绝时退出码 1，git 就取消这次更新。
+ * 只用 0 和 1：钩子把退出码 2 当成还没有 gate 命令的旧版 testpace，放行。
+ */
 function gate(): number {
   try {
     const reason = checkRefUpdates(process.cwd(), readFileSync(0, 'utf8'))

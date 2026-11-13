@@ -72,6 +72,7 @@ claude plugin install layermap@layermap
   - 被拦下后，工作区和暂存区里可能留着这次操作带来的改动；停在半路的 `cherry-pick`、`rebase` 要先 `--abort`。
   - 不经过本地默认分支的落地不拦：推送别的分支到默认分支（`git push origin 分支:main`）、在 GitHub 上合并 PR。停止门事后提示。
   - 项目把钩子放在自己的目录里（`core.hooksPath` 是相对路径）时，钩子文件跟着分支走：git 在每个 worktree 里用那里检出的那份。默认分支提交了钩子之后，还没合进默认分支的老分支所在的 worktree 里没有钩子，在那里移动默认分支（`git branch -f`、`git update-ref` 这类）不检查，由停止门事后提示；`testpace status` 会说明，把默认分支合进来就有。
+  - 会话里找不到 `testpace` 命令（插件没启用），或用的 testpace 是还没有合并门检查的旧版本（插件更新后，开着的会话要重开才换成新版本）时，钩子说一句，不挡。
   - 钩子没装、是旧版本、被别的钩子占着（而且那个钩子里没有调用 `testpace gate`），或找不到默认分支（没有 `origin/HEAD`，本地也没有 `main`、`master`）时，`testpace status` 和会话开始时的说明会讲出来。
 - **停止门**（Claude Code 的 Stop hook）：这个会话起的整组（按 Claude Code 给命令带的会话号认，别的会话和终端里起的不算）还在跑，或这个会话还没看过结果（`testpace status`，或在前台等到了 `testpace full` 的输出，通过、失败都算），拦一次。本地默认分支或 `origin` 上的默认分支在会话里有了没有通过记录的提交时，提示用户。会话从仓库外开始的，也查它碰过的仓库。
 - **软提示**（Claude Code 的 hook）：会话开始时说明测试节奏（上一节），会话从仓库外开始的，第一次在仓库里执行命令时补说，压缩、恢复后再说一次；agent 直接跑 `full` 配置的命令时，提示改用 `testpace full`。
