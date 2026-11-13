@@ -6,15 +6,19 @@ import { chmodSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { handle, RHYTHM } from '../src/hook.ts'
+import { handle, RHYTHM, rhythm } from '../src/hook.ts'
 import { Store } from '../src/store.ts'
 import { commit, ENV, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
 
 const ENTRY = fileURLToPath(new URL('../hooks/testpace.ts', import.meta.url))
+// Claude Code 给 hook 的插件数据目录：会话碰过哪些仓库记在这里。
+process.env.CLAUDE_PLUGIN_DATA = tempDir('testpace-data-')
 
 type Output = { hookSpecificOutput?: Record<string, unknown>; decision?: string; reason?: string; systemMessage?: string } | undefined
 
+// 会话在 cwd 里开始：SessionStart 已经说过节奏（cwd 是接入的仓库时），PreToolUse 不再补说。
 function pre(cwd: string, command: string, session = 's1'): Output {
+  handle({ hook_event_name: 'SessionStart', session_id: session, cwd }, Date.now())
   return handle({ hook_event_name: 'PreToolUse', session_id: session, cwd, tool_name: 'Bash', tool_input: { command } }, Date.now()) as Output
 }
 
@@ -251,7 +255,30 @@ describe('软提示', () => {
     const repo = sampleRepo()
     const output = handle({ hook_event_name: 'SessionStart', session_id: 's', cwd: repo }, Date.now()) as Output
     assert.deepEqual(output, { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: RHYTHM } })
-    assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 's', cwd: tempDir('testpace-none-') }, Date.now()), undefined)
+    assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 's-none', cwd: tempDir('testpace-none-') }, Date.now()), undefined)
+  })
+
+  test('会话不在接入的仓库里开始时，第一条碰到那个仓库的命令补说一次节奏，写上是哪个仓库', () => {
+    const repo = sampleRepo()
+    const root = sh(repo, 'git rev-parse --show-toplevel').trim()
+    const parent = tempDir('testpace-parent-')
+    const run = (cwd: string, command: string): Output =>
+      handle({ hook_event_name: 'PreToolUse', session_id: 'p', cwd, tool_name: 'Bash', tool_input: { command } }, Date.now()) as Output
+    assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'p', cwd: parent }, Date.now()), undefined)
+    assert.equal(run(parent, 'ls'), undefined, '没碰到接入的仓库不说')
+    assert.equal(run(parent, `cd ${repo} && git commit -am m`)?.hookSpecificOutput?.permissionDecision, 'deny', '拦下的照拦')
+    const told = run(parent, `cd ${repo} && git status`)?.hookSpecificOutput?.additionalContext
+    assert.equal(told, rhythm(`${root} 这个仓库`))
+    assert.equal(run(parent, `cd ${repo} && git status`), undefined, '同一会话只说一次')
+    assert.equal(run(repo, 'git status'), undefined, '会话后来在仓库里也不再说')
+    assert.match(String(run(repo, 'node scripts/full.mjs')?.hookSpecificOutput?.additionalContext), /^这是 testpace.json 里的整组命令/)
+    // 压缩、恢复后会话重新开始：碰过的仓库再说一次，之后的命令不再说
+    const again = handle({ hook_event_name: 'SessionStart', session_id: 'p', cwd: parent }, Date.now()) as Output
+    assert.equal(again?.hookSpecificOutput?.additionalContext, rhythm(`${root} 这个仓库`))
+    assert.equal(run(parent, `cd ${repo} && git status`), undefined)
+    // 换一个会话，补说和别的提示一起出
+    const both = handle({ hook_event_name: 'PreToolUse', session_id: 'q', cwd: repo, tool_name: 'Bash', tool_input: { command: 'node scripts/full.mjs' } }, Date.now()) as Output
+    assert.match(String(both?.hookSpecificOutput?.additionalContext), /用 testpace 管测试节奏[\s\S]*\n\n这是 testpace.json 里的整组命令/)
   })
 
   test('直接跑配置里的整组命令时提示改用 testpace full', () => {
@@ -275,6 +302,28 @@ describe('停止门', () => {
     assert.equal(stop(repo, 'a', true), undefined, '已经因为停止门继续过一次，不再拦')
     testpace(repo, ['status'])
     assert.equal(stop(repo, 'a'), undefined)
+  })
+
+  test('会话从仓库外开始时，也查它碰过的仓库，话里写上是哪个仓库', () => {
+    const repo = sampleRepo()
+    const root = sh(repo, 'git rev-parse --show-toplevel').trim()
+    const parent = tempDir('testpace-parent-')
+    handle({ hook_event_name: 'SessionStart', session_id: 'o', cwd: parent }, Date.now())
+    handle({ hook_event_name: 'PreToolUse', session_id: 'o', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && testpace full` } }, Date.now())
+    assert.equal(testpace(repo, ['full']).code, 0)
+    assert.equal(stop(parent, 'o')?.reason, `这个会话在 ${root} 跑的整组已经结束（通过），还没看结果。先跑 testpace status 看结果，再收尾。`)
+    testpace(repo, ['status'])
+    assert.equal(stop(parent, 'o'), undefined)
+    // 没有插件数据目录（不在 Claude Code 里跑）时只认会话所在目录
+    const data = process.env.CLAUDE_PLUGIN_DATA
+    delete process.env.CLAUDE_PLUGIN_DATA
+    try {
+      handle({ hook_event_name: 'PreToolUse', session_id: 'o2', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && ls` } }, Date.now())
+      assert.equal(testpace(repo, ['full']).code, 0)
+      assert.equal(stop(parent, 'o2'), undefined)
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = data
+    }
   })
 
   test('前台跑完 testpace full 算看过；放到后台的不算', () => {
@@ -330,6 +379,8 @@ test('hook 入口：从标准输入读事件，把判断写到标准输出', () 
     spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', ENTRY], { input: JSON.stringify(input), env: ENV, encoding: 'utf8' }).stdout
   const output = JSON.parse(run({ hook_event_name: 'PreToolUse', session_id: 'x', cwd: repo, tool_name: 'Bash', tool_input: { command: 'git commit -am m' } }))
   assert.equal(output.hookSpecificOutput.permissionDecision, 'deny')
+  // 拦下的那条没执行，节奏留到下一条说
+  assert.match(run({ hook_event_name: 'PreToolUse', session_id: 'x', cwd: repo, tool_name: 'Bash', tool_input: { command: 'ls' } }), /用 testpace 管测试节奏/)
   assert.equal(run({ hook_event_name: 'PreToolUse', session_id: 'x', cwd: repo, tool_name: 'Bash', tool_input: { command: 'ls' } }), '')
   // 输入坏了也不挡 agent
   const broken = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', ENTRY], { input: '{', env: ENV, encoding: 'utf8' })

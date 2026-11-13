@@ -11,7 +11,8 @@ export const BIN = fileURLToPath(new URL('../bin/testpace', import.meta.url))
 export const SAMPLE = fileURLToPath(new URL('../../examples/sample', import.meta.url))
 
 // node:test 会把 NODE_TEST_CONTEXT 传给子进程，示例项目里的 node --test 看到它就跳过所有测试文件。
-const { NODE_TEST_CONTEXT: _, ...rest } = process.env
+// 插件数据目录也不带：测试不写真实的会话记录。
+const { NODE_TEST_CONTEXT: _, CLAUDE_PLUGIN_DATA: __, ...rest } = process.env
 export const ENV: NodeJS.ProcessEnv = rest
 
 export interface Result {

@@ -45,10 +45,12 @@ export interface SessionState {
   tipAtStart?: string
   /** 已经提示过的、没有整组通过记录的默认分支提交。 */
   warned: string[]
+  /** 已经给这个会话说过这个仓库的测试节奏。 */
+  rhythm?: boolean
 }
 
 /** 会话记录留多久。 */
-const SESSION_KEEP_MS = 7 * 24 * 3600 * 1000
+export const SESSION_KEEP_MS = 7 * 24 * 3600 * 1000
 
 function worktreeKey(worktree: string): string {
   return createHash('sha1').update(worktree).digest('hex').slice(0, 16)
