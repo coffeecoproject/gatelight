@@ -2,7 +2,7 @@
 
 给 agent 开发用的测试节奏插件（Claude Code）。完整方案见 [测试提速方案.md](测试提速方案.md)。
 
-已完成第 1、3 期：项目约定，`focused`、`files`、`full`、`status`、`report` 五条命令，结果记录和精简输出，合并门、停止门和软提示。`focused` 用 `layermap check --json` 选测试，需要 PATH 里有支持 `--json` 的 `layermap` 命令（见方案 5.7）；没有时提示跑整组。
+已完成第 1、3 期：项目约定，`focused`、`files`、`full`、`status`、`report` 五条命令，结果记录和精简输出，合并门、停止门和软提示。`focused` 用 `layermap check --json` 选测试，需要 PATH 里有支持 `--json` 的 `layermap` 命令（见方案 5.7）；没有时提示跑整组，并说装上 layermap 插件就能按改动选测试。
 
 ## 项目约定
 

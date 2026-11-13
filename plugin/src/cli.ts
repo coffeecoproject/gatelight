@@ -2,7 +2,7 @@
 
 import { COMMAND_KEYS, commandExists, CONFIG_FILE, loadConfig } from './config.ts'
 import { execute } from './execute.ts'
-import { askLayermap, fullReasons } from './focused.ts'
+import { askLayermap, fullReasons, LAYERMAP_HINT } from './focused.ts'
 import { duration, short, when } from './format.ts'
 import { commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { matcher } from './glob.ts'
@@ -152,6 +152,7 @@ async function focused(args: string[]): Promise<number> {
   }
   if (reasons.length > 0) {
     lines.push(`建议跑整组（testpace full，放后台）：${reasons.join('；')}。`)
+    if (selection.kind === 'unavailable' && selection.missing) lines.push(LAYERMAP_HINT)
     code = EXIT.fullNeeded
   }
   console.log(lines.join('\n'))
@@ -218,7 +219,7 @@ function status(): number {
     if (config.ignore.length) lines.push(`  ignore: ${config.ignore.join(', ')}`)
   }
   // 版本太旧不在这里查：focused 读输出时会说
-  lines.push(`layermap：${commandExists(ctx.root, 'layermap') ? '找到' : '找不到，focused 没法按改动选测试，每次都会建议跑整组'}`)
+  lines.push(`layermap：${commandExists(ctx.root, 'layermap') ? '找到' : `找不到，focused 没法按改动选测试，每次都会建议跑整组。${LAYERMAP_HINT}`}`)
 
   console.log(lines.join('\n'))
   // 停止门据此判断 agent 有没有看过整组的结果

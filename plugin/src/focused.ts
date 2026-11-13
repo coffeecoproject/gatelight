@@ -28,7 +28,8 @@ export interface Untested {
 }
 
 export type Selection =
-  | { kind: 'unavailable'; reason: string }
+  /** missing：PATH 里没有 layermap 命令（不是它出错）。 */
+  | { kind: 'unavailable'; reason: string; missing?: true }
   | {
       kind: 'selected'
       changed: string[]
@@ -76,6 +77,12 @@ export function select(check: LayermapCheck, isIgnored: (path: string) => boolea
   }
 }
 
+/**
+ * 找不到 layermap 时告诉 agent 怎么补上。只在命令输出里说：插件的 bin/ 只在 Bash 工具的 PATH 里，
+ * hook 进程查不到，会话开始时没法准确判断装没装。
+ */
+export const LAYERMAP_HINT = '装上 layermap 插件并开新会话（或把 layermap 命令加进 PATH），focused 就会只跑和改动相关的测试。'
+
 /** 选测靠不住、应当跑整组的原因；空数组表示选测可以信。 */
 export function fullReasons(selection: Selection): string[] {
   if (selection.kind === 'unavailable') return [selection.reason]
@@ -104,7 +111,7 @@ export function fullReasons(selection: Selection): string[] {
  * 问哪些改动它们跑不到。
  */
 export function askLayermap(root: string, base: string, isIgnored: (path: string) => boolean): Selection {
-  if (!commandExists(root, 'layermap')) return { kind: 'unavailable', reason: '找不到 layermap 命令，没法按改动选测试' }
+  if (!commandExists(root, 'layermap')) return { kind: 'unavailable', reason: '找不到 layermap 命令，没法按改动选测试', missing: true }
   try {
     const selection = select(parseCheck(layermapCheck(root, base, [])), isIgnored, path => existsSync(join(root, path)))
     if (selection.kind === 'selected' && !selection.onlyIgnored && selection.tests.length > 0) {

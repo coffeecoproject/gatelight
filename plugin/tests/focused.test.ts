@@ -225,19 +225,21 @@ describe('testpace focused', () => {
     const node = sh(repo, 'dirname "$(command -v node)"').trim()
     const noLayermap = testpace(repo, ['focused'], { ...ENV, PATH: `${node}:/usr/bin:/bin` })
     assert.equal(noLayermap.code, 4, noLayermap.out)
-    assert.match(noLayermap.out, /^fast 通过 · 用时 \d+秒\n建议跑整组（testpace full，放后台）：找不到 layermap 命令，没法按改动选测试。\n$/)
+    assert.match(noLayermap.out, /^fast 通过 · 用时 \d+秒\n建议跑整组（testpace full，放后台）：找不到 layermap 命令，没法按改动选测试。\n装上 layermap 插件并开新会话（或把 layermap 命令加进 PATH），focused 就会只跑和改动相关的测试。\n$/)
 
     const failing = fakeLayermap(FORMAT_CHANGE)
     const r = testpace(repo, ['focused'], { ...failing.env, FAKE_LAYERMAP_FAIL: '1' })
     assert.equal(r.code, 4)
     assert.match(r.out, /layermap 出错了：layermap: map build failed/)
+    // 装了但出错：不提示去装
+    assert.doesNotMatch(r.out, /装上 layermap 插件/)
   })
 
   test('status 说明有没有 layermap', () => {
     const repo = sampleRepo()
     const node = sh(repo, 'dirname "$(command -v node)"').trim()
     const missing = testpace(repo, ['status'], { ...ENV, PATH: `${node}:/usr/bin:/bin` })
-    assert.match(missing.out, /\nlayermap：找不到，focused 没法按改动选测试，每次都会建议跑整组\n$/)
+    assert.match(missing.out, /\nlayermap：找不到，focused 没法按改动选测试，每次都会建议跑整组。装上 layermap 插件并开新会话（或把 layermap 命令加进 PATH），focused 就会只跑和改动相关的测试。\n$/)
     const found = testpace(repo, ['status'], fakeLayermap(FORMAT_CHANGE).env)
     assert.match(found.out, /\nlayermap：找到\n$/)
   })
