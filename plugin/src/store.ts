@@ -38,6 +38,8 @@ export interface RunRecord {
   session?: string
   /** 想跑整组时发现它已经在跑、等着用它结果的其他会话。 */
   waiting?: string[]
+  /** 整组之前先跑的附加检查（本机登记的）。 */
+  checks?: string[]
   log: string
 }
 

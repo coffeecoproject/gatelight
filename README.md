@@ -77,6 +77,7 @@ claude plugin install layermap@layermap
   - 钩子在所有仓库里都跑：没有分支要动（只是远程跟踪分支、`HEAD`）时什么都不做；有分支要动时调用一次 `testpace gate`，没接入 testpace 的仓库直接放行。
   - 会话里找不到 `testpace` 命令（插件没启用），或用的 testpace 是还没有合并门检查的旧版本（插件更新后，开着的会话要重开才换成新版本）时不挡，在接入了 testpace 的仓库里说一句。
   - 合并门没配、配的命令不是这一版的、被仓库自己的配置关掉（`hook.testpace.enabled = false`）、git 太旧，或找不到默认分支（没有 `origin/HEAD`，本地也没有 `main`、`master`）时，`testpace status` 和会话开始时的说明会讲出来。
+- **附加检查**（全局 git 配置 `testpace.check`，可以有多条）：`testpace full` 先在仓库根目录依次跑这台机器上登记的附加检查，再跑项目的整组命令：附加检查比整组便宜，有一条没过就不跑整组、不算整组通过，合并门照常拦。附加检查由别的插件装好时登记（比如 testcraft 的 `testcraft install` 登记 `testcraft weaken`）；登记在本机、不在仓库里，agent 在改动里删不掉。`testpace status` 列出登记了哪些。登记的命令找不到（插件停用了）时，`full` 不通过并说明怎么取消登记。
 - **停止门**（Claude Code 的 Stop hook）：这个会话起的整组（按 Claude Code 给命令带的会话号认，别的会话和终端里起的不算）还在跑，或这个会话还没看过结果（`testpace status`，或在前台等到了 `testpace full` 的输出，通过、失败都算），拦一次。本地默认分支或 `origin` 上的默认分支在会话里有了没有通过记录的提交时，提示用户。会话从仓库外开始的，也查它碰过的仓库。
 - **软提示**（Claude Code 的 hook）：会话开始时说明测试节奏（上一节），会话从仓库外开始的，第一次在仓库里执行命令时补说，压缩、恢复后再说一次；agent 直接跑 `full` 配置的命令时，提示改用 `testpace full`。
 

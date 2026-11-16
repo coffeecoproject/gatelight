@@ -6,7 +6,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { before, describe, test } from 'node:test'
 import { landings } from '../src/git.ts'
-import { BIN, ENV, gatedRepo, runs, sampleRepo, setConfig as setConfigWith, sh, tempDir, testpace as run } from './helpers.ts'
+import { BIN, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, setConfig as setConfigWith, sh, tempDir, testpace as run } from './helpers.ts'
 
 const testpace = (cwd: string, ...args: string[]) => run(cwd, args)
 const setConfig = (repo: string, full: string): void => setConfigWith(repo, { full })
@@ -401,5 +401,73 @@ describe('testpace verify', () => {
     assert.equal(extra.code, 1)
     assert.match(extra.out, /^没通过　testpace\.json 写得对：未知字段 "extra"\n/)
     assert.match(extra.out, /接入核对：1 项没通过，2 项没查。/)
+  })
+})
+
+describe('附加检查', () => {
+  const withChecks = (...checks: string[]): NodeJS.ProcessEnv => {
+    const env = { ...ENV, GIT_CONFIG_GLOBAL: globalGitConfig() }
+    for (const check of checks) sh(process.cwd(), `git config --file '${env.GIT_CONFIG_GLOBAL}' --add testpace.check '${check}'`)
+    return env
+  }
+
+  test('先依次跑本机登记的附加检查，再跑整组，都过了才算通过', () => {
+    const repo = sampleRepo()
+    const env = withChecks('echo 第一条', 'echo 第二条')
+    const r = run(repo, ['full'], env)
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /附加检查通过：echo 第一条、echo 第二条/)
+    const record = runs(repo).at(-1)!
+    assert.equal(record.result, 'pass')
+    assert.deepEqual(record.checks, ['echo 第一条', 'echo 第二条'])
+    const text = readFileSync(record.log as string, 'utf8')
+    assert.match(text, /===== testpace 附加检查：echo 第二条\n第二条/)
+    assert.ok(text.indexOf('第二条') < text.indexOf('===== testpace 整组：'), text)
+    assert.match(text, /===== testpace 整组：[^\n]*\n(.*\n)*# pass/)
+    assert.match(run(repo, ['status'], env).out, /附加检查（全局 git 配置 testpace\.check）：echo 第一条、echo 第二条，整组之前先跑/)
+  })
+
+  test('附加检查没过：不跑整组，不算通过，合并门照常拦', () => {
+    const repo = sampleRepo()
+    const env = withChecks('echo 放水了 && exit 1')
+    const r = run(repo, ['full'], env)
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /附加检查 echo 放水了 && exit 1 没通过，没有跑整组/)
+    assert.match(r.out, /输出节选 ---\n(.*\n)*放水了/)
+    const record = runs(repo).at(-1)!
+    assert.equal(record.result, 'fail')
+    assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /===== testpace 整组|# pass/)
+    assert.match(run(repo, ['status'], env).out, /没有整组通过记录/)
+  })
+
+  test('前一条附加检查没过、后一条过了：照样不算通过，后一条不再跑', () => {
+    const repo = sampleRepo()
+    const env = withChecks('exit 1', 'echo 后一条')
+    const r = run(repo, ['full'], env)
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /附加检查 exit 1 没通过/)
+    const record = runs(repo).at(-1)!
+    assert.equal(record.result, 'fail')
+    assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /后一条\n/)
+  })
+
+  test('登记的命令找不到：说明怎么取消登记', () => {
+    const repo = sampleRepo()
+    const r = run(repo, ['full'], withChecks('testpace-no-such-check'))
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /命令找不到.*unset-all testpace\.check 'testpace-no-such-check'/)
+  })
+
+  test('附加检查过了、整组失败：不算通过，节选是整组的输出；没登记时照旧', () => {
+    const repo = sampleRepo()
+    setConfig(repo, 'echo 整组输出 && exit 1')
+    const r = run(repo, ['full'], withChecks('echo 检查输出'))
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^整组失败/)
+    const excerpt = r.out.split('输出节选')[1] as string
+    assert.match(excerpt, /整组输出/)
+    assert.doesNotMatch(excerpt, /检查输出/)
+    assert.equal(runs(repo).at(-1)!.result, 'fail')
+    assert.match(run(repo, ['status']).out, /附加检查（全局 git 配置 testpace\.check）：没有/)
   })
 })

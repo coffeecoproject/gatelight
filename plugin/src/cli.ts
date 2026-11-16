@@ -1,9 +1,10 @@
 // testpace 命令行：focused、files、full、status、report、verify、install，以及 git 钩子调用的 gate。
 
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
+import { CHECK_KEY, extraChecks } from './checks.ts'
 import { COMMAND_KEYS, commandExists, CONFIG_FILE, configExists, loadConfig } from './config.ts'
-import { execute } from './execute.ts'
+import { type Execution, execute } from './execute.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT } from './focused.ts'
 import { duration, short, when } from './format.ts'
 import { checkRefUpdates, gateProblem, installGate } from './gate.ts'
@@ -75,13 +76,36 @@ async function full(): Promise<number> {
     return EXIT.busy
   }
 
-  let execution
+  // 本机登记的附加检查先跑：它们比整组便宜，没过就不用再等整组。有一条没过就不跑整组，也不算通过
+  const checks = extraChecks(ctx.root)
+  const onStart = (group: number) => ctx.store.update(ctx.root, id, { group })
+  const sizeOf = (path: string) => (existsSync(path) ? statSync(path).size : 0)
+  let failedCheck: string | undefined
+  // 失败节选从没通过的那一段（附加检查或整组）的输出开始
+  let excerptFrom = 0
+  let execution: Execution | undefined
   let waiting: string[]
   try {
-    execution = await execute(config.full, [], ctx.root, log, group => ctx.store.update(ctx.root, id, { group }))
+    for (const check of checks) {
+      excerptFrom = sizeOf(log)
+      appendFileSync(log, `===== testpace 附加检查：${check}\n`)
+      const extra = await execute(check, [], ctx.root, log, onStart)
+      execution = execution ? { ...extra, durationMs: execution.durationMs + extra.durationMs } : extra
+      if (extra.interrupted || extra.exitCode !== 0) {
+        failedCheck = check
+        break
+      }
+    }
+    if (!failedCheck) {
+      excerptFrom = sizeOf(log)
+      if (checks.length) appendFileSync(log, `===== testpace 整组：${config.full}\n`)
+      const suite = await execute(config.full, [], ctx.root, log, onStart)
+      execution = execution ? { ...suite, durationMs: execution.durationMs + suite.durationMs } : suite
+    }
   } finally {
     waiting = ctx.store.release(ctx.root, id)
   }
+  if (!execution) throw new Error('整组没有运行')
 
   if (execution.interrupted) {
     console.log(`整组被中断，没有记录结果。日志：${log}`)
@@ -104,12 +128,14 @@ async function full(): Promise<number> {
     result,
     ...session,
     ...(waiting.length ? { waiting } : {}),
+    ...(checks.length ? { checks } : {}),
     log,
   })
 
   const took = duration(execution.durationMs)
   if (result === 'pass' && tree === treeAtEnd) {
-    console.log(`整组通过 · 用时 ${took} · 代码 ${short(tree)}\n日志：${log}`)
+    const extra = checks.length ? `\n附加检查通过：${checks.join('、')}` : ''
+    console.log(`整组通过 · 用时 ${took} · 代码 ${short(tree)}${extra}\n日志：${log}`)
     return EXIT.ok
   }
   if (result === 'pass') {
@@ -124,7 +150,10 @@ async function full(): Promise<number> {
     )
     return EXIT.fail
   }
-  console.log(failureText('整组失败', log, execution))
+  console.log(failureText(failedCheck ? `附加检查 ${failedCheck} 没通过，没有跑整组` : '整组失败', log, execution, excerptFrom))
+  if (failedCheck && execution.exitCode === 127) {
+    console.log(`附加检查的命令找不到（登记它的插件停用了或没装好）。重新装好它；不再用的话取消登记：git config --global --fixed-value --unset-all ${CHECK_KEY} '${failedCheck}'`)
+  }
   return EXIT.fail
 }
 
@@ -270,6 +299,8 @@ function status(): number {
   }
   // 合并门看提交里的 testpace.json，工作区里这份写坏了它也照常把关
   if (configExists(ctx.root)) lines.push(`合并门：${gateProblem(ctx.root) ?? '已装上，agent 移动默认分支时检查'}`)
+  const checks = extraChecks(ctx.root)
+  lines.push(`附加检查（全局 git 配置 testpace.check）：${checks.length ? `${checks.join('、')}，整组之前先跑` : '没有'}`)
   // 版本太旧不在这里查：focused 读输出时会说
   lines.push(`layermap：${commandExists(ctx.root, 'layermap') ? '找到' : `找不到，focused 没法按改动选测试，每次都会建议跑整组。${LAYERMAP_HINT}`}`)
 
