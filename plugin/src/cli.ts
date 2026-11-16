@@ -12,12 +12,13 @@ import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landi
 import { renderReport } from './report.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runRecorded, started } from './repo.ts'
 import { LOCATED, newRunId } from './store.ts'
+import { findTests, testMatcher } from './tests.ts'
 import { verifyFiles } from './verify.ts'
 
 const USAGE = `用法：
   testpace focused [--base REF]  改完先跑：fast，再跑 layermap 选出的相关测试。默认对比和默认分支的分叉点；在默认分支上选测靠不住时建议跑整组
   testpace files PATH[:行号]...  只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试
-  testpace full                  跑整组（testpace.json 的 full），按当前工作区完整内容记录结果。适合放到后台跑
+  testpace full                  跑整组：附加检查、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，按当前工作区完整内容记录结果。适合放到后台跑
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace report [--days N]     计时诊断，默认最近 28 天
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
@@ -41,8 +42,13 @@ async function full(): Promise<number> {
   const ctx = context()
   if (!ctx) return EXIT.usage
   const { config, problems } = loadConfig(ctx.root)
-  if (!config?.full) {
+  if (!config?.full || !config.files || problems.length > 0) {
     console.error(`没法跑整组：${problems.join('；')}`)
+    return EXIT.usage
+  }
+  const tests = findTests(ctx.root, config.tests)
+  if (tests.length === 0) {
+    console.error(`没法跑整组：按 tests 规则（${config.tests.join('、')}）在工作区里没找到测试文件。`)
     return EXIT.usage
   }
 
@@ -76,31 +82,31 @@ async function full(): Promise<number> {
     return EXIT.busy
   }
 
-  // 本机登记的附加检查先跑：它们比整组便宜，没过就不用再等整组。有一条没过就不跑整组，也不算通过
+  // 依次跑，便宜的在前，一段没过就停：本机登记的附加检查，整组里测试以外的检查（full），
+  // 最后把 tests 规则找到的全部测试文件交给 files。都过了才算整组通过
   const checks = extraChecks(ctx.root)
+  const steps = [
+    ...checks.map(check => ({ title: `附加检查 ${check}`, header: `附加检查：${check}`, command: check, args: [] as string[], check })),
+    { title: '整组的检查（full）', header: `整组的检查（full）：${config.full}`, command: config.full, args: [] as string[] },
+    { title: `全部测试（${tests.length} 个文件）`, header: `全部测试（${tests.length} 个文件）：${config.files}`, command: config.files, args: tests },
+  ]
   const onStart = (group: number) => ctx.store.update(ctx.root, id, { group })
   const sizeOf = (path: string) => (existsSync(path) ? statSync(path).size : 0)
-  let failedCheck: string | undefined
-  // 失败节选从没通过的那一段（附加检查或整组）的输出开始
+  let failed: (typeof steps)[number] | undefined
+  // 失败节选从没通过的那一段的输出开始
   let excerptFrom = 0
   let execution: Execution | undefined
   let waiting: string[]
   try {
-    for (const check of checks) {
+    for (const step of steps) {
       excerptFrom = sizeOf(log)
-      appendFileSync(log, `===== testpace 附加检查：${check}\n`)
-      const extra = await execute(check, [], ctx.root, log, onStart)
-      execution = execution ? { ...extra, durationMs: execution.durationMs + extra.durationMs } : extra
-      if (extra.interrupted || extra.exitCode !== 0) {
-        failedCheck = check
+      appendFileSync(log, `===== testpace ${step.header}\n`)
+      const part = await execute(step.command, step.args, ctx.root, log, onStart)
+      execution = execution ? { ...part, durationMs: execution.durationMs + part.durationMs } : part
+      if (part.interrupted || part.exitCode !== 0) {
+        failed = step
         break
       }
-    }
-    if (!failedCheck) {
-      excerptFrom = sizeOf(log)
-      if (checks.length) appendFileSync(log, `===== testpace 整组：${config.full}\n`)
-      const suite = await execute(config.full, [], ctx.root, log, onStart)
-      execution = execution ? { ...suite, durationMs: execution.durationMs + suite.durationMs } : suite
     }
   } finally {
     waiting = ctx.store.release(ctx.root, id)
@@ -129,13 +135,14 @@ async function full(): Promise<number> {
     ...session,
     ...(waiting.length ? { waiting } : {}),
     ...(checks.length ? { checks } : {}),
+    tests: tests.length,
     log,
   })
 
   const took = duration(execution.durationMs)
   if (result === 'pass' && tree === treeAtEnd) {
     const extra = checks.length ? `\n附加检查通过：${checks.join('、')}` : ''
-    console.log(`整组通过 · 用时 ${took} · 代码 ${short(tree)}${extra}\n日志：${log}`)
+    console.log(`整组通过 · ${tests.length} 个测试文件 · 用时 ${took} · 代码 ${short(tree)}${extra}\n日志：${log}`)
     return EXIT.ok
   }
   if (result === 'pass') {
@@ -150,9 +157,12 @@ async function full(): Promise<number> {
     )
     return EXIT.fail
   }
-  console.log(failureText(failedCheck ? `附加检查 ${failedCheck} 没通过，没有跑整组` : '整组失败', log, execution, excerptFrom))
-  if (failedCheck && execution.exitCode === 127) {
-    console.log(`附加检查的命令找不到（登记它的插件停用了或没装好）。重新装好它；不再用的话取消登记：git config --global --fixed-value --unset-all ${CHECK_KEY} '${failedCheck}'`)
+  const check = failed && 'check' in failed ? failed.check : undefined
+  const what = failed?.title ?? '整组'
+  const gap = /[A-Za-z0-9]$/.test(what) ? ' ' : ''
+  console.log(failureText(`整组失败：${what}${gap}没通过${failed === steps.at(-1) ? '' : '，后面的没有跑'}`, log, execution, excerptFrom))
+  if (check && execution.exitCode === 127) {
+    console.log(`附加检查的命令找不到（登记它的插件停用了或没装好）。重新装好它；不再用的话取消登记：git config --global --fixed-value --unset-all ${CHECK_KEY} '${check}'`)
   }
   return EXIT.fail
 }
@@ -295,6 +305,10 @@ function status(): number {
       if (!command) continue
       lines.push(`  ${key}: ${command}${commandExists(ctx.root, command) ? '' : '  ← 找不到这个命令'}`)
     }
+    if (config.tests.length) {
+      const found = findTests(ctx.root, config.tests).length
+      lines.push(`  tests: ${config.tests.join(', ')}  → 找到 ${found} 个测试文件，整组时全部交给 files${found ? '' : '  ← 一个都没找到'}`)
+    }
     if (config.ignore.length) lines.push(`  ignore: ${config.ignore.join(', ')}`)
   }
   // 合并门看提交里的 testpace.json，工作区里这份写坏了它也照常把关
@@ -372,6 +386,18 @@ async function verify(args: string[]): Promise<number> {
   const gate = gateProblem(ctx.root)
   if (gate) failed += 1
   say(gate ? `没通过　合并门在把关：${gate}` : '通过　合并门在把关')
+  // 整组跑的测试是 tests 规则找到的文件：给的测试文件不在里面，整组就跑不到它这一类
+  if (config.tests.length) {
+    const found = findTests(ctx.root, config.tests)
+    if (found.length === 0) failed += 1
+    say(found.length ? `通过　tests 规则找到测试文件（${found.length} 个）` : `没通过　tests 规则找到测试文件：按 ${config.tests.join('、')} 一个都没找到`)
+    const selected = testMatcher(config.tests)
+    for (const test of tests) {
+      const covered = selected(test.path)
+      if (!covered) failed += 1
+      say(covered ? `通过　整组会跑到 ${test.path}` : `没通过　整组会跑到 ${test.path}：它不在 tests 规则里，整组跑不到这一类测试`)
+    }
+  }
 
   if (!config.files) {
     say(`接入核对：${failed} 项没通过；${CONFIG_FILE} 里没有 files，其余没法查。`)
@@ -385,7 +411,7 @@ async function verify(args: string[]): Promise<number> {
   }
   if (result.kind === 'interrupted') return EXIT.interrupted
   failed += result.failed
-  say(`没查　整组（${config.full ?? `${CONFIG_FILE} 里没有 full`}）：太长不在这里跑，程序也看不出它是不是全部的检查。要和用户确认它就是落地前、发版前该跑的那些；能不能通过用 testpace full 看。`)
+  say(`没查　整组（${config.full ?? `${CONFIG_FILE} 里没有 full`}，再加上 tests 找到的全部测试）：太长不在这里跑；能不能通过用 testpace full 看。`)
 
   const notChecked = result.skipped + 1
   say(failed > 0 ? `接入核对：${failed} 项没通过，${notChecked} 项没查。` : `接入核对：查了的都通过，${notChecked} 项没查。`)

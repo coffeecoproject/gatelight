@@ -40,6 +40,8 @@ export interface RunRecord {
   waiting?: string[]
   /** 整组之前先跑的附加检查（本机登记的）。 */
   checks?: string[]
+  /** 整组：tests 规则找到、交给 files 跑的测试文件数。 */
+  tests?: number
   log: string
 }
 

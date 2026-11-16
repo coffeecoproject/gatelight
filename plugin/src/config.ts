@@ -15,7 +15,10 @@ export const SETUP_GUIDE = fileURLToPath(new URL('../skills/setup/SKILL.md', imp
 export interface Config {
   fast?: string
   files?: string
+  /** 整组里测试以外的检查（类型检查、构建这些）。测试由 testpace 按 tests 找出来交给 files 跑。 */
   full?: string
+  /** 找测试文件的路径规则；以 ! 开头的是排除。整组跑的就是它们找到的全部文件。 */
+  tests: string[]
   ignore: string[]
 }
 
@@ -52,16 +55,25 @@ export function parseConfig(raw: unknown): LoadedConfig {
     return { problems: [`${CONFIG_FILE} 应该是一个对象`] }
   }
   const problems: string[] = []
-  const config: Config = { ignore: [] }
+  const config: Config = { tests: [], ignore: [] }
   const record = raw as Record<string, unknown>
   for (const key of Object.keys(record)) {
-    if (!(COMMAND_KEYS as readonly string[]).includes(key) && key !== 'ignore') problems.push(`未知字段 "${key}"`)
+    if (!(COMMAND_KEYS as readonly string[]).includes(key) && key !== 'tests' && key !== 'ignore') problems.push(`未知字段 "${key}"`)
   }
   for (const key of COMMAND_KEYS) {
     const value = record[key]
     if (value === undefined) problems.push(`缺少 "${key}" 命令`)
     else if (typeof value !== 'string' || value.trim() === '') problems.push(`"${key}" 应该是非空字符串`)
     else config[key] = value
+  }
+  const tests = record.tests
+  if (tests === undefined) problems.push('缺少 "tests"：找测试文件的路径规则，比如 ["**/*.test.ts"]')
+  else if (!Array.isArray(tests) || tests.length === 0 || tests.some(item => typeof item !== 'string' || item === '' || item === '!')) {
+    problems.push('"tests" 应该是路径规则的非空字符串数组，以 ! 开头的是排除')
+  } else if (tests.every(item => (item as string).startsWith('!'))) {
+    problems.push('"tests" 里至少要有一条不以 ! 开头的规则')
+  } else {
+    config.tests = tests as string[]
   }
   const ignore = record.ignore
   if (ignore !== undefined) {

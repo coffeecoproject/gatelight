@@ -1,5 +1,5 @@
 {
-  "description": "testpace：会话开始时说明测试节奏，直接跑整组命令时提醒改用 testpace full；整组没跑完或结果没看时拦一次结束。合并门是 git 钩子（testpace install）。",
+  "description": "testpace：会话开始时说明测试节奏，直接跑 full 的命令时提醒改用 testpace full；整组没跑完或结果没看时拦一次结束。合并门是 git 钩子（testpace install）。",
   "hooks": {
     "SessionStart": [
       {

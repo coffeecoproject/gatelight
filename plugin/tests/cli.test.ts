@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { before, describe, test } from 'node:test'
 import { landings } from '../src/git.ts'
@@ -20,13 +20,16 @@ describe('testpace full', () => {
   test('整组通过时记下结果、用时和日志，输出只有结论', () => {
     const r = testpace(repo, 'full')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /^整组通过 · 用时 \d+秒 · 代码 [0-9a-f]{10}\n日志：.+\.log\n$/)
+    assert.match(r.out, /^整组通过 · 2 个测试文件 · 用时 \d+秒 · 代码 [0-9a-f]{10}\n日志：.+\.log\n$/)
     const [record] = runs(repo)
     assert.equal(record!.kind, 'full')
     assert.equal(record!.result, 'pass')
+    assert.equal(record!.tests, 2)
     assert.equal(record!.tree, record!.treeAtEnd)
     assert.equal(record!.tree, sh(repo, 'git rev-parse HEAD^{tree}').trim(), '没改动时记录的就是提交的树')
-    assert.match(readFileSync(record!.log as string, 'utf8'), /# pass 4|ℹ pass 4/)
+    // 先跑 full（测试以外的检查），再把 tests 规则找到的全部测试交给 files
+    const log = readFileSync(record!.log as string, 'utf8')
+    assert.match(log, /===== testpace 整组的检查（full）：node scripts\/full\.mjs\n[\s\S]*===== testpace 全部测试（2 个文件）：node scripts\/test-files\.mjs\n[\s\S]*(# pass 4|ℹ pass 4)/)
   })
 
   test('同一份代码不重跑', () => {
@@ -56,7 +59,7 @@ describe('testpace full', () => {
     writeFileSync(join(repo, 'src', 'format.mjs'), 'export function yuan(amount) {\n  return `¥${amount}`\n}\n')
     const r = testpace(repo, 'full')
     assert.equal(r.code, 1)
-    assert.match(r.out, /^整组失败（退出码 1）· 用时 \d+秒\n--- 输出节选 ---\n/)
+    assert.match(r.out, /^整组失败：全部测试（2 个文件）没通过（退出码 1）· 用时 \d+秒\n--- 输出节选 ---\n/)
     assert.match(r.out, /yuan shows two decimals/)
     assert.match(r.out, /完整日志：.+\.log\n$/)
     assert.equal(runs(repo).at(-1)!.result, 'fail')
@@ -66,7 +69,7 @@ describe('testpace full', () => {
     const r = testpace(repo, 'status')
     assert.equal(r.code, 0)
     assert.match(r.out, /^当前代码（[0-9a-f]{10}）：没有整组通过记录\n最近一次整组：失败（.+，是当前代码）\n  日志：/)
-    assert.match(r.out, /配置（testpace\.json）：正常\n  fast: node scripts\/check\.mjs\n  files: node scripts\/test-files\.mjs\n  full: node scripts\/full\.mjs\n  ignore: docs\/\*\*/)
+    assert.match(r.out, /配置（testpace\.json）：正常\n  fast: node scripts\/check\.mjs\n  files: node scripts\/test-files\.mjs\n  full: node scripts\/full\.mjs\n  tests: tests\/\*\*\/\*\.test\.mjs  → 找到 2 个测试文件，整组时全部交给 files\n  ignore: docs\/\*\*/)
   })
 })
 
@@ -207,7 +210,7 @@ describe('结果的可信度', () => {
     setConfig(repo, 'kill -KILL $$')
     const r = testpace(repo, 'full')
     assert.equal(r.code, 1)
-    assert.match(r.out, /^整组失败（被信号 SIGKILL 终止）/)
+    assert.match(r.out, /^整组失败：整组的检查（full）没通过，后面的没有跑（被信号 SIGKILL 终止）/)
   })
 
   test('被中断时停掉子进程，不记录结果', async () => {
@@ -217,7 +220,12 @@ describe('结果的可信度', () => {
     let out = ''
     child.stdout.on('data', chunk => (out += chunk))
     const running = join(repo, '.git', 'testpace', 'running')
-    for (let i = 0; i < 100 && !(existsSync(running) && sh(running, 'ls').trim()); i++) await new Promise(r => setTimeout(r, 50))
+    // 登记里有了子进程组，中断处理才挂好；在这之前发信号，测的就不是中断处理了
+    const started = () =>
+      existsSync(running) &&
+      readdirSync(running).some(name => name.endsWith('.json') && 'group' in JSON.parse(readFileSync(join(running, name), 'utf8')))
+    for (let i = 0; i < 200 && !started(); i++) await new Promise(r => setTimeout(r, 50))
+    assert.ok(started(), '整组没起来')
     // bin/testpace 用 exec 换成 node，pid 就是 testpace 进程
     child.kill('SIGTERM')
     const code = await new Promise(resolve => child.on('close', resolve))
@@ -321,8 +329,8 @@ describe('testpace verify', () => {
     const repo = gatedRepo()
     const r = testpace(repo, 'verify', 'tests/price.test.mjs')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /^通过　testpace\.json 写得对\n通过　找得到 fast 的命令（node scripts\/check\.mjs）\n通过　找得到 files 的命令[\s\S]*\n通过　合并门在把关\n/)
-    assert.match(r.out, /\n通过　files 给了不存在的文件要失败（testpace-verify-no-such-file\.test\.js）\n通过　files 跑 tests\/price\.test\.mjs 要通过\n通过　tests\/price\.test\.mjs 里混进一个不存在的路径要失败\n通过　文件:行号 要能用（tests\/price\.test\.mjs:5）\n通过　文件:行号:列号 要能用（tests\/price\.test\.mjs:5:1）\n没查　整组（node scripts\/full\.mjs）/)
+    assert.match(r.out, /^通过　testpace\.json 写得对\n通过　找得到 fast 的命令（node scripts\/check\.mjs）\n通过　找得到 files 的命令[\s\S]*\n通过　合并门在把关\n通过　tests 规则找到测试文件（2 个）\n通过　整组会跑到 tests\/price\.test\.mjs\n/)
+    assert.match(r.out, /\n通过　files 给了不存在的文件要失败（testpace-verify-no-such-file\.test\.js）\n通过　files 跑 tests\/price\.test\.mjs 要通过\n通过　tests\/price\.test\.mjs 里混进一个不存在的路径要失败\n通过　文件:行号 要能用（tests\/price\.test\.mjs:5）\n通过　文件:行号:列号 要能用（tests\/price\.test\.mjs:5:1）\n没查　整组（node scripts\/full\.mjs，再加上 tests 找到的全部测试）/)
     assert.match(r.out, /\n接入核对：查了的都通过，1 项没查。\n$/)
     assert.deepEqual(runs(repo), [], '核对跑的 files 不算开发中的测试')
     // 路径按当前目录算
@@ -394,13 +402,58 @@ describe('testpace verify', () => {
   test('合并门没在把关、testpace.json 有问题都算没通过', () => {
     const r = testpace(sampleRepo(), 'verify', 'tests/price.test.mjs')
     assert.equal(r.code, 1)
-    assert.match(r.out, /没通过　合并门在把关：合并门还没配/)
+    assert.match(r.out, /没通过　合并门在把关：合并门没配/)
     const repo = gatedRepo()
     setConfigWith(repo, { extra: 'x' })
     const extra = testpace(repo, 'verify')
     assert.equal(extra.code, 1)
     assert.match(extra.out, /^没通过　testpace\.json 写得对：未知字段 "extra"\n/)
     assert.match(extra.out, /接入核对：1 项没通过，2 项没查。/)
+  })
+})
+
+describe('整组跑 tests 规则找到的全部测试', () => {
+  test('新加的测试文件不用改配置，整组就会跑到它', () => {
+    const repo = sampleRepo()
+    writeFileSync(join(repo, 'tests', 'new.test.mjs'), "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\ntest('new rule', () => assert.equal(1, 2))\n")
+    const r = testpace(repo, 'full')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^整组失败：全部测试（3 个文件）没通过/)
+    assert.match(r.out, /new rule/)
+    assert.equal(runs(repo).at(-1)!.tests, 3)
+  })
+
+  test('以 ! 开头的规则排除的文件不跑', () => {
+    const repo = sampleRepo()
+    writeFileSync(join(repo, 'tests', 'slow.test.mjs'), "import { test } from 'node:test'\ntest('slow', () => { throw new Error('不该跑') })\n")
+    setConfigWith(repo, { tests: ['tests/**/*.test.mjs', '!tests/slow.test.mjs'] })
+    const r = testpace(repo, 'full')
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /^整组通过 · 2 个测试文件/)
+    assert.doesNotMatch(readFileSync(runs(repo).at(-1)!.log as string, 'utf8'), /slow/)
+  })
+
+  test('规则一个测试都没找到、或没写 tests：不跑，不留记录', () => {
+    const repo = sampleRepo()
+    setConfigWith(repo, { tests: ['spec/**/*.test.mjs'] })
+    const none = testpace(repo, 'full')
+    assert.equal(none.code, 2, none.out)
+    assert.match(none.out, /按 tests 规则（spec\/\*\*\/\*\.test\.mjs）在工作区里没找到测试文件/)
+    const config = JSON.parse(readFileSync(join(repo, 'testpace.json'), 'utf8'))
+    delete config.tests
+    writeFileSync(join(repo, 'testpace.json'), JSON.stringify(config))
+    const missing = testpace(repo, 'full')
+    assert.equal(missing.code, 2, missing.out)
+    assert.match(missing.out, /缺少 "tests"/)
+    assert.deepEqual(runs(repo), [])
+  })
+
+  test('verify：给的测试文件不在 tests 规则里，整组跑不到它这一类', () => {
+    const repo = gatedRepo()
+    setConfigWith(repo, { tests: ['tests/format.test.mjs'] })
+    const r = testpace(repo, 'verify', 'tests/price.test.mjs')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /\n没通过　整组会跑到 tests\/price\.test\.mjs：它不在 tests 规则里/)
   })
 })
 
@@ -422,8 +475,8 @@ describe('附加检查', () => {
     assert.deepEqual(record.checks, ['echo 第一条', 'echo 第二条'])
     const text = readFileSync(record.log as string, 'utf8')
     assert.match(text, /===== testpace 附加检查：echo 第二条\n第二条/)
-    assert.ok(text.indexOf('第二条') < text.indexOf('===== testpace 整组：'), text)
-    assert.match(text, /===== testpace 整组：[^\n]*\n(.*\n)*# pass/)
+    assert.ok(text.indexOf('第二条') < text.indexOf('===== testpace 整组的检查（full）：'), text)
+    assert.match(text, /===== testpace 全部测试（2 个文件）：[^\n]*\n(.*\n)*# pass/)
     assert.match(run(repo, ['status'], env).out, /附加检查（全局 git 配置 testpace\.check）：echo 第一条、echo 第二条，整组之前先跑/)
   })
 
@@ -432,11 +485,11 @@ describe('附加检查', () => {
     const env = withChecks('echo 放水了 && exit 1')
     const r = run(repo, ['full'], env)
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /附加检查 echo 放水了 && exit 1 没通过，没有跑整组/)
+    assert.match(r.out, /^整组失败：附加检查 echo 放水了 && exit 1 没通过，后面的没有跑/)
     assert.match(r.out, /输出节选 ---\n(.*\n)*放水了/)
     const record = runs(repo).at(-1)!
     assert.equal(record.result, 'fail')
-    assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /===== testpace 整组|# pass/)
+    assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /===== testpace (整组的检查|全部测试)|# pass/)
     assert.match(run(repo, ['status'], env).out, /没有整组通过记录/)
   })
 
@@ -463,7 +516,7 @@ describe('附加检查', () => {
     setConfig(repo, 'echo 整组输出 && exit 1')
     const r = run(repo, ['full'], withChecks('echo 检查输出'))
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /^整组失败/)
+    assert.match(r.out, /^整组失败：整组的检查（full）没通过，后面的没有跑/)
     const excerpt = r.out.split('输出节选')[1] as string
     assert.match(excerpt, /整组输出/)
     assert.doesNotMatch(excerpt, /检查输出/)

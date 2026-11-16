@@ -5,7 +5,8 @@
 
 import { basename } from 'node:path'
 import { CONFIG_FILE, configExists, loadConfig } from './config.ts'
-import { gateProblem } from './gate.ts'
+import { ensureGate, gateProblem } from './gate.ts'
+import { git } from './git.ts'
 import { defaultTips, openRepo, type Repo } from './repo.ts'
 import { noteSessionRepos, sessionRepos } from './sessions.ts'
 import { invocations, runsCommand } from './shell.ts'
@@ -30,11 +31,28 @@ export function rhythm(repo = '这个仓库'): string {
     '2. 改完跑 testpace focused：fast 检查加上和改动相关的测试。在分支上不跑整组。',
     '3. 有失败，用 testpace files <文件:行号> 只重跑失败的那几个测试（位置看失败输出）。',
     '4. 整组在合回默认分支时跑：做完的几个分支一起合，合并后的代码跑一次 testpace full（放后台，run_in_background），通过了再落地（testpace:merge 技能）。',
-    '落到默认分支的代码必须有整组通过记录：合并门在 git 移动默认分支时检查，没测过的提交、合并、cherry-pick、reset 都会被取消。直接跑项目自己的整组命令不留记录。',
+    '落到默认分支的代码必须有整组通过记录：合并门在 git 移动默认分支时检查，没测过的提交、合并、cherry-pick、reset 都会被取消。直接跑项目自己的测试、检查命令不留记录。',
   ].join('\n')
 }
 
 export const RHYTHM = rhythm()
+
+/** 新仓库最多这么多个提交：还没接入时，会话开始就提出接入。老仓库要先改造，不在这里提。 */
+export const NEW_REPO_COMMITS = 20
+
+/** 还没提交过，或提交很少的仓库。 */
+function isNewRepo(root: string): boolean {
+  try {
+    return Number(git(root, ['rev-list', '--count', 'HEAD'])) <= NEW_REPO_COMMITS
+  } catch {
+    return true
+  }
+}
+
+/** 新仓库还没接入时给 agent 的话：照接入说明配好，默认落地前跑全部测试，不用问用户。 */
+export const NEW_REPO =
+  '这是个新仓库，还没接入 testpace（根目录没有 testpace.json）。建项目时一起接入：照 testpace:setup 技能配好 testpace.json 和三条命令，' +
+  '落地前跑全部检查和全部测试，这是约定，不用问用户；配完跑 testpace verify 核对。'
 
 /** 给 agent 的节奏说明；testpace.json 有问题、合并门没在把关时加上原因。 */
 function told(repo: Repo, label?: string): string {
@@ -44,13 +62,13 @@ function told(repo: Repo, label?: string): string {
   return [label ? rhythm(label) : RHYTHM, ...(broken ? [broken] : []), ...(gate ? [gate] : [])].join('\n')
 }
 
-/** 直接跑配置里的整组命令不会留下记录，合并门不认。 */
+/** 直接跑配置里的 full 不会留下记录，合并门不认；它也只是整组的一部分。 */
 function fullCommandHint(command: string, cwd: string): string | undefined {
   const repo = openRepo(cwd)
   const full = repo && loadConfig(repo.root).config?.full
   const calls = invocations(command, cwd)
   if (!full || calls.some(call => basename(call.argv[0] ?? '') === 'testpace') || !runsCommand(command, full, cwd)) return undefined
-  return '这是 testpace.json 里的整组命令。直接跑不会留下通过记录，合并门不认；改用 testpace full（放后台跑），结果会按当前代码记录。'
+  return '这是 testpace.json 里 full 的检查，只是整组的一部分（整组还要跑 tests 规则找到的全部测试）。直接跑不会留下通过记录，合并门不认；整组改用 testpace full（放后台跑），结果会按当前代码记录。'
 }
 
 /** 这些目录所在的、接入了 testpace 的仓库（工作区根目录有 testpace.json），按根目录去重。 */
@@ -85,16 +103,26 @@ export function handle(input: HookInput, now: number): unknown {
 
   if (event === 'SessionStart') {
     // 会话所在目录的仓库，加上会话之前碰过的仓库（压缩、恢复后重新开始时上下文里的节奏说明可能没了）。
-    const here = openRepo(cwd)?.root
+    const hereRepo = openRepo(cwd)
+    const here = hereRepo?.root
     const repos = contractRepos([cwd, ...sessionRepos(sessionId)])
-    if (repos.length === 0) return undefined
+    const fresh = hereRepo && !configExists(hereRepo.root) && isNewRepo(hereRepo.root) ? hereRepo : undefined
+    if (repos.length === 0 && !fresh) return undefined
+    // 用得上合并门的会话里自动配上它，只告诉用户一声
+    const notice = ensureGate((repos[0] ?? fresh)!.root)
     for (const repo of repos) {
       const state = repo.store.session(sessionId, now, () => defaultTips(repo))
       repo.store.saveSession(sessionId, { ...state, rhythm: true })
     }
     noteSessionRepos(sessionId, repos.map(repo => repo.root), now)
-    const context = repos.map(repo => (repo.root === here ? told(repo) : told(repo, `${repo.root} 这个仓库`))).join('\n\n')
-    return { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }
+    const context = [
+      ...repos.map(repo => (repo.root === here ? told(repo) : told(repo, `${repo.root} 这个仓库`))),
+      ...(fresh ? [NEW_REPO] : []),
+    ].join('\n\n')
+    return {
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context },
+      ...(notice ? { systemMessage: notice } : {}),
+    }
   }
 
   const command = typeof input.tool_input?.command === 'string' ? input.tool_input.command : undefined

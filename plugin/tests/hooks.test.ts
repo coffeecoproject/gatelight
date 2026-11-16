@@ -270,10 +270,8 @@ describe('合并门（git 钩子）', () => {
   test('install 把合并门配进全局 git 配置：所有仓库、所有工作区都把关，不碰项目自己的钩子；status 和会话开始时说出没在把关的原因', () => {
     const env = { ...ENV, GIT_CONFIG_GLOBAL: globalGitConfig() }
     const repo = sampleRepo()
-    const missing = /合并门：合并门还没配，提交、合并到默认分支时不会检查。跑 testpace install：在全局 git 配置里加上合并门的钩子，这台机器上所有仓库都生效。改的是用户的全局配置，先问用户。/
+    const missing = /合并门：合并门没配（用户自己删掉了，或还没配过），提交、合并到默认分支时不会检查。用户要的话，跑 testpace install 在全局 git 配置里配上。/
     assert.match(testpace(repo, ['status'], env).out, missing)
-    const start = handle({ hook_event_name: 'SessionStart', session_id: 'i', cwd: repo }, Date.now()) as Output
-    assert.match(String(start?.hookSpecificOutput?.additionalContext), /^.*用 testpace 管测试节奏[\s\S]*改的是用户的全局配置，先问用户。$/)
 
     // 项目自己的钩子：git 自己的钩子目录里有一个，core.hooksPath 指向一个还不存在的目录（husky 装依赖前的 .husky/_）
     const seen = join(tempDir('testpace-seen-'), 'refs')
@@ -329,6 +327,51 @@ describe('合并门（git 钩子）', () => {
   })
 })
 
+describe('会话开始', () => {
+  test('自动配上合并门，只告诉用户一声；用户删掉后不再配回去', () => {
+    const saved = process.env.GIT_CONFIG_GLOBAL
+    const global = globalGitConfig()
+    process.env.GIT_CONFIG_GLOBAL = global
+    try {
+      const repo = sampleRepo()
+      const first = handle({ hook_event_name: 'SessionStart', session_id: 'auto-1', cwd: repo }, Date.now()) as Output
+      assert.match(String(first?.systemMessage), /^testpace：在全局 git 配置里配上了合并门/)
+      assert.equal(sh(repo, `git config --file '${global}' --get hook.testpace.command`).trim(), HOOK_COMMAND)
+      assert.doesNotMatch(String(first?.hookSpecificOutput?.additionalContext), /合并门没配/)
+      const second = handle({ hook_event_name: 'SessionStart', session_id: 'auto-2', cwd: repo }, Date.now()) as Output
+      assert.equal(second?.systemMessage, undefined, '配好了不再说')
+
+      // 照说明删掉
+      const remove = String(first?.systemMessage).match(/git config --global --remove-section (\S+)，/)![1]
+      sh(repo, `git config --file '${global}' --remove-section ${remove}`)
+      const removed = handle({ hook_event_name: 'SessionStart', session_id: 'auto-3', cwd: repo }, Date.now()) as Output
+      assert.equal(removed?.systemMessage, undefined)
+      assert.equal(sh(repo, `git config --file '${global}' --get-all hook.testpace.command || true`), '', '用户删掉的不配回去')
+      assert.match(String(removed?.hookSpecificOutput?.additionalContext), /合并门没配（用户自己删掉了，或还没配过）/)
+    } finally {
+      process.env.GIT_CONFIG_GLOBAL = saved
+    }
+  })
+
+  test('新仓库还没接入：提出照接入说明配好；提交多的老仓库、不是仓库的目录不提', () => {
+    const saved = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = globalGitConfig()
+    try {
+      const fresh = tempDir('testpace-new-')
+      sh(fresh, 'git init -qb main')
+      const start = handle({ hook_event_name: 'SessionStart', session_id: 'new-1', cwd: fresh }, Date.now()) as Output
+      assert.match(String(start?.hookSpecificOutput?.additionalContext), /^这是个新仓库，还没接入 testpace[\s\S]*不用问用户/)
+
+      const old = tempDir('testpace-old-')
+      sh(old, 'git init -qb main && for i in $(seq 21); do git -c user.name=t -c user.email=t@t commit --allow-empty -qm "$i"; done')
+      assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'old-1', cwd: old }, Date.now()), undefined)
+      assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'none-1', cwd: tempDir('testpace-plain-') }, Date.now()), undefined)
+    } finally {
+      process.env.GIT_CONFIG_GLOBAL = saved
+    }
+  })
+})
+
 describe('软提示', () => {
   test('会话开始时注入节奏说明，没接入约定的仓库不注入', () => {
     const repo = gatedRepo()
@@ -349,14 +392,14 @@ describe('软提示', () => {
     assert.equal(told, rhythm(`${root} 这个仓库`))
     assert.equal(run(parent, `cd ${repo} && git status`), undefined, '同一会话只说一次')
     assert.equal(run(repo, 'git status'), undefined, '会话后来在仓库里也不再说')
-    assert.match(String(run(repo, 'node scripts/full.mjs')?.hookSpecificOutput?.additionalContext), /^这是 testpace.json 里的整组命令/)
+    assert.match(String(run(repo, 'node scripts/full.mjs')?.hookSpecificOutput?.additionalContext), /^这是 testpace.json 里 full 的检查/)
     // 压缩、恢复后会话重新开始：碰过的仓库再说一次，之后的命令不再说
     const again = handle({ hook_event_name: 'SessionStart', session_id: 'p', cwd: parent }, Date.now()) as Output
     assert.equal(again?.hookSpecificOutput?.additionalContext, rhythm(`${root} 这个仓库`))
     assert.equal(run(parent, `cd ${repo} && git status`), undefined)
     // 换一个会话，补说和别的提示一起出
     const both = handle({ hook_event_name: 'PreToolUse', session_id: 'q', cwd: repo, tool_name: 'Bash', tool_input: { command: 'node scripts/full.mjs' } }, Date.now()) as Output
-    assert.match(String(both?.hookSpecificOutput?.additionalContext), /用 testpace 管测试节奏[\s\S]*\n\n这是 testpace.json 里的整组命令/)
+    assert.match(String(both?.hookSpecificOutput?.additionalContext), /用 testpace 管测试节奏[\s\S]*\n\n这是 testpace.json 里 full 的检查/)
   })
 
   test('testpace.json 写坏了照样说明节奏并讲出问题，停止门和合并门的状态照常', () => {
@@ -374,7 +417,7 @@ describe('软提示', () => {
     assert.match(status.out, /配置（testpace\.json）：testpace\.json 不是合法的 JSON[\s\S]*合并门：已装上/)
   })
 
-  test('直接跑配置里的整组命令时提示改用 testpace full', () => {
+  test('直接跑配置里的 full 时提示改用 testpace full', () => {
     const repo = sampleRepo()
     assert.match(String(pre(repo, 'node scripts/full.mjs 2>&1 | tail')?.hookSpecificOutput?.additionalContext), /改用 testpace full/)
     assert.equal(pre(repo, 'testpace full'), undefined)

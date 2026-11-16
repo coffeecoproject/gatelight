@@ -22,7 +22,7 @@ claude plugin marketplace add coffeecoproject/layermap
 claude plugin install layermap@layermap
 ```
 
-装好后开新会话，在项目里说"给这个项目接入 testpace"，Claude 会按接入说明配好。合并门的钩子配在全局 git 配置里：这台机器上第一次接入时用 `testpace install` 配一次（会先问你），之后别的项目、新的 worktree 都不用再配，升级插件也不用重配。升级插件后，在已接入的项目里跑一次 `testpace verify <测试文件>...`，确认项目的命令还守着新的约定。
+装好后开新会话。新建的项目（提交很少、还没有 `testpace.json` 的仓库），会话开始时 testpace 会提出接入，Claude 按接入说明配好，落地前跑全部检查和全部测试，不用你回答。老项目说"给这个项目接入 testpace"，Claude 先把它改造成新项目的样子再接入，只在有测试找不到办法跑、全部测试太久要取舍、要改业务代码时问你。合并门的钩子配在全局 git 配置里：会话开始时自动配上，只告诉你一声；你删掉后不会再自动配回去（要的话用 `testpace install`）。别的项目、新的 worktree 都不用再配，升级插件也不用重配。升级插件后，在已接入的项目里跑一次 `testpace verify <测试文件>...`，确认项目的命令还守着新的约定。
 
 只装 testpace 也能把关：合并门、停止门和其余命令都不依赖 layermap。但开发中没法按改动选测试，`focused` 每次都会建议跑整组。装上 layermap 后只跑和改动相关的测试。在一个整组要跑约 11 分钟的项目里，相关测试每次在 1 分钟以内到 5 分钟之间（只是这一个项目的实测）。
 
@@ -47,10 +47,10 @@ claude plugin install layermap@layermap
 |---|---|
 | `testpace focused [--base REF]` | 改完先跑：`fast`，再用 layermap 选出和改动相关的测试交给 `files` 跑，并把选出的测试交回 layermap，问它们跑不跑得到每处改动。默认对比和默认分支的分叉点，分支上已提交的改动也算。改了地图跟不到的文件（配置、依赖、迁移、模板、脚本、样式等，`ignore` 里的不算），没有 layermap 或它出错，没找到相关测试，或者选出的测试有跑不到的改动时，在默认分支上建议跑整组；在别的分支上只说明一句，不建议现在跑，合回默认分支时的整组会覆盖 |
 | `testpace files PATH[:行号]...` | 只跑给定的测试文件；`文件:行号` 只跑那一行的测试，比如重跑失败的测试（测试框架不能按行跑的，跑整个文件） |
-| `testpace full` | 跑 `full`，按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑（`testpace.json` 自己不算忽略路径，改了它要重跑）。跑的过程中代码改过，通过也不算记录，输出里列出变了的文件 |
-| `testpace status` | 当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查、有没有 layermap |
+| `testpace full` | 依次跑本机登记的附加检查、`full`（测试以外的检查），再把 `tests` 规则在工作区里找到的全部测试文件交给 `files`，一段没过就停；按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑（`testpace.json` 自己不算忽略路径，改了它要重跑）。跑的过程中代码改过，通过也不算记录，输出里列出变了的文件 |
+| `testpace status` | 当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查（含 `tests` 规则找到多少个测试文件）、有没有 layermap |
 | `testpace report [--days N]` | 计时诊断：各命令次数和耗时、平均每次落地的测试耗时和整组次数、失败后重跑轮数、同一份代码整组先失败后通过的（可能是测试不稳定，也可能是环境问题，列出失败用时和日志供分辨）、`fast` 是否过慢、按周的测试行数和整组耗时 |
-| `testpace verify [测试文件...]` | 核对这个项目的接入守不守约定，由程序实际去跑，不靠 agent 说检查过了：`testpace.json` 没写坏、三条命令找得到、合并门在把关、`files` 给了不存在的文件要失败；给了测试文件时，逐个核对它能通过、混进不存在的路径要失败、`文件:行号` 和 `文件:行号:列号` 能用，给了几个时再核对它们一起交给 `files` 能通过。项目里的测试交给不同工具或配置跑的（比如前端用 Vitest、接口用 node:test），每种各给一个文件。整组太长不在这里跑，`full` 是不是全部的检查要和用户确认。这几次运行不记进报告。接入时和升级 testpace 后各跑一次 |
+| `testpace verify [测试文件...]` | 核对这个项目的接入守不守约定，由程序实际去跑，不靠 agent 说检查过了：`testpace.json` 没写坏、三条命令找得到、合并门在把关、`files` 给了不存在的文件要失败；给了测试文件时，逐个核对它在 `tests` 规则里（整组跑得到它这一类）、能通过、混进不存在的路径要失败、`文件:行号` 和 `文件:行号:列号` 能用，给了几个时再核对它们一起交给 `files` 能通过。项目里的测试交给不同工具或配置跑的（比如前端用 Vitest、接口用 node:test），每种各给一个文件。`tests` 规则一个都找不到算没通过。整组太长不在这里跑。这几次运行不记进报告。接入时和升级 testpace 后各跑一次 |
 | `testpace install` | 在全局 git 配置（`git config --global`）里配上合并门的钩子：`hook.testpace.event = reference-transaction` 和 `hook.testpace.command`。这台机器配一次，所有仓库、所有工作区生效；不往仓库里写文件，也不影响项目自己的钩子（`core.hooksPath`、husky 这些照常跑）。钩子命令只把引用更新转交给 `testpace gate`，规则都在 testpace 里，升级插件不用重配。git 太旧（不认配置里声明的钩子）时不配，说明要升级 git |
 
 同一个工作区一次只跑一轮测试：`focused`、`files`、`full` 发现这个工作区已经有 testpace 的命令在跑时直接退出，不抢端口、测试库这些资源。testpace 被强杀后测试进程还在跑的，照样算在跑，提示里给出停掉它的命令。`files` 的路径按当前目录算。
@@ -68,7 +68,7 @@ claude plugin install layermap@layermap
 
 通过记录只在 `testpace.json` 相同的代码之间沿用，所以改约定（包括改 `ignore`）的提交要在改完的代码上跑过整组才能落地。提交里的 `testpace.json` 写坏了（`testpace full` 跑不了）的代码拿不到通过记录，合并门拦下时说出坏在哪。删掉 `testpace.json` 的代码也拿不到：退出接入由用户自己在终端里提交；接入之前分出去、本来就没有它的分支，把默认分支合进来再测。
 
-- **合并门**（git 的 `reference-transaction` 钩子，`testpace install` 配在全局 git 配置里）：agent 的 git 命令要移动本地默认分支时，git 把分支要指向的提交交给 `testpace gate`；那份代码没有 `testpace full` 通过的记录，git 就取消这次更新，默认分支不动，并说明原因。
+- **合并门**（git 的 `reference-transaction` 钩子，会话开始时自动配在全局 git 配置里，也可以用 `testpace install`）：agent 的 git 命令要移动本地默认分支时，git 把分支要指向的提交交给 `testpace gate`；那份代码没有 `testpace full` 通过的记录，git 就取消这次更新，默认分支不动，并说明原因。
   - 按实际要落地的提交判断，不管命令怎么写：`commit`、`merge`、`cherry-pick`、`rebase`、`reset`、包了一层的写法、脚本里的 git 都一样。
   - 退回默认分支以前的提交、快进到远程默认分支已有的提交（同步远程）不算新落地。工作分支上的提交不管。
   - "远程已有"按远程跟踪分支（`refs/remotes/<远程>/<默认分支>`）认，包括同一次更新里它的新位置。同步远程用 `git pull`、`git fetch <远程> main:main`，或先 `git fetch <远程>` 再快进。`git fetch <路径或 URL> main:main` 不经过远程跟踪分支，照样拦。
@@ -77,9 +77,10 @@ claude plugin install layermap@layermap
   - 钩子在所有仓库里都跑：没有分支要动（只是远程跟踪分支、`HEAD`）时什么都不做；有分支要动时调用一次 `testpace gate`，没接入 testpace 的仓库直接放行。
   - 会话里找不到 `testpace` 命令（插件没启用），或用的 testpace 是还没有合并门检查的旧版本（插件更新后，开着的会话要重开才换成新版本）时不挡，在接入了 testpace 的仓库里说一句。
   - 合并门没配、配的命令不是这一版的、被仓库自己的配置关掉（`hook.testpace.enabled = false`）、git 太旧，或找不到默认分支（没有 `origin/HEAD`，本地也没有 `main`、`master`）时，`testpace status` 和会话开始时的说明会讲出来。
-- **附加检查**（全局 git 配置 `testpace.check`，可以有多条）：`testpace full` 先在仓库根目录依次跑这台机器上登记的附加检查，再跑项目的整组命令：附加检查比整组便宜，有一条没过就不跑整组、不算整组通过，合并门照常拦。附加检查由别的插件装好时登记；登记在本机、不在仓库里，agent 在改动里删不掉。`testpace status` 列出登记了哪些。登记的命令找不到（插件停用了）时，`full` 不通过并说明怎么取消登记。
+- **整组跑全部测试**：测试由 testpace 按 `tests` 规则自己找，交给 `files` 跑，不靠谁记得把新测试加进整组。放松整组（改 `full`、`tests` 规则或它们调到的脚本）testpace 不另外拦：要防 agent 这样放水，装上做这类检查的插件（登记成附加检查）。
+- **附加检查**（全局 git 配置 `testpace.check`，可以有多条）：`testpace full` 先在仓库根目录依次跑这台机器上登记的附加检查，再跑 `full` 和全部测试：附加检查便宜，有一条没过就不往下跑、不算整组通过，合并门照常拦。附加检查由别的插件装好时登记；登记在本机、不在仓库里，agent 在改动里删不掉。`testpace status` 列出登记了哪些。登记的命令找不到（插件停用了）时，`full` 不通过并说明怎么取消登记。
 - **停止门**（Claude Code 的 Stop hook）：这个会话起的整组（按 Claude Code 给命令带的会话号认，别的会话和终端里起的不算）还在跑，或这个会话还没看过结果（`testpace status`，或在前台等到了 `testpace full` 的输出，通过、失败都算），拦一次。本地默认分支或 `origin` 上的默认分支在会话里有了没有通过记录的提交时，提示用户。会话从仓库外开始的，也查它碰过的仓库。
-- **软提示**（Claude Code 的 hook）：会话开始时说明测试节奏（上一节），会话从仓库外开始的，第一次在仓库里执行命令时补说，压缩、恢复后再说一次；agent 直接跑 `full` 配置的命令时，提示改用 `testpace full`。
+- **软提示**（Claude Code 的 hook）：会话开始时说明测试节奏（上一节），会话从仓库外开始的，第一次在仓库里执行命令时补说，压缩、恢复后再说一次；agent 直接跑 `full` 配置的命令时，提示它只是整组的一部分、不留记录，改用 `testpace full`。
 
 记录放在仓库的 `.git/testpace/`（所有 worktree 共用）：`runs.jsonl` 每次运行一行，`logs/` 是完整输出，`running/` 是每个工作区正在跑的命令，`sessions/` 是各会话的状态。
 

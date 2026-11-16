@@ -68,7 +68,7 @@ function hookProblem(state: HookState): string | undefined {
     case 'oldGit':
       return `这台机器的 git（${state.version}）不认配置里声明的钩子，合并门没有生效。要 git 2.54 以上：告诉用户升级 git（比如 brew upgrade git），不要自己装。`
     case 'missing':
-      return `合并门还没配，提交、合并到默认分支时不会检查。跑 testpace install：在全局 git 配置里加上合并门的钩子，这台机器上所有仓库都生效。改的是用户的全局配置，先问用户。`
+      return `合并门没配（用户自己删掉了，或还没配过），提交、合并到默认分支时不会检查。用户要的话，跑 testpace install 在全局 git 配置里配上。`
     case 'disabled':
       return `git 配置把合并门的钩子关掉了（hook.${HOOK}.enabled = false），合并门没有生效。`
     case 'outdated':
@@ -97,6 +97,31 @@ export function installGate(root: string): { ok: boolean; problem?: string } {
   return problem ? { ok: false, problem: `全局 git 配置里配好了，但在这个仓库里没有生效：${problem}` } : { ok: true }
 }
 
+/** 自动配过合并门的记号（全局 git 配置）：之后钩子没了，是用户自己删的，不再自动配回去。 */
+const AUTO_KEY = 'testpace.autoInstalled'
+
+/**
+ * 会话开始时自动配合并门：装了插件就当同意，不问，只告诉用户一声。
+ * 没配过的配上；配过但命令是旧版本的更新；用户自己删掉的、git 太旧的、仓库把它关掉的不动。
+ * 返回给用户看的说明，没动返回 undefined。
+ */
+export function ensureGate(root: string): string | undefined {
+  const state = hookState(root)
+  if (state.kind === 'outdated') {
+    installGate(root)
+    return undefined
+  }
+  if (state.kind !== 'missing' || configValue(root, AUTO_KEY) === 'true') return undefined
+  const result = installGate(root)
+  if (!result.ok) return undefined
+  git(root, ['config', '--global', AUTO_KEY, 'true'])
+  return [
+    'testpace：在全局 git 配置里配上了合并门（这台机器上所有仓库生效）。',
+    '它只在 agent 要把代码落到默认分支时检查有没有跑过全部测试，没接入 testpace 的仓库不受影响，你自己在终端里的操作也不管。',
+    `不想要的话：git config --global --remove-section hook.${HOOK}，之后不会再自动配上。`,
+  ].join('')
+}
+
 /**
  * git 钩子交来的引用更新（每行 "<旧值> <新值> <引用>"）：要移动默认分支、而且落地的代码没有整组通过记录时，
  * 返回拒绝的原因。
@@ -119,7 +144,7 @@ export function checkRefUpdates(cwd: string, input: string): string | undefined 
     // 接入了约定的仓库才管：默认分支现在的代码或要落地的代码里有 testpace.json
     const incoming = contractAt(repo, next)
     if (!incoming && !hasFile(root, `refs/heads/${branch}`, CONFIG_FILE)) continue
-    const config = incoming?.config ?? { ignore: [] }
+    const config = incoming?.config ?? { tests: [], ignore: [] }
     const current = commitOf(root, `refs/heads/${branch}`)
     // 退回默认分支以前的提交，或同步远程默认分支已有的提交：没有新内容落地
     if (current && isAncestor(root, next, current)) continue

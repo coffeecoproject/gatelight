@@ -64,7 +64,7 @@ export function stopCheck(input: StopInput): StopResult {
     const contract = contractAt(repo, tip.commit)
     const start = session.tipsAtStart[ref]
     if (!contract && !(start && hasFile(repo.root, start, CONFIG_FILE))) continue
-    if (coverageOf(repo, contract?.config ?? { ignore: [] }, tip.tree).kind !== 'none') continue
+    if (coverageOf(repo, contract?.config ?? { tests: [], ignore: [] }, tip.tree).kind !== 'none') continue
     warned.push(commit)
     const name = ref.replace(/^refs\/(heads|remotes)\//, '')
     const how = ref.startsWith('refs/heads/') ? '可能是在 Claude Code 之外提交的，或者合并门没装上' : '可能是推送了别的分支到默认分支，或者在 GitHub 上合并了 PR'

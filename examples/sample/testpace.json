@@ -2,5 +2,6 @@
   "fast": "node scripts/check.mjs",
   "files": "node scripts/test-files.mjs",
   "full": "node scripts/full.mjs",
+  "tests": ["tests/**/*.test.mjs"],
   "ignore": ["docs/**"]
 }

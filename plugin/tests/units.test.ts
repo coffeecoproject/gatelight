@@ -54,15 +54,23 @@ describe('ignore 路径规则', () => {
 })
 
 describe('配置', () => {
-  test('三条命令齐全时没有问题，ignore 默认为空', () => {
-    const { config, problems } = parseConfig({ fast: 'a', files: 'b', full: 'c' })
+  test('三条命令和 tests 齐全时没有问题，ignore 默认为空', () => {
+    const { config, problems } = parseConfig({ fast: 'a', files: 'b', full: 'c', tests: ['**/*.test.ts', '!e2e/**'] })
     assert.deepEqual(problems, [])
-    assert.deepEqual(config, { fast: 'a', files: 'b', full: 'c', ignore: [] })
+    assert.deepEqual(config, { fast: 'a', files: 'b', full: 'c', tests: ['**/*.test.ts', '!e2e/**'], ignore: [] })
   })
 
   test('缺字段、拼错字段、类型不对都报出来', () => {
     const { problems } = parseConfig({ fast: '', full: 'c', ignroe: [], ignore: 'docs' })
-    assert.deepEqual(problems, ['未知字段 "ignroe"', '"fast" 应该是非空字符串', '缺少 "files" 命令', '"ignore" 应该是路径规则的字符串数组'])
+    assert.deepEqual(problems, [
+      '未知字段 "ignroe"',
+      '"fast" 应该是非空字符串',
+      '缺少 "files" 命令',
+      '缺少 "tests"：找测试文件的路径规则，比如 ["**/*.test.ts"]',
+      '"ignore" 应该是路径规则的字符串数组',
+    ])
+    assert.deepEqual(parseConfig({ fast: 'a', files: 'b', full: 'c', tests: [] }).problems, ['"tests" 应该是路径规则的非空字符串数组，以 ! 开头的是排除'])
+    assert.deepEqual(parseConfig({ fast: 'a', files: 'b', full: 'c', tests: ['!e2e/**'] }).problems, ['"tests" 里至少要有一条不以 ! 开头的规则'])
   })
 
   test('命令的第一个词跳过环境变量赋值', () => {
