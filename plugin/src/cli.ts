@@ -12,7 +12,9 @@ import { duration, short, when } from './format.ts'
 import { checkRefUpdates, GATE_REJECT, gateProblem, installGate } from './gate.ts'
 import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { renderReport } from './report.ts'
-import { NODE_TEST_USAGE, nodeTest } from './run/node-test.ts'
+import { nodeTest } from './run/node-test.ts'
+import { type Framework, runFramework } from './run/runner.ts'
+import { vitest } from './run/vitest.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runRecorded, started } from './repo.ts'
 import { LOCATED, newRunId } from './store.ts'
 import { findTests, testMatcher } from './tests.ts'
@@ -27,9 +29,10 @@ const USAGE = `用法：
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
   testpace install               这台机器配一次：在全局 git 配置里配上合并门（agent 移动默认分支时，要求落地的代码有整组通过记录），
                                  并放上固定命令入口 ~/.local/bin/testpace（Codex 的命令和合并门的钩子靠它找到 testpace）
-  ${NODE_TEST_USAGE}
-                                 写在 testpace.json 的 files 里（或项目的 files 脚本里）：用 node:test 跑测试文件，
-                                 文件不存在、文件里一个测试都没跑到时失败，按行给的整个文件跑，测试全被跳过时说一句`
+  ${nodeTest.usage}
+  ${vitest.usage}
+                                 写在 testpace.json 的 files 里（或项目的 files 脚本里）：用项目的测试框架跑测试文件，守 files 的约定：
+                                 文件不存在、文件里一个测试都没跑到时失败，测试全被跳过时说一句。node:test 不能按行跑，按行给的整个文件跑`
 
 /**
  * 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；
@@ -480,11 +483,15 @@ function gate(): number {
   return GATE_REJECT
 }
 
-/** testpace run <框架>：按框架跑测试文件、守 files 的约定。目前有 node-test。 */
+/** testpace run 认的框架。 */
+const FRAMEWORKS = new Map<string, Framework>([['node-test', nodeTest], ['vitest', vitest]])
+
+/** testpace run <框架>：按框架跑测试文件、守 files 的约定。 */
 function run(rest: string[]): Promise<number> | number {
-  const [framework, ...args] = rest
-  if (framework === 'node-test') return nodeTest(args)
-  console.error(`${framework === undefined ? '没有给框架' : `不认识的框架 "${framework}"`}\n用法：${NODE_TEST_USAGE}`)
+  const [name, ...args] = rest
+  const framework = name === undefined ? undefined : FRAMEWORKS.get(name)
+  if (framework) return runFramework(framework, args)
+  console.error(`${name === undefined ? '没有给框架' : `不认识的框架 "${name}"`}\n用法：\n${[...FRAMEWORKS.values()].map(f => `  ${f.usage}`).join('\n')}`)
   return EXIT.usage
 }
 

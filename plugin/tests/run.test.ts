@@ -1,4 +1,5 @@
 // testpace run node-test：用 node:test 跑测试文件，守 files 的约定。在临时目录里放测试文件，跑真实的命令。
+// 各框架共用的部分（选项、文件核对、中断）在这里测透；testpace run vitest 见 run-vitest.test.ts。
 
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
@@ -45,7 +46,7 @@ describe('testpace run node-test', () => {
     const r = run('empty.test.mjs', 'broken.test.mjs', 'ok.test.mjs')
     assert.equal(r.code, 1, r.out)
     assert.match(r.out, /✔ 一加一/)
-    assert.match(r.out, /一个测试都没跑到（没加载起来，或里面没有测试）：empty\.test\.mjs、broken\.test\.mjs\n/)
+    assert.match(r.out, /一个测试都没跑到（没加载起来、里面没有测试、给的行上没有测试，或被框架的配置排除了）：empty\.test\.mjs、broken\.test\.mjs\n/)
   })
 
   test('测试没过时失败，也点名没跑到测试的文件', () => {
@@ -53,7 +54,7 @@ describe('testpace run node-test', () => {
     const r = run('failing.test.mjs', 'empty.test.mjs')
     assert.equal(r.code, 1, r.out)
     assert.match(r.out, /✖ 算错/)
-    assert.match(r.out, /一个测试都没跑到（没加载起来，或里面没有测试）：empty\.test\.mjs\n/)
+    assert.match(r.out, /一个测试都没跑到（没加载起来、里面没有测试、给的行上没有测试，或被框架的配置排除了）：empty\.test\.mjs\n/)
   })
 
   test('测试全被跳过不算失败，但要说一句', () => {
@@ -66,7 +67,7 @@ describe('testpace run node-test', () => {
   test('认 文件:行号 和 文件:行号:列号：整个文件跑一次，说一句', () => {
     const r = run('ok.test.mjs:3', 'ok.test.mjs:3:1', 'ok.test.mjs')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /node:test 不能按行跑，这些整个文件跑：ok\.test\.mjs:3、ok\.test\.mjs:3:1\n/)
+    assert.match(r.out, /这个框架不能按行跑，这些整个文件跑：ok\.test\.mjs:3、ok\.test\.mjs:3:1\n/)
     assert.equal(r.out.match(/✔ 一加一/g)?.length, 1, r.out)
   })
 
@@ -74,6 +75,14 @@ describe('testpace run node-test', () => {
     const r = run('--cwd', 'sub', '--node-arg=--import=../setup.mjs', 'global.test.mjs')
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /✔ 预加载过/)
+  })
+
+  test('不认识的框架时退出码 2，列出认的框架', () => {
+    for (const name of ['jest', 'constructor']) {
+      const r = spawnSync(BIN, ['run', name, 'ok.test.mjs'], { cwd: dir, env: ENV, encoding: 'utf8' })
+      assert.equal(r.status, 2)
+      assert.match(r.stderr, new RegExp(`不认识的框架 "${name}"\\n用法：\\n  testpace run node-test .+\\n  testpace run vitest `))
+    }
   })
 
   test('不认识的选项、没给文件、--cwd 目录不存在时退出码 2', () => {
@@ -106,6 +115,23 @@ describe('testpace run node-test', () => {
     assert.equal(code, 130)
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, '跑测试的 node 也停了')
     assert.deepEqual(readdirSync(tmp), [])
+  })
+})
+
+describe('testpace run 被中断时', () => {
+  test('不管自己收到哪个信号，都给框架发 SIGINT：框架当成 Ctrl-C 收拾自己起的进程', async () => {
+    const dir = tempDir('testpace-signal-')
+    const got = join(dir, 'got.txt')
+    const started = join(dir, 'started.txt')
+    // 多加一个报告器：报告器在 node --test 的主进程里运行（--import 只进跑测试文件的子进程），记下主进程收到的信号。SIGINT 只记下，照常交给 node 停下、收拾跑测试的子进程；SIGTERM 时 node 不管，记下后自己退出
+    writeFileSync(join(dir, 'trap.mjs'), `import { writeFileSync } from 'node:fs'\nprocess.prependListener('SIGINT', () => writeFileSync(${JSON.stringify(got)}, 'SIGINT'))\nprocess.on('SIGTERM', () => { writeFileSync(${JSON.stringify(got)}, 'SIGTERM'); process.exit(1) })\nexport default async function* (source) { for await (const _ of source); }\n`)
+    writeFileSync(join(dir, 'slow.test.mjs'), `import { test } from 'node:test'\nimport { writeFileSync } from 'node:fs'\ntest('很慢', async () => {\n  writeFileSync(${JSON.stringify(started)}, '')\n  await new Promise(resolve => setTimeout(resolve, 60_000))\n})\n`)
+    const child = spawn(BIN, ['run', 'node-test', '--node-arg=--test-reporter=./trap.mjs', '--node-arg=--test-reporter-destination=stderr', 'slow.test.mjs'], { cwd: dir, env: ENV, stdio: 'ignore' })
+    const closed = new Promise<number | null>(resolve => child.on('close', code => resolve(code)))
+    while (!existsSync(started)) await sleep(50)
+    child.kill('SIGTERM')
+    assert.equal(await closed, 130)
+    assert.equal(readFileSync(got, 'utf8'), 'SIGINT')
   })
 })
 
