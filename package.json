@@ -9,6 +9,7 @@
     "check": "tsc -p plugin && eslint"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/node": "^22",
     "eslint": "^10.15.0",
     "eslint-plugin-jest": "^29.17.1",

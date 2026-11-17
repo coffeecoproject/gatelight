@@ -58,7 +58,7 @@ testpace 不管测试的写法风格（分几层、怎么组织、写多细）�
 各框架的做法（除了 node:test 的断言，都不用新装依赖）：
 
 - **Vitest**：配置的 `test` 里写 `allowOnly: false` 和 `expect: { requireAssertions: true }`。
-- **Playwright**：配置里写 `forbidOnly: true`。断言没有自带开关，加一个自定义报告器：`onTestEnd` 里只看通过的测试，在它的步骤（`result.steps`，逐层往下找）里找 `category` 是 `expect` 的，一个都没有就记下；`onEnd` 把记下的列出来，返回 `{ status: 'failed' }`，整轮就失败。往下找时跳过 `category` 是 `fixture`、`hook` 的步骤：共用的 fixture、`beforeEach` 里的断言不是测试自己的，算上它们，每个测试都会过关。只查 `tests` 规则圈的测试文件，准备登录状态这类 setup 不查。报告器写进配置的 `reporter`：命令行传 `--reporter` 会把配置里的整个换掉，`files` 要别的报告（比如给脚本读的 JSON）也写进配置。写好后放一个没有断言的测试跑一次，确认它被点名、整轮失败，再删掉。
+- **Playwright**：配置里写 `forbidOnly: true`。断言没有自带开关，加一个自定义报告器：`onTestEnd` 里只看通过的测试，在它的步骤（`result.steps`，逐层往下找）里找 `category` 是 `expect` 的，一个都没有就记下；`onEnd` 把记下的列出来，返回 `{ status: 'failed' }`，整轮就失败。往下找时跳过 `category` 是 `fixture`、`hook` 的步骤：共用的 fixture、`beforeEach` 里的断言不是测试自己的，算上它们，每个测试都会过关。只查 `tests` 规则圈的测试文件，准备登录状态这类 setup 不查。报告器写进配置的 `reporter`：命令行传 `--reporter` 会把配置里的整个换掉。`testpace run playwright` 自己的计数报告器是另加的，不碰配置里的。写好后放一个没有断言的测试跑一次，确认它被点名、整轮失败，再删掉。
 - **node:test**：不加 `--test-only` 时 `.only` 不起作用，测试命令里别加它（`testpace run node-test` 不加），这条就不用做。断言没有自带开关，用 eslint 的 jest 插件的 `jest/expect-expect`，配上 `additionalTestBlockFunctions: ['test']`（插件认不出从 `node:test` 导入的 `test`）和 `assertFunctionNames: ['assert', 'assert.*', 't.assert.*']`。项目没有 eslint 时要新装依赖，照下面先问用户。
 - **别的框架**：先找自带的开关，没有再用 lint 规则。
 
@@ -71,8 +71,8 @@ testpace 不管测试的写法风格（分几层、怎么组织、写多细）�
 ## 步骤
 
 1. **找项目已有的命令和测试**：看 `package.json` 的 scripts、Makefile、CI 配置、README、测试框架的配置。三条命令尽量直接用现成的，不另造一套；不是 JavaScript 项目（Go、Python、Swift 等）也一样写三条命令。`full` 放测试以外的全部检查；`tests` 照测试框架实际认的文件写（比如 Vitest 的 include、exclude），项目里有几种测试（单元、数据库、页面、端到端）就要都覆盖到。说不清某种测试怎么跑、或全部测试跑一遍太久要怎么取舍时，用大白话说明情况，请用户定；把整套系统起起来跑的测试排除出整组，不在可取舍的办法里。
-2. **测试用 `node:test` 或 Vitest 的，`files` 一律用 `testpace run node-test` 或 `testpace run vitest`**，不自己写包装、不自己数测试，接入前项目里已有的这类包装和计数报告器删掉：它检查文件都在、每个文件都跑到了测试（Vitest 被项目配置排除、悄悄没跑的文件也查得出来），全被跳过时说一句；Vitest 按行跑，node:test 不能按行跑，按行给的整个文件跑。要先起环境、编译、按路径分给不同跑法的，脚本照旧做这些，到"用框架跑这几个文件"那一步调它（`--cwd` 换目录：node 的工作目录，或装着 Vitest、放着它配置的那个目录；`--node-arg`、`--vitest-arg` 原样交参数给框架，比如 `--node-arg=--import=tsx`、`--vitest-arg=--maxWorkers=2`），自己不再数测试。testpace 跑项目命令时 PATH 上一定有它自己。
-   **testpace 还没内置的测试框架**（目前是 node:test、Vitest 以外的），写一个小脚本包一层（比如 `scripts/testpace.sh files a.test.ts b.test.ts:42`），把参数交给测试框架。测试框架能按行跑的（比如 Playwright、Vitest），按 `文件:行号` 交给它，带列号的先去掉列号；不能的，去掉行号和列号跑整个文件，在输出里说一句。很多测试框架把参数当成筛选条件：给了几个文件、其中一个不存在时，只跑找得到的那些，照样报通过。所以脚本要自己检查每个文件都存在、测试框架加载了它、里面有测试，否则返回非零。按条件跳过的测试（比如只在某个系统上跑）算有测试：整组里它们同样被跳过，`files` 不比整组更严；一个文件的测试全被跳过时，在输出里说一句，让人知道它这次什么都没验证。
+2. **测试用 `node:test`、Vitest 或 Playwright 的，`files` 一律用 `testpace run node-test`、`testpace run vitest` 或 `testpace run playwright`**，不自己写包装、不自己数测试，接入前项目里已有的这类包装和计数报告器删掉：它检查文件都在、每个文件都跑到了测试（被项目配置排除、悄悄没跑的文件也查得出来；Playwright 只要别的文件有测试，给的行上没有测试、文件里没有测试都照样通过，也查得出来），全被跳过时说一句；Vitest、Playwright 按行跑，node:test 不能按行跑，按行给的整个文件跑。项目配置里的报告器（比如 Playwright 的断言检查）照常起作用。要先起环境、编译、按路径分给不同跑法的，脚本照旧做这些，到"用框架跑这几个文件"那一步调它（`--cwd` 换目录：node 的工作目录，或装着 Vitest、Playwright，放着它们配置的那个目录；`--node-arg`、`--vitest-arg`、`--playwright-arg` 原样交参数给框架，比如 `--node-arg=--import=tsx`、`--vitest-arg=--maxWorkers=2`），自己不再数测试。testpace 跑项目命令时 PATH 上一定有它自己。
+   **testpace 还没内置的测试框架**（目前是 node:test、Vitest、Playwright 以外的），写一个小脚本包一层（比如 `scripts/testpace.sh files a.test.ts b.test.ts:42`），把参数交给测试框架。测试框架能按行跑的（比如 Playwright、Vitest），按 `文件:行号` 交给它，带列号的先去掉列号；不能的，去掉行号和列号跑整个文件，在输出里说一句。很多测试框架把参数当成筛选条件：给了几个文件、其中一个不存在时，只跑找得到的那些，照样报通过。所以脚本要自己检查每个文件都存在、测试框架加载了它、里面有测试，否则返回非零。按条件跳过的测试（比如只在某个系统上跑）算有测试：整组里它们同样被跳过，`files` 不比整组更严；一个文件的测试全被跳过时，在输出里说一句，让人知道它这次什么都没验证。
 3. **写 `testpace.json`**，放在仓库根目录，进版本库。然后跑 `testpace status` 看合并门那一行：
    - 说合并门没配：会话开始时 testpace 会自动配上；用户自己删掉过的，问用户要不要跑 `testpace install` 配回去。
    - 说 git 太旧：告诉用户升级 git（要 2.54 以上），不要自己装。在那之前合并门不起作用，其余照常。

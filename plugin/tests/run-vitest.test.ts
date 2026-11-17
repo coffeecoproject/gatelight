@@ -71,10 +71,10 @@ describe('testpace run vitest', () => {
     assert.match(r.out, /这些文件的测试这次全被跳过，什么都没验证：app\/skipped\.test\.ts\n/)
   })
 
-  test('按名字片段顺带跑了没给的文件时说一句', () => {
+  test('按名字片段还跑了没给的文件时说一句', () => {
     const r = run('app/ok.test.ts')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /框架还顺带跑了这些没给的文件：app\/ok\.test\.tsx\n/)
+    assert.match(r.out, /框架还跑了这些没给的文件（[^）]+）：app\/ok\.test\.tsx\n/)
   })
 
   test('--vitest-arg 交给 Vitest', () => {

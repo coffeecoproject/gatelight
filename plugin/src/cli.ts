@@ -13,6 +13,7 @@ import { checkRefUpdates, GATE_REJECT, gateProblem, installGate } from './gate.t
 import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { renderReport } from './report.ts'
 import { nodeTest } from './run/node-test.ts'
+import { playwright } from './run/playwright.ts'
 import { type Framework, runFramework } from './run/runner.ts'
 import { vitest } from './run/vitest.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runRecorded, started } from './repo.ts'
@@ -31,6 +32,7 @@ const USAGE = `用法：
                                  并放上固定命令入口 ~/.local/bin/testpace（Codex 的命令和合并门的钩子靠它找到 testpace）
   ${nodeTest.usage}
   ${vitest.usage}
+  ${playwright.usage}
                                  写在 testpace.json 的 files 里（或项目的 files 脚本里）：用项目的测试框架跑测试文件，守 files 的约定：
                                  文件不存在、文件里一个测试都没跑到时失败，测试全被跳过时说一句。node:test 不能按行跑，按行给的整个文件跑`
 
@@ -484,7 +486,7 @@ function gate(): number {
 }
 
 /** testpace run 认的框架。 */
-const FRAMEWORKS = new Map<string, Framework>([['node-test', nodeTest], ['vitest', vitest]])
+const FRAMEWORKS = new Map<string, Framework>([['node-test', nodeTest], ['vitest', vitest], ['playwright', playwright]])
 
 /** testpace run <框架>：按框架跑测试文件、守 files 的约定。 */
 function run(rest: string[]): Promise<number> | number {

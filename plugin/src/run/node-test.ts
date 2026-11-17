@@ -2,10 +2,9 @@
 // node:test 不能按行跑：带行号的整个文件跑（runner 说一句）。不加 --test-only，留着的 .only 不起作用。
 // 屏幕上照常是 spec 输出；另用插件的计数报告器把跑完的每个测试记进报告文件，跑完逐个文件核对。
 
-import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { Framework } from './runner.ts'
-import type { Ran } from './targets.ts'
+import { readRanLines } from './targets.ts'
 
 const REPORTER = fileURLToPath(new URL('./node-test-reporter.mjs', import.meta.url))
 
@@ -25,8 +24,5 @@ export const nodeTest: Framework = {
       ],
     }
   },
-  read(report) {
-    if (!existsSync(report)) return []
-    return readFileSync(report, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as Ran)
-  },
+  read: readRanLines,
 }

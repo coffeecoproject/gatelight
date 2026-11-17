@@ -1,10 +1,11 @@
 // testpace run 各框架共用的跑法：解析选项和测试文件、起框架、跑完逐个文件核对、说明、退出码。
-// 各框架只管怎么起（命令和参数，报告写到哪）和怎么读报告，各一个文件（node-test.ts、vitest.ts）。
+// 各框架只管怎么起（命令和参数，报告写到哪）和怎么读报告，各一个文件（node-test.ts、vitest.ts、playwright.ts）。
 
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { parseTargets, type Ran, type Target, tally } from './targets.ts'
 
 export interface Framework {
@@ -15,12 +16,30 @@ export interface Framework {
   /** 能按行跑。不能的，按行给的整个文件跑，runner 说一句。 */
   byLine: boolean
   /**
-   * 怎么起：程序、参数。cwd 是框架的工作目录，report 是给框架写报告的临时文件，args 是用户交给框架的参数。
+   * 怎么起：程序、参数，要另加的环境变量。cwd 是框架的工作目录，report 是给框架写报告的临时文件，args 是用户交给框架的参数。
    * 起不了（比如项目里没装这个框架）时返回说明。
    */
-  command(targets: Target[], args: string[], cwd: string, report: string): { program: string; args: string[] } | string
+  command(targets: Target[], args: string[], cwd: string, report: string): Command | string
   /** 读报告：每个跑完的测试。报告没写出来（框架起来就出错）时返回空。 */
   read(report: string): Ran[]
+}
+
+export interface Command {
+  program: string
+  args: string[]
+  env?: Record<string, string>
+}
+
+/** 项目在 cwd 装的包里的命令（package.json 的 bin）的路径；找不到这个包时返回说明。框架用项目自己装的那份，testpace 不带框架。 */
+export function projectBin(cwd: string, pkg: string, bin: string): { path: string } | string {
+  let manifest: string
+  try {
+    manifest = createRequire(join(cwd, 'package.json')).resolve(`${pkg}/package.json`)
+  } catch {
+    return `在 ${cwd} 找不到项目装的 ${pkg}：在装了它的目录下跑，或用 --cwd 指过去`
+  }
+  const bins = (JSON.parse(readFileSync(manifest, 'utf8')) as { bin: Record<string, string> }).bin
+  return { path: join(dirname(manifest), bins[bin]!) }
 }
 
 /** 退出码：0 通过；1 测试没过或有文件没跑到测试（框架自己的非零退出码照传）；2 用法问题、文件或目录不存在、起不了框架；130 被中断。 */
@@ -41,7 +60,7 @@ export async function runFramework(framework: Framework, argv: string[]): Promis
     return 2
   }
 
-  const located = targets.flatMap(target => target.located)
+  const located = targets.flatMap(target => target.located.map(({ text }) => text))
   if (!framework.byLine && located.length > 0) console.log(`[testpace] 这个框架不能按行跑，这些整个文件跑：${located.join('、')}`)
 
   const dir = mkdtempSync(join(tmpdir(), 'testpace-run-'))
@@ -52,7 +71,7 @@ export async function runFramework(framework: Framework, argv: string[]): Promis
       console.error(`[testpace] ${command}`)
       return 2
     }
-    const run = await spawnFramework(command.program, command.args, cwd)
+    const run = await spawnFramework(command, cwd)
     if (run.kind === 'error') {
       console.error(`[testpace] 没能起 ${command.program}：${run.message}`)
       return 2
@@ -62,7 +81,7 @@ export async function runFramework(framework: Framework, argv: string[]): Promis
     // 框架没过也照样核对：没跑到测试的文件一并说出来
     const { empty, allSkipped, others } = tally(targets, framework.read(report))
     const names = (list: Target[]) => list.map(target => target.file).join('、')
-    if (others.length > 0) console.log(`[testpace] 框架还顺带跑了这些没给的文件：${others.map(file => relative(process.cwd(), file)).join('、')}`)
+    if (others.length > 0) console.log(`[testpace] 框架还跑了这些没给的文件（名字片段匹配到的，或给的测试依赖的准备项目）：${others.map(file => relative(process.cwd(), file)).join('、')}`)
     if (allSkipped.length > 0) console.log(`[testpace] 这些文件的测试这次全被跳过，什么都没验证：${names(allSkipped)}`)
     if (empty.length > 0) console.error(`[testpace] 这些文件一个测试都没跑到（没加载起来、里面没有测试、给的行上没有测试，或被框架的配置排除了）：${names(empty)}`)
     if (run.code !== 0) return run.code
@@ -109,8 +128,8 @@ type FrameworkRun = { kind: 'done'; code: number } | { kind: 'error'; message: s
  * 起框架，输出直通。testpace 被中断时给框架发 SIGINT（不管 testpace 收到的是哪个信号）：
  * 框架都把它当成 Ctrl-C，停下并收拾自己起的进程；Vitest 5.0 及以前收到 SIGTERM 时会把跑测试的子进程丢下不管。等它退出再返回。
  */
-function spawnFramework(program: string, args: string[], cwd: string): Promise<FrameworkRun> {
-  const child = spawn(program, args, { cwd, stdio: 'inherit' })
+function spawnFramework({ program, args, env }: Command, cwd: string): Promise<FrameworkRun> {
+  const child = spawn(program, args, { cwd, stdio: 'inherit', ...(env ? { env: { ...process.env, ...env } } : {}) })
   let interrupted = false
   const forward = (): void => {
     interrupted = true
