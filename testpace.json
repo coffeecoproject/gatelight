@@ -1,6 +1,6 @@
 {
   "fast": "npm run -s check",
-  "files": "node scripts/testpace-files.mjs",
+  "files": "plugin/bin/testpace run node-test",
   "full": "npm run -s check",
   "tests": ["plugin/tests/*.test.ts"],
   "ignore": ["README.md", "LICENSE", "Codex适配方案.md"]
