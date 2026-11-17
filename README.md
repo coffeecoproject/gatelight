@@ -31,7 +31,7 @@ codex plugin add testpace@testpace
 
 第一次用时 Codex 会要求信任插件的 hook。Codex 下的前提：
 
-- **固定命令入口**：Codex 不把插件的 `bin/` 放进命令的 PATH，合并门的钩子也靠 PATH 找 `testpace`。`testpace install` 会放一个 `~/.local/bin/testpace`，它运行时转给这台机器上装着的最高版本的 testpace（Claude Code、Codex 装的都算），插件升级不用重放。没放之前，会话开始时会给出插件里 `testpace` 的完整路径，合并门在 Codex 里不检查。
+- **固定命令入口**：Codex 不把插件的 `bin/` 放进命令的 PATH，合并门的钩子也靠 PATH 找 `testpace`。`testpace install` 会放一个 `~/.local/bin/testpace`，它运行时转给这台机器上装着的、完整的最高版本的 testpace（Claude Code、Codex 装的都算；缓存只复制了一部分的那份不算），插件升级不用重放。没放之前，会话开始时会给出插件里 `testpace` 的完整路径，合并门在 Codex 里不检查。
 - **在沙箱外跑**：testpace 要写 `.git/testpace/`，项目的测试常要开端口、用网络，Codex 的沙箱里都跑不了。testpace 发现自己在 Codex 沙箱里（`CODEX_SANDBOX`）就不跑测试、也不跑 `status`（它要记下看过结果），说明要提权。可以每次提权交给自动审查；也可以在 `~/.codex/rules/default.rules` 里放行 `testpace`，但那等于放行 `testpace.json` 里的任何命令。
 
 ### 之后
@@ -89,7 +89,7 @@ codex plugin add testpace@testpace
   - 被拦下后，工作区和暂存区里可能留着这次操作带来的改动；停在半路的 `cherry-pick`、`rebase` 要先 `--abort`。
   - 不经过本地默认分支的落地不拦：推送别的分支到默认分支（`git push origin 分支:main`）、在 GitHub 上合并 PR。停止门事后提示。
   - 钩子在所有仓库里都跑：没有分支要动（只是远程跟踪分支、`HEAD`）时什么都不做；有分支要动时调用一次 `testpace gate`，没接入 testpace 的仓库直接放行。
-  - 会话里找不到 `testpace` 命令（插件没启用、Codex 里没放固定命令入口），或 testpace 没法做检查（还没有合并门检查的旧版本、找不到够新的 node）时不挡，在接入了 testpace 的仓库里说一句。插件更新后，开着的会话要重开才换成新版本。
+  - 只有 `testpace gate` 明确拒绝才拦。没得到检查结论的都不挡：会话里找不到 `testpace` 命令（插件没启用、Codex 里没放固定命令入口）、插件没装全、找不到够新的 node、会话里是旧版本的 testpace，在接入了 testpace 的仓库里说一句，附上 testpace 的输出。插件更新后，开着的会话要重开才换成新版本。`gate` 已经在检查、却确认不了要落地的代码测过时照样拦。
   - 钩子命令里记着是哪一版 testpace 配的。Claude Code 和 Codex 装的版本不同时，会话开始的自动更新只升不降，不来回覆盖。
   - 合并门没配、配的命令是更旧版本的、被仓库自己的配置关掉（`hook.testpace.enabled = false`）、git 太旧，或找不到默认分支（没有 `origin/HEAD`，本地也没有 `main`、`master`）时，`testpace status` 和会话开始时的说明会讲出来。
 - **整组跑全部测试**：测试由 testpace 按 `tests` 规则自己找，交给 `files` 跑，不靠谁记得把新测试加进整组。放松整组（改 `full`、`tests` 规则或它们调到的脚本）testpace 不另外拦：要防 agent 这样放水，装上做这类检查的插件（登记成附加检查）。

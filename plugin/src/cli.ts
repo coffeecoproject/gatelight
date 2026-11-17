@@ -9,7 +9,7 @@ import { type Execution, execute } from './execute.ts'
 import { entryPath, entryState, installEntry } from './entry.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT } from './focused.ts'
 import { duration, short, when } from './format.ts'
-import { checkRefUpdates, gateProblem, installGate } from './gate.ts'
+import { checkRefUpdates, GATE_REJECT, gateProblem, installGate } from './gate.ts'
 import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { renderReport } from './report.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runRecorded, started } from './repo.ts'
@@ -28,8 +28,9 @@ const USAGE = `用法：
                                  并放上固定命令入口 ~/.local/bin/testpace（Codex 的命令和合并门的钩子靠它找到 testpace）`
 
 /**
- * 退出码：0 通过；1 失败或没得到通过记录（gate：拒绝这次更新）；2 用法或配置问题；
+ * 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；
  * 3 这个工作区已有测试在跑，或别处在跑同一份代码的整组；4 在默认分支上，跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
+ * gate 拒绝时是 GATE_REJECT（见 gate.ts）。
  */
 const EXIT = { ok: 0, fail: 1, usage: 2, busy: 3, fullNeeded: 4, interrupted: 130 } as const
 
@@ -461,8 +462,8 @@ function install(): number {
 }
 
 /**
- * git 的 reference-transaction 钩子调用：标准输入是要更新的引用，拒绝时退出码 1，git 就取消这次更新。
- * 只用 0 和 1：钩子把退出码 2 当成还没有 gate 命令的旧版 testpace，放行。
+ * git 的 reference-transaction 钩子调用：标准输入是要更新的引用。放行退出码 0；拒绝退出码 GATE_REJECT，
+ * 钩子只认它，git 就取消这次更新。检查时出错也拒绝：已经在检查了，确认不了要落地的代码测过就不放。
  */
 function gate(): number {
   try {
@@ -472,7 +473,7 @@ function gate(): number {
   } catch (error) {
     console.error(`testpace 合并门：没能确认要落地的代码测过（${(error as Error).message.split('\n')[0]}），这次不更新。`)
   }
-  return EXIT.fail
+  return GATE_REJECT
 }
 
 const ENTRY_STATES = {
@@ -484,7 +485,7 @@ const ENTRY_STATES = {
 
 /**
  * 在 agent 的沙箱里不跑的子命令：跑项目命令的，和记下会话看过结果的 status。
- * gate 不在里面：它由 git 钩子调用，拒绝（退出码 2）会被当成没法检查而放行。
+ * gate 不在里面：它由 git 钩子调用，在这里拒绝不是检查结论，钩子会当成没检查而放行。
  */
 const OUTSIDE_SANDBOX = new Set(['focused', 'files', 'full', 'verify', 'status'])
 

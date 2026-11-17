@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { handle, RHYTHM, rhythm } from '../src/hook.ts'
-import { HOOK_COMMAND } from '../src/gate.ts'
+import { GATE_REJECT, HOOK_COMMAND } from '../src/gate.ts'
 import { Store } from '../src/store.ts'
 import { agent, commit, ENV, gatedRepo, globalGitConfig, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
 
@@ -239,7 +239,7 @@ describe('合并门（git 钩子）', () => {
     change(repo)
     const r = agent(repo, 'git commit -qam m', { PATH: NO_TESTPACE_PATH })
     assert.equal(r.code, 0)
-    assert.match(r.out, /找不到 testpace 命令/)
+    assert.match(r.out, /^testpace 合并门：testpace 没有给出检查结论（退出码 127），这次没有检查。/)
     // 钩子配在全局、所有仓库都跑：没接入 testpace 的仓库里不说
     const plain = tempDir('testpace-plain-')
     sh(plain, 'git init -q -b main && git config hook.testpace.event reference-transaction')
@@ -248,7 +248,7 @@ describe('合并门（git 钩子）', () => {
     assert.deepEqual(quiet, { code: 0, out: '' })
     // 对照：同一个仓库有了 testpace.json 就说，钩子确实在这里跑
     writeFileSync(join(plain, 'testpace.json'), '{}')
-    assert.match(agent(plain, 'git commit -q --allow-empty -m m', { PATH: NO_TESTPACE_PATH }).out, /找不到 testpace 命令/)
+    assert.match(agent(plain, 'git commit -q --allow-empty -m m', { PATH: NO_TESTPACE_PATH }).out, /testpace 没有给出检查结论/)
   })
 
   test('没有分支要动（只是远程跟踪分支）时钩子不调用 testpace', () => {
@@ -263,15 +263,37 @@ describe('合并门（git 钩子）', () => {
     assert.match(sh(repo, `cat '${calls}'`), / refs\/heads\/x$/m, '有分支要动时调用，引用更新原样交给它')
   })
 
-  test('会话里的 testpace 是还没有 gate 命令的旧版本（插件更新后没重开会话）时说一句，不挡', () => {
+  test('testpace 没给出检查结论（插件没装全、旧版本、崩了）时说一句、附上它的输出，不挡；只有明确拒绝才拦', () => {
     const repo = gatedRepo()
-    const old = tempDir('testpace-old-')
-    writeFileSync(join(old, 'testpace'), '#!/bin/sh\necho "不认识的命令 \\"$1\\"" >&2\nexit 2\n', { mode: 0o755 })
-    const env = { PATH: `${old}:${NO_TESTPACE_PATH}` }
-    change(repo)
-    const r = agent(repo, 'git commit -qam m', env)
-    assert.equal(r.code, 0, r.out)
-    assert.equal(r.out.trim(), 'testpace 合并门：这个会话里的 testpace 没法做合并门的检查（版本太旧，或找不到能运行它的 node、插件没装好），这次没有检查。插件更新后，开着的会话要重开才换成新版本。')
+    const fake = tempDir('testpace-broken-')
+    const env = { PATH: `${fake}:${NO_TESTPACE_PATH}` }
+    // 插件缓存缺 src/ 时 node 报找不到模块、退出码 1；还没有 gate 命令的旧版本是用法错误、退出码 2
+    for (const [code, said] of [[1, "Error [ERR_MODULE_NOT_FOUND]: Cannot find module /x/src/cli.ts"], [2, '不认识的命令 "gate"']] as const) {
+      writeFileSync(join(fake, 'testpace'), `#!/bin/sh\necho '${said}' >&2\nexit ${code}\n`, { mode: 0o755 })
+      change(repo, `// ${code}\n`)
+      const r = agent(repo, 'git commit -qam m', env)
+      assert.equal(r.code, 0, r.out)
+      assert.equal(
+        r.out.trim(),
+        `testpace 合并门：testpace 没有给出检查结论（退出码 ${code}），这次没有检查。可能是找不到 testpace 命令、插件没装全、找不到能运行它的 node，或会话里的 testpace 是旧版本（插件更新后，开着的会话要重开才换成新版本）。\n${said}`,
+      )
+    }
+    // 对照：同一个假 testpace 明确拒绝（GATE_REJECT），提交被拦，原样转达它的理由
+    writeFileSync(join(fake, 'testpace'), `#!/bin/sh\necho '不放' >&2\nexit ${GATE_REJECT}\n`, { mode: 0o755 })
+    const before = head(repo)
+    change(repo, '// 拒绝\n')
+    const refused = agent(repo, 'git commit -qam m', env)
+    assert.notEqual(refused.code, 0)
+    assert.match(refused.out, /^不放$/m)
+    assert.equal(head(repo), before)
+  })
+
+  test('gate 检查时出错（读不到要落地的提交）照样拒绝，用钩子认的退出码', () => {
+    const repo = gatedRepo()
+    const missing = '1'.repeat(40)
+    const r = agent(repo, `printf '%s\\n' "$(git rev-parse main) ${missing} refs/heads/main" | testpace gate`)
+    assert.equal(r.code, GATE_REJECT, r.out)
+    assert.match(r.out, new RegExp(`^testpace 合并门：没能确认要落地的代码测过（读不到提交 ${missing}.*），这次不更新。$`, 'm'))
   })
 
   test('install 把合并门配进全局 git 配置：所有仓库、所有工作区都把关，不碰项目自己的钩子；status 和会话开始时说出没在把关的原因', () => {
