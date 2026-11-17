@@ -51,6 +51,9 @@ describe('拆命令', () => {
 
   test('按顺序连着跑了目标命令（参数完全一样）才算', () => {
     assert.ok(runsCommand('CI=1 pnpm build && pnpm test 2>&1 | tail', 'pnpm build && pnpm test', '/r'))
+    // 目标命令在最后、后面没有别的命令，也算
+    assert.ok(runsCommand('pnpm build && pnpm test', 'pnpm build && pnpm test', '/r'))
+    assert.ok(runsCommand('cd /r && pnpm test', 'pnpm test', '/r'))
     assert.ok(!runsCommand('pnpm build && pnpm lint && pnpm test', 'pnpm build && pnpm test', '/r'))
     assert.ok(!runsCommand('pnpm test --watch', 'pnpm test', '/r'))
   })
