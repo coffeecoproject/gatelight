@@ -1,5 +1,7 @@
 // 停止门：agent 要结束这一轮时，这个会话起的整组还在跑、或跑完还没看结果，就拦一次。
-// 谁起的整组看记录里的会话号（testpace full 从命令环境的 CLAUDE_CODE_SESSION_ID 记下）；
+// 每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里，不靠 agent 给的 stop_hook_active：
+// 有的 agent 不给或总是 false，靠它会反复拦。
+// 谁起的整组看记录里的会话号（testpace full 从命令环境里 agent 的会话号记下，见 agent.ts）；
 // 想跑整组时发现同一个工作区已经在跑、等着用它结果的会话也算。别的会话或用户在终端里起的不管。
 // 顺带检查本地和远程（origin）默认分支在这个会话里有没有落了没测过的代码，有就提示用户：
 // 合并门只在 agent 移动本地默认分支时把关，推送别的分支到默认分支、在 GitHub 上合并 PR 不经过它。
@@ -13,8 +15,6 @@ import { contractAt, coverageOf, defaultTips, openRepo } from './repo.ts'
 export interface StopInput {
   sessionId: string
   cwd: string
-  /** 这一轮已经因为停止 hook 继续过一次：不再拦，避免死循环。 */
-  active: boolean
   /** 仓库不是会话所在目录的（会话从仓库外开始），话里写上是哪个仓库。 */
   named?: boolean
   now: number
@@ -34,23 +34,24 @@ export function stopCheck(input: StopInput): StopResult {
   const result: StopResult = {}
   const place = input.named ? `${repo.root} 这个工作区` : '这个工作区'
 
-  if (!input.active) {
-    const ours = (record: { kind: string; worktree: string; session?: string; waiting?: string[] }): boolean =>
-      record.kind === 'full' &&
-      record.worktree === repo.root &&
-      (record.session === input.sessionId || record.waiting?.includes(input.sessionId) === true)
-    const running = repo.store.running().find(marker => ours({ ...marker, waiting: repo.store.waiting(marker) }))
-    const last = repo.store
-      .readRuns()
-      .filter(ours)
-      .sort((a, b) => b.startedAt - a.startedAt)[0]
-    if (running) {
-      result.block = `${place}的整组还在跑（开始于 ${when(running.startedAt)}，已 ${duration(input.now - running.startedAt)}）。结论要等整组结果：等它结束后跑 testpace status 看结果，再收尾。`
-    } else if (last && last.startedAt + last.durationMs > (session.read?.[repo.root] ?? 0)) {
-      const outcome = last.result === 'pass' ? '通过' : '失败'
-      const verb = last.session === input.sessionId ? '跑' : '等'
-      result.block = `这个会话${input.named ? `在 ${repo.root} ` : ''}${verb}的整组已经结束（${outcome}），还没看结果。先跑 testpace status 看结果，再收尾。`
-    }
+  const blocked = [...(session.blocked ?? [])]
+  const ours = (record: { kind: string; worktree: string; session?: string; waiting?: string[] }): boolean =>
+    record.kind === 'full' &&
+    record.worktree === repo.root &&
+    (record.session === input.sessionId || record.waiting?.includes(input.sessionId) === true)
+  const running = repo.store.running().find(marker => ours({ ...marker, waiting: repo.store.waiting(marker) }))
+  const last = repo.store
+    .readRuns()
+    .filter(ours)
+    .sort((a, b) => b.startedAt - a.startedAt)[0]
+  if (running && !blocked.includes(`running:${running.id}`)) {
+    blocked.push(`running:${running.id}`)
+    result.block = `${place}的整组还在跑（开始于 ${when(running.startedAt)}，已 ${duration(input.now - running.startedAt)}）。结论要等整组结果：等它结束后跑 testpace status 看结果，再收尾。`
+  } else if (!running && last && last.startedAt + last.durationMs > (session.read?.[repo.root] ?? 0) && !blocked.includes(`unread:${last.id}`)) {
+    blocked.push(`unread:${last.id}`)
+    const outcome = last.result === 'pass' ? '通过' : '失败'
+    const verb = last.session === input.sessionId ? '跑' : '等'
+    result.block = `这个会话${input.named ? `在 ${repo.root} ` : ''}${verb}的整组已经结束（${outcome}），还没看结果。先跑 testpace status 看结果，再收尾。`
   }
 
   // 没经过合并门的落地：默认分支在这个会话里有了新提交，却没有整组通过记录
@@ -67,12 +68,10 @@ export function stopCheck(input: StopInput): StopResult {
     if (coverageOf(repo, contract?.config ?? { tests: [], ignore: [] }, tip.tree).kind !== 'none') continue
     warned.push(commit)
     const name = ref.replace(/^refs\/(heads|remotes)\//, '')
-    const how = ref.startsWith('refs/heads/') ? '可能是在 Claude Code 之外提交的，或者合并门没装上' : '可能是推送了别的分支到默认分支，或者在 GitHub 上合并了 PR'
+    const how = ref.startsWith('refs/heads/') ? '可能不是 agent 提交的（合并门只管 agent 的命令），或者合并门没装上' : '可能是推送了别的分支到默认分支，或者在 GitHub 上合并了 PR'
     warns.push(`testpace：${input.named ? `${repo.root} 的 ` : ''}${name} 的最新提交 ${short(commit)} 没有整组通过记录（${how}）。`)
   }
-  if (warns.length > 0) {
-    result.warn = warns.join('\n')
-    repo.store.saveSession(input.sessionId, { ...session, warned })
-  }
+  if (warns.length > 0) result.warn = warns.join('\n')
+  if (warns.length > 0 || result.block) repo.store.saveSession(input.sessionId, { ...session, warned, blocked })
   return result
 }

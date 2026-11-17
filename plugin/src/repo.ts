@@ -1,6 +1,7 @@
 // 命令行和 hook 共用的部分：找到仓库、读约定、判断通过记录、跑命令并记录。
 
 import { readFileSync } from 'node:fs'
+import { currentAgent } from './agent.ts'
 import type { CommandKey, Config, LoadedConfig } from './config.ts'
 import { CONFIG_FILE, readConfig } from './config.ts'
 import { type Coverage, findCoverage } from './coverage.ts'
@@ -10,6 +11,7 @@ import { duration, when } from './format.ts'
 import { changedPaths, commonDir, currentBranch, defaultBranch, fileAt, headCommit, refTip, repoRoot } from './git.ts'
 import { matcher } from './glob.ts'
 import { newRunId, processAlive, type RunningMarker, type RunRecord, Store } from './store.ts'
+import { VERSION } from './version.ts'
 
 export interface Repo {
   root: string
@@ -53,6 +55,12 @@ export function describeCoverage(coverage: Coverage): string {
   const sample = coverage.changed.slice(0, 3).join('、')
   const more = coverage.changed.length > 3 ? ` 等 ${coverage.changed.length} 个` : ''
   return `${base}；相对那次只改了忽略路径：${sample}${more}`
+}
+
+/** 运行记录里谁跑的：哪个 agent（用户在终端里跑的没有）、哪一版 testpace。 */
+export function runner(): Pick<RunRecord, 'agent' | 'version'> {
+  const agent = currentAgent()
+  return { ...(agent ? { agent: agent.kind } : {}), version: VERSION }
 }
 
 export interface Recorded {
@@ -138,6 +146,7 @@ export async function runRecorded(
     exitCode: execution.exitCode,
     result: execution.exitCode === 0 ? 'pass' : 'fail',
     ...(kind === 'files' ? { files: args } : {}),
+    ...runner(),
     log,
   }
   if (!execution.interrupted) repo.store.appendRun(record)

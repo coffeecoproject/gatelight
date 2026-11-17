@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { AGENTS } from '../src/agent.ts'
 import { HOOK_COMMAND } from '../src/gate.ts'
 
 export const BIN = fileURLToPath(new URL('../bin/testpace', import.meta.url))
@@ -24,10 +25,16 @@ export function globalGitConfig(): string {
 process.env.GIT_CONFIG_GLOBAL = globalGitConfig()
 
 // node:test 会把 NODE_TEST_CONTEXT 传给子进程，示例项目里的 node --test 看到它就跳过所有测试文件。
-// 插件数据目录也不带：测试不写真实的会话记录。会话号、CLAUDECODE 也不带（在 Claude Code 里跑测试时有）：
+// 插件数据目录也不带：测试不写真实的会话记录。Codex 的目录（CODEX_HOME，固定入口按它找 Codex 装的插件）也不带。
+// 各 agent 的标记、会话号、沙箱变量也不带（在 Claude Code、Codex 里跑测试时有）：
 // 测试里的 git 命令默认是用户在终端里的操作，要当成 agent 的命令时测试自己给。
-const { NODE_TEST_CONTEXT: _, CLAUDE_PLUGIN_DATA: __, CLAUDE_CODE_SESSION_ID: ___, CLAUDECODE: ____, ...rest } = process.env
-export const ENV: NodeJS.ProcessEnv = rest
+const DROPPED = new Set([
+  'NODE_TEST_CONTEXT',
+  'CLAUDE_PLUGIN_DATA',
+  'CODEX_HOME',
+  ...Object.values(AGENTS).flatMap(agent => [...agent.markers, agent.session, ...(agent.sandbox ? [agent.sandbox] : [])]),
+])
+export const ENV: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !DROPPED.has(key)))
 
 export interface Result {
   code: number | null
@@ -88,7 +95,10 @@ export function gatedRepo(): string {
   return dir
 }
 
-/** 当成 agent 在 Claude Code 里跑的命令：带着 CLAUDECODE，PATH 上有 testpace。 */
+/**
+ * 当成 agent 在 Claude Code 里跑的命令：带着 CLAUDECODE，PATH 上有 testpace。
+ * env 只给要改的变量；给了 PATH 就整个换掉（不加这个插件的 bin 目录）。
+ */
 export function agent(cwd: string, script: string, env: NodeJS.ProcessEnv = {}): Result {
   const r = spawnSync('/bin/sh', ['-c', script], {
     cwd,

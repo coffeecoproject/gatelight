@@ -1,0 +1,18 @@
+{
+  "name": "testpace",
+  "version": "0.6.0",
+  "description": "Test pacing for coding agents: run the tests a change reaches while working, prove the full suite passed before landing, and record where test time goes",
+  "author": {
+    "name": "coffeecoproject"
+  },
+  "license": "MIT",
+  "keywords": ["testing", "test selection", "merge gate", "coding agent"],
+  "hooks": "./hooks/codex.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "testpace",
+    "shortDescription": "Test pacing and a merge gate for coding agents",
+    "developerName": "coffeecoproject",
+    "category": "Developer Tools"
+  }
+}

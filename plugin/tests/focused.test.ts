@@ -300,7 +300,7 @@ describe('testpace focused', () => {
     const layermap = fakeLayermap({ ...FORMAT_CHANGE, unmapped: [{ path: 'package.json', kind: 'build or dependency file' }] })
     const r = testpace(repo, ['focused'], layermap.env)
     assert.equal(r.code, 4, r.out)
-    assert.match(r.out, /相关测试通过 · 用时 \d+秒\n建议跑整组（testpace full，放后台）：改了 package\.json（build or dependency file），地图跟不到它们影响哪些测试。\n$/)
+    assert.match(r.out, /相关测试通过 · 用时 \d+秒\n建议跑整组（testpace full）：改了 package\.json（build or dependency file），地图跟不到它们影响哪些测试。\n$/)
   })
 
   test('选出的测试跑不到某处改动：跑完选出的测试，再建议跑整组，退出码 4', () => {
@@ -308,7 +308,7 @@ describe('testpace focused', () => {
     const layermap = fakeLayermap(FORMAT_CHANGE, { changed: ['src/format.mjs: yuan f1-3'], truncated: false })
     const r = testpace(repo, ['focused'], layermap.env)
     assert.equal(r.code, 4, r.out)
-    assert.match(r.out, /相关测试通过 · 用时 \d+秒\n建议跑整组（testpace full，放后台）：选出的测试跑不到 src\/format\.mjs: yuan f1-3。\n$/)
+    assert.match(r.out, /相关测试通过 · 用时 \d+秒\n建议跑整组（testpace full）：选出的测试跑不到 src\/format\.mjs: yuan f1-3。\n$/)
   })
 
   test('没有 layermap 或它出错时不跑测试，建议跑整组', () => {
@@ -317,7 +317,7 @@ describe('testpace focused', () => {
     const node = sh(repo, 'dirname "$(command -v node)"').trim()
     const noLayermap = testpace(repo, ['focused'], { ...ENV, PATH: `${node}:/usr/bin:/bin` })
     assert.equal(noLayermap.code, 4, noLayermap.out)
-    assert.match(noLayermap.out, /^fast 通过 · 用时 \d+秒\n建议跑整组（testpace full，放后台）：找不到 layermap 命令，没法按改动选测试。\n装上 layermap 插件并开新会话（或把 layermap 命令加进 PATH），focused 就会只跑和改动相关的测试。\n$/)
+    assert.match(noLayermap.out, /^fast 通过 · 用时 \d+秒\n建议跑整组（testpace full）：找不到 layermap 命令，没法按改动选测试。\n装上 layermap 插件并开新会话（或把 layermap 命令加进 PATH），focused 就会只跑和改动相关的测试。\n$/)
 
     const failing = fakeLayermap(FORMAT_CHANGE)
     const r = testpace(repo, ['focused'], { ...failing.env, FAKE_LAYERMAP_FAIL: '1' })

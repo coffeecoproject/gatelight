@@ -2,36 +2,40 @@
 // testpace gate；那份代码没有 testpace full 的通过记录，就取消这次更新，默认分支不动。
 // 判断发生在 git 更新分支的那一刻，按实际要落地的提交算，不管命令是怎么写的：
 // commit、merge、cherry-pick、rebase、reset、脚本里调的 git 都一样。
-// 只管 Claude Code 里的命令（钩子脚本看 CLAUDECODE 环境变量），用户自己在终端里的操作不管。
+// 只管 agent 的命令（钩子脚本看已接入的 agent 的标记变量，见 agent.ts 的 AGENTS），用户自己在终端里的操作不管。
 // 不经过本地默认分支的落地（git push 别的分支:main、gh pr merge）不在这里拦，由停止门事后提示。
 // 管不管、按哪些 ignore 判断，都看提交里的 testpace.json，不看工作区里的文件：
 // 默认分支现在的代码或要落地的代码里有它就管，ignore 取要落地的那份。
 
+import { AGENT_MARKERS } from './agent.ts'
 import { CONFIG_FILE } from './config.ts'
 import { short } from './format.ts'
 import { commitOf, configuredHooks, configValue, defaultBranch, git, hasFile, hasRemote, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
 import { contractAt, coverageOf, openRepo } from './repo.ts'
+import { compareVersions, VERSION } from './version.ts'
 
 /** 合并门在 git 配置里的钩子：hook.testpace.event、hook.testpace.command。 */
 const HOOK = 'testpace'
 const EVENT = 'reference-transaction'
 
 const NO_TESTPACE = 'testpace 合并门：找不到 testpace 命令（插件没启用），这次没有检查。'
-const OLD_TESTPACE = 'testpace 合并门：这个会话用的 testpace 是旧版本，没有合并门的检查，这次没有检查。插件更新后，开着的会话要重开才换成新版本。'
+const OLD_TESTPACE = 'testpace 合并门：这个会话里的 testpace 没法做合并门的检查（版本太旧，或找不到能运行它的 node、插件没装好），这次没有检查。插件更新后，开着的会话要重开才换成新版本。'
 
 /**
  * 钩子命令，写在全局 git 配置里，所有仓库都跑它。git 用 sh 运行，把钩子参数接在命令后面，
  * 所以写成一个函数，最后一个词是函数名，参数交给它。
- * 判断都在 testpace gate 里，这里不放规则：升级插件不用重配。
- * - 只管 Claude Code 里的命令（CLAUDECODE），用户自己在终端里的操作不管。
+ * 判断都在 testpace gate 里，这里不放规则。
+ * - 开头一句记下是哪一版 testpace 配的：不同 agent 里装的版本不同、命令正文也不同时，会话开始的自动更新只升不降，
+ *   不来回覆盖。正文没变时不看这一句，发版不用重配。
+ * - 只管 agent 的命令（命令环境里有已接入的 agent 的标记变量，见 agent.ts 的 AGENTS），用户自己在终端里的操作不管。
  * - 没有分支要动（只是远程跟踪分支、HEAD）的不调用 testpace：agent 每次更新引用都会经过这里，不用每次启动 node。
  * - 找不到 testpace 命令时不挡；仓库里有 testpace.json（钩子在工作区根目录运行）才说一句，别的仓库不打扰。
- * - testpace gate 只用退出码 0（放行）和 1（拦下）。2 是还没有 gate 命令的旧版 testpace
- *   （插件更新后，开着的会话要重开才换成新版本）：和找不到 testpace 一样处理。
+ * - testpace gate 只用退出码 0（放行）和 1（拦下）。2 是没法检查：还没有 gate 命令的旧版 testpace
+ *   （插件更新后，开着的会话要重开才换成新版本）、找不到能运行它的 node、固定入口找不到装着的插件。和找不到 testpace 一样处理。
  */
-export const HOOK_COMMAND = [
+const HOOK_BODY = [
   'testpace_gate() {',
-  '[ "$1" = prepared ] && [ -n "$CLAUDECODE" ] || return 0;',
+  `[ "$1" = prepared ] && [ -n "${AGENT_MARKERS.map(name => `$${name}`).join('')}" ] || return 0;`,
   `testpace_refs=$(cat); case $testpace_refs in *' refs/heads/'*) ;; *) return 0 ;; esac;`,
   `command -v testpace >/dev/null 2>&1 || { [ ! -f testpace.json ] || echo '${NO_TESTPACE}' >&2; return 0; };`,
   `testpace_msg=$(printf '%s\\n' "$testpace_refs" | testpace gate 2>&1); testpace_code=$?;`,
@@ -41,10 +45,17 @@ export const HOOK_COMMAND = [
   '}; testpace_gate',
 ].join(' ')
 
+/** 钩子命令开头记版本的那一句。 */
+const VERSION_TAG = /^: testpace (\S+); /
+
+export const HOOK_COMMAND = `: testpace ${VERSION}; ${HOOK_BODY}`
+
 type HookState =
   | { kind: 'installed' }
-  /** 配了，但命令不是这一版的。 */
+  /** 配了，但命令正文和这一版的不同，是更旧的版本配的。 */
   | { kind: 'outdated' }
+  /** 配了，是更新的版本配的（比如另一个 agent 里装的 testpace 更新）：照常把关，不改回去。 */
+  | { kind: 'newer'; version: string }
   | { kind: 'missing' }
   /** 配了，但这个仓库的 git 配置把它关了（hook.testpace.enabled = false）。 */
   | { kind: 'disabled' }
@@ -57,13 +68,18 @@ function hookState(root: string): HookState {
   if (!hooks) return { kind: 'oldGit', version: git(root, ['--version']).replace(/^git version /, '') }
   if (hooks.includes(`disabled\t${HOOK}`)) return { kind: 'disabled' }
   if (!hooks.includes(HOOK)) return { kind: 'missing' }
-  return configValue(root, `hook.${HOOK}.command`) === HOOK_COMMAND ? { kind: 'installed' } : { kind: 'outdated' }
+  const command = configValue(root, `hook.${HOOK}.command`) ?? ''
+  // 只比命令正文：正文没变（只是发了新版）时不用重配
+  if (command.replace(VERSION_TAG, '') === HOOK_BODY) return { kind: 'installed' }
+  const version = VERSION_TAG.exec(command)?.[1]
+  return version && compareVersions(version, VERSION) > 0 ? { kind: 'newer', version } : { kind: 'outdated' }
 }
 
 /** 合并门没在把关时的说明；在把关返回 undefined。status、会话说明和 install 共用。 */
 function hookProblem(state: HookState): string | undefined {
   switch (state.kind) {
     case 'installed':
+    case 'newer':
       return undefined
     case 'oldGit':
       return `这台机器的 git（${state.version}）不认配置里声明的钩子，合并门没有生效。要 git 2.54 以上：告诉用户升级 git（比如 brew upgrade git），不要自己装。`
@@ -102,7 +118,7 @@ const AUTO_KEY = 'testpace.autoInstalled'
 
 /**
  * 会话开始时自动配合并门：装了插件就当同意，不问，只告诉用户一声。
- * 没配过的配上；配过但命令是旧版本的更新；用户自己删掉的、git 太旧的、仓库把它关掉的不动。
+ * 没配过的配上；配过但命令是旧版本的更新；更新的版本配的、用户自己删掉的、git 太旧的、仓库把它关掉的不动。
  * 返回给用户看的说明，没动返回 undefined。
  */
 export function ensureGate(root: string): string | undefined {
@@ -163,7 +179,7 @@ export function checkRefUpdates(cwd: string, input: string): string | undefined 
         : worktree !== tree && coverageOf(repo, config, worktree).kind !== 'none'
         ? ['工作区的整组通过了，但要落地的内容和工作区不一样：还有没提交的改动或未跟踪的文件。把它们一起提交，或者删掉、加进 .gitignore 后重跑整组。']
         : [
-            '先在要落地的这份代码上跑 testpace full（放后台），通过后再落地；几个分支一起合用 testpace:merge 技能，在合并分支上测过再快进。',
+            '先在要落地的这份代码上跑 testpace full，通过后再落地；几个分支一起合用 testpace:merge 技能，在合并分支上测过再快进。',
             ...(hasRemote(root) ? [`只是同步远程的 ${branch} 的话：先 git fetch <远程>，再把 ${branch} 快进到 <远程>/${branch}。`] : []),
           ]
     return [

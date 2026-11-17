@@ -1,5 +1,6 @@
 // 计时诊断：只汇总和报告，不替项目改任何东西。
 
+import { AGENTS } from './agent.ts'
 import { COMMAND_KEYS } from './config.ts'
 import { isValidPass } from './coverage.ts'
 import { duration, day, short, when } from './format.ts'
@@ -31,6 +32,26 @@ export function commandStats(runs: RunRecord[]): Map<string, CommandStats> {
     stats.set(run.kind, s)
   }
   return stats
+}
+
+/** 谁跑的：agent 的名字；记了版本却没有 agent 的是用户在终端里跑的；版本也没有的是旧版本写的，不知道谁跑的。 */
+function runnerOf(run: RunRecord): string {
+  if (run.agent) return AGENTS[run.agent].name
+  return run.version ? '终端' : '未记录（旧版本）'
+}
+
+/** 按谁跑的分开：次数、合计用时、整组次数，多的在前。只有一种时返回空：不用分。 */
+export function byRunner(runs: RunRecord[]): Array<{ runner: string; count: number; totalMs: number; fulls: number }> {
+  const rows = new Map<string, { runner: string; count: number; totalMs: number; fulls: number }>()
+  for (const run of runs) {
+    const runner = runnerOf(run)
+    const row = rows.get(runner) ?? { runner, count: 0, totalMs: 0, fulls: 0 }
+    row.count += 1
+    row.totalMs += run.durationMs
+    if (run.kind === 'full') row.fulls += 1
+    rows.set(runner, row)
+  }
+  return rows.size > 1 ? [...rows.values()].sort((a, b) => b.totalMs - a.totalMs) : []
 }
 
 /** 测试文件被 files 跑了多少次，多的在前。 */
@@ -204,6 +225,13 @@ export function renderReport(input: ReportInput): string {
       rows.push([key, String(s.count), String(s.pass), String(s.fail), duration(s.totalMs / s.count), duration(s.totalMs)])
     }
     lines.push('', ...table(rows))
+
+    const runners = byRunner(runs)
+    if (runners.length > 0) {
+      const byAgent = [['谁跑的', '次数', '整组', '合计']]
+      for (const row of runners) byAgent.push([row.runner, String(row.count), String(row.fulls), duration(row.totalMs)])
+      lines.push('', ...table(byAgent))
+    }
 
     const notes: string[] = []
     const cost = landingCost(runs, input.landings, input.defaultBranch)

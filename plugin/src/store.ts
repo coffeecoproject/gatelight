@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { AgentKind } from './agent.ts'
 import type { CommandKey } from './config.ts'
 
 export type RunResult = 'pass' | 'fail'
@@ -34,8 +35,12 @@ export interface RunRecord {
   result: RunResult
   /** files 命令的参数：测试文件，或 文件:行号。 */
   files?: string[]
-  /** 起这次整组的 Claude Code 会话；不是从 Claude Code 里起的没有。 */
+  /** 起这次整组的 agent 会话；用户在终端里起的、或 agent 没给会话号的没有。 */
   session?: string
+  /** 跑这次的 agent；用户在终端里跑的没有。旧版本写的记录也没有。 */
+  agent?: AgentKind
+  /** 跑这次的 testpace 版本。旧版本写的记录没有。 */
+  version?: string
   /** 想跑整组时发现它已经在跑、等着用它结果的其他会话。 */
   waiting?: string[]
   /** 整组之前先跑的附加检查（本机登记的）。 */
@@ -70,6 +75,8 @@ export interface SessionState {
   rhythm?: boolean
   /** 这个会话在各工作区最近一次看到整组结果的时间（跑了 testpace status，或在前台等到了 testpace full）。 */
   read?: Record<string, number>
+  /** 停止门拦过的：running:<运行 id>（还在跑时拦过）、unread:<运行 id>（跑完没看结果时拦过）。每种只拦一次。 */
+  blocked?: string[]
 }
 
 /** 会话记录留多久。 */

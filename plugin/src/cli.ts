@@ -2,15 +2,17 @@
 
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
+import { AGENTS, currentAgent } from './agent.ts'
 import { CHECK_KEY, extraChecks } from './checks.ts'
 import { COMMAND_KEYS, commandExists, CONFIG_FILE, configExists, loadConfig } from './config.ts'
 import { type Execution, execute } from './execute.ts'
+import { entryPath, entryState, installEntry } from './entry.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT } from './focused.ts'
 import { duration, short, when } from './format.ts'
 import { checkRefUpdates, gateProblem, installGate } from './gate.ts'
 import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { renderReport } from './report.ts'
-import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runRecorded, started } from './repo.ts'
+import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runRecorded, started } from './repo.ts'
 import { LOCATED, newRunId } from './store.ts'
 import { findTests, testMatcher } from './tests.ts'
 import { verifyFiles } from './verify.ts'
@@ -18,11 +20,12 @@ import { verifyFiles } from './verify.ts'
 const USAGE = `用法：
   testpace focused [--base REF]  改完先跑：fast，再跑 layermap 选出的相关测试。默认对比和默认分支的分叉点；在默认分支上选测靠不住时建议跑整组
   testpace files PATH[:行号]...  只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试
-  testpace full                  跑整组：附加检查、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，按当前工作区完整内容记录结果。适合放到后台跑
+  testpace full                  跑整组：附加检查、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace report [--days N]     计时诊断，默认最近 28 天
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
-  testpace install               在全局 git 配置里配上合并门（这台机器配一次）：agent 移动默认分支时，要求落地的代码有整组通过记录`
+  testpace install               这台机器配一次：在全局 git 配置里配上合并门（agent 移动默认分支时，要求落地的代码有整组通过记录），
+                                 并放上固定命令入口 ~/.local/bin/testpace（Codex 的命令和合并门的钩子靠它找到 testpace）`
 
 /**
  * 退出码：0 通过；1 失败或没得到通过记录（gate：拒绝这次更新）；2 用法或配置问题；
@@ -31,6 +34,20 @@ const USAGE = `用法：
 const EXIT = { ok: 0, fail: 1, usage: 2, busy: 3, fullNeeded: 4, interrupted: 130 } as const
 
 type Context = Repo
+
+/** 跑这条命令的 agent：会话号、在不在沙箱里。用户在终端里跑的没有。 */
+const AGENT = currentAgent()
+
+/**
+ * 在 agent 的沙箱里不跑：测试会因为端口、网络被拒跑出假失败，记进去后 report 会当成测试不稳定；
+ * status 要记下这个会话看过结果，写不进 .git 时停止门还会再拦。
+ * 仓库在沙箱放行的位置（比如 /tmp）时记录目录也写得进去，所以不能只靠写不写得进去判断。
+ */
+function sandboxRefusal(): number | undefined {
+  if (!AGENT?.sandboxed) return undefined
+  console.error(`testpace 要在 ${AGENTS[AGENT.kind].name} 的沙箱外跑：它要写 .git/testpace/ 的记录，测试还常要开端口和网络，在沙箱里会被拒、结果不准。申请提权（在沙箱外）重新运行这条命令。`)
+  return EXIT.usage
+}
 
 function context(): Context | undefined {
   const repo = openRepo(process.cwd())
@@ -59,8 +76,8 @@ async function full(): Promise<number> {
     return EXIT.ok
   }
 
-  // Claude Code 给 agent 的命令带上会话号：停止门只拦起这次整组的会话，和等着用它结果的会话
-  const sessionId = process.env.CLAUDE_CODE_SESSION_ID
+  // agent 给命令带上会话号：停止门只拦起这次整组的会话，和等着用它结果的会话
+  const sessionId = AGENT?.session
   const elsewhere = ctx.store.running().find(marker => marker.kind === 'full' && marker.tree === tree && marker.worktree !== ctx.root)
   if (elsewhere) {
     console.log(`工作区 ${elsewhere.worktree} 正在跑同一份代码的整组（${started(elsewhere)}）。等它结束后用 testpace status 看结果。`)
@@ -136,6 +153,7 @@ async function full(): Promise<number> {
     ...(waiting.length ? { waiting } : {}),
     ...(checks.length ? { checks } : {}),
     tests: tests.length,
+    ...runner(),
     log,
   })
 
@@ -231,7 +249,7 @@ async function focused(args: string[]): Promise<number> {
   if (reasons.length > 0 && onBranch) {
     lines.push(`这次选测不完全可靠：${reasons.join('；')}。在分支上不用现在跑整组，合回 ${branch} 时的整组会覆盖。`)
   } else if (reasons.length > 0) {
-    lines.push(`建议跑整组（testpace full，放后台）：${reasons.join('；')}。`)
+    lines.push(`建议跑整组（testpace full）：${reasons.join('；')}。`)
     code = EXIT.fullNeeded
   }
   if (reasons.length > 0 && selection.kind === 'unavailable' && selection.missing) lines.push(LAYERMAP_HINT)
@@ -316,14 +334,15 @@ function status(): number {
   }
   // 合并门看提交里的 testpace.json，工作区里这份写坏了它也照常把关
   if (configExists(ctx.root)) lines.push(`合并门：${gateProblem(ctx.root) ?? '已装上，agent 移动默认分支时检查'}`)
+  lines.push(`固定命令入口（${entryPath()}）：${ENTRY_STATES[entryState()]}`)
   const checks = extraChecks(ctx.root)
   lines.push(`附加检查（全局 git 配置 testpace.check）：${checks.length ? `${checks.join('、')}，整组之前先跑` : '没有'}`)
   // 版本太旧不在这里查：focused 读输出时会说
   lines.push(`layermap：${commandExists(ctx.root, 'layermap') ? '找到' : `找不到，focused 没法按改动选测试，每次都会建议跑整组。${LAYERMAP_HINT}`}`)
 
   console.log(lines.join('\n'))
-  // 停止门据此判断这个会话有没有看过整组的结果；不在 Claude Code 里（没有会话号）不记
-  const sessionId = process.env.CLAUDE_CODE_SESSION_ID
+  // 停止门据此判断这个会话有没有看过整组的结果；不在 agent 里（没有会话号）不记
+  const sessionId = AGENT?.session
   if (sessionId) ctx.store.markRead(sessionId, ctx.root, Date.now(), () => defaultTips(ctx))
   return config ? EXIT.ok : EXIT.usage
 }
@@ -432,6 +451,12 @@ function install(): number {
   console.log('合并门已配好：全局 git 配置里的 hook.testpace，这台机器上 agent 在所有仓库里移动默认分支时都检查（只管接入了 testpace 的仓库）。')
   const rest = gateProblem(ctx.root)
   if (rest) console.log(rest)
+  const entry = installEntry()
+  if (!entry.ok) {
+    console.error(`固定命令入口没放上：${entry.problem}`)
+    return EXIT.usage
+  }
+  console.log(`固定命令入口已放好：${entryPath()}，运行时转给这台机器上装着的最高版本的 testpace。`)
   return EXIT.ok
 }
 
@@ -450,8 +475,37 @@ function gate(): number {
   return EXIT.fail
 }
 
+const ENTRY_STATES = {
+  installed: '已放好',
+  outdated: '是旧版本放的，跑 testpace install 更新',
+  missing: '没放：Codex 的命令和合并门的钩子在插件的 bin 目录不在 PATH 上时找不到 testpace。用户同意后跑 testpace install 放上',
+  foreign: '那里是别的文件，没有放',
+} as const
+
+/**
+ * 在 agent 的沙箱里不跑的子命令：跑项目命令的，和记下会话看过结果的 status。
+ * gate 不在里面：它由 git 钩子调用，拒绝（退出码 2）会被当成没法检查而放行。
+ */
+const OUTSIDE_SANDBOX = new Set(['focused', 'files', 'full', 'verify', 'status'])
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv
+  if (command && OUTSIDE_SANDBOX.has(command)) {
+    const refused = sandboxRefusal()
+    if (refused !== undefined) return refused
+  }
+  try {
+    return await dispatch(command, rest)
+  } catch (error) {
+    // 写不了记录目录（.git/testpace）：多半是在 agent 的沙箱里，说清楚，不只抛一句写入被拒
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'EPERM' && code !== 'EACCES' && code !== 'EROFS') throw error
+    console.error(`testpace 写不了 ${(error as NodeJS.ErrnoException).path ?? '记录目录'}（${code}）。在 agent 的沙箱里时，申请提权（在沙箱外）重新运行这条命令。`)
+    return EXIT.usage
+  }
+}
+
+async function dispatch(command: string | undefined, rest: string[]): Promise<number> {
   switch (command) {
     case 'focused':
       return focused(rest)

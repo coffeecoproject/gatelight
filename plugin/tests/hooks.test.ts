@@ -22,17 +22,24 @@ type Output = { hookSpecificOutput?: Record<string, unknown>; decision?: string;
 
 // 会话在 cwd 里开始：SessionStart 已经说过节奏（cwd 是接入的仓库时），PreToolUse 不再补说。
 function pre(cwd: string, command: string, session = 's1'): Output {
-  handle({ hook_event_name: 'SessionStart', session_id: session, cwd }, Date.now())
-  return handle({ hook_event_name: 'PreToolUse', session_id: session, cwd, tool_name: 'Bash', tool_input: { command } }, Date.now()) as Output
+  handle({ hook_event_name: 'SessionStart', session_id: session, cwd }, Date.now(), 'claude')
+  return handle({ hook_event_name: 'PreToolUse', session_id: session, cwd, tool_name: 'Bash', tool_input: { command } }, Date.now(), 'claude') as Output
 }
 
-function stop(cwd: string, session = 's1', active = false): Output {
-  return handle({ hook_event_name: 'Stop', session_id: session, cwd, stop_hook_active: active }, Date.now()) as Output
+function stop(cwd: string, session = 's1'): Output {
+  return handle({ hook_event_name: 'Stop', session_id: session, cwd }, Date.now(), 'claude') as Output
+}
+
+// 停止门每次整组只拦一次。要看"现在还算不算没看结果"时，先清掉这个会话拦过的记录再问。
+function stopAgain(repo: string, session: string): Output {
+  const store = new Store(join(repo, '.git'))
+  store.saveSession(session, { ...store.session(session, Date.now()), blocked: [] })
+  return stop(repo, session)
 }
 
 // 在这个会话里起整组：Claude Code 给 agent 的命令带着会话号。
 function fullIn(repo: string, session: string): number | null {
-  return testpace(repo, ['full'], { ...ENV, CLAUDE_CODE_SESSION_ID: session }).code
+  return testpace(repo, ['full'], { ...ENV, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }).code
 }
 
 function change(repo: string, text = '// 改过\n'): void {
@@ -264,11 +271,14 @@ describe('合并门（git 钩子）', () => {
     change(repo)
     const r = agent(repo, 'git commit -qam m', env)
     assert.equal(r.code, 0, r.out)
-    assert.equal(r.out.trim(), 'testpace 合并门：这个会话用的 testpace 是旧版本，没有合并门的检查，这次没有检查。插件更新后，开着的会话要重开才换成新版本。')
+    assert.equal(r.out.trim(), 'testpace 合并门：这个会话里的 testpace 没法做合并门的检查（版本太旧，或找不到能运行它的 node、插件没装好），这次没有检查。插件更新后，开着的会话要重开才换成新版本。')
   })
 
   test('install 把合并门配进全局 git 配置：所有仓库、所有工作区都把关，不碰项目自己的钩子；status 和会话开始时说出没在把关的原因', () => {
-    const env = { ...ENV, GIT_CONFIG_GLOBAL: globalGitConfig() }
+    // 固定命令入口放在 ~/.local/bin：换成测试自己的 HOME，不碰用户真实的
+    const env = { ...ENV, GIT_CONFIG_GLOBAL: globalGitConfig(), HOME: tempDir('testpace-home-') }
+    // agent() 只给要改的变量：整份 ENV 会连 PATH 一起换掉，用到机器上别处装的 testpace
+    const agentEnv = { GIT_CONFIG_GLOBAL: env.GIT_CONFIG_GLOBAL, HOME: env.HOME }
     const repo = sampleRepo()
     const missing = /合并门：合并门没配（用户自己删掉了，或还没配过），提交、合并到默认分支时不会检查。用户要的话，跑 testpace install 在全局 git 配置里配上。/
     assert.match(testpace(repo, ['status'], env).out, missing)
@@ -278,16 +288,20 @@ describe('合并门（git 钩子）', () => {
     writeFileSync(join(repo, '.git', 'hooks', 'reference-transaction'), `#!/bin/sh\n[ "$1" = prepared ] && cat >> '${seen}'\nexit 0\n`, { mode: 0o755 })
     const installed = testpace(repo, ['install'], env)
     assert.equal(installed.code, 0, installed.out)
-    assert.equal(installed.out, '合并门已配好：全局 git 配置里的 hook.testpace，这台机器上 agent 在所有仓库里移动默认分支时都检查（只管接入了 testpace 的仓库）。\n')
+    assert.equal(
+      installed.out,
+      '合并门已配好：全局 git 配置里的 hook.testpace，这台机器上 agent 在所有仓库里移动默认分支时都检查（只管接入了 testpace 的仓库）。\n' +
+        `固定命令入口已放好：${join(env.HOME, '.local', 'bin', 'testpace')}，运行时转给这台机器上装着的最高版本的 testpace。\n`,
+    )
     assert.equal(sh(repo, `git config --file '${env.GIT_CONFIG_GLOBAL}' --get hook.testpace.command`).trim(), HOOK_COMMAND)
     assert.equal(sh(repo, 'git status --porcelain --untracked-files=all'), '', '仓库里什么都没写')
     assert.match(testpace(repo, ['status'], env).out, /合并门：已装上/)
     change(repo)
-    assert.match(agent(repo, 'git commit -qam m', env).out, /testpace 合并门：这次要把 main 更新到/)
-    assert.equal(agent(repo, 'git checkout -qb fix && git commit -qam m', env).code, 0, '分支上的提交照常放行')
+    assert.match(agent(repo, 'git commit -qam m', agentEnv).out, /testpace 合并门：这次要把 main 更新到/)
+    assert.equal(agent(repo, 'git checkout -qb fix && git commit -qam m', agentEnv).code, 0, '分支上的提交照常放行')
     assert.match(sh(repo, `cat '${seen}'`), /^[0-9a-f]+ [0-9a-f]+ refs\/heads\/fix$/m, '项目自己的钩子照常跑，读得到引用更新')
     sh(repo, 'git config core.hooksPath .husky/_')
-    assert.match(agent(repo, 'git update-ref refs/heads/main fix', env).out, /testpace 合并门：这次要把 main 更新到/, 'core.hooksPath 不影响')
+    assert.match(agent(repo, 'git update-ref refs/heads/main fix', agentEnv).out, /testpace 合并门：这次要把 main 更新到/, 'core.hooksPath 不影响')
 
     // 别的仓库、别的工作区不用再装
     const other = sampleRepo()
@@ -296,7 +310,7 @@ describe('合并门（git 钩子）', () => {
     change(wt)
     commit(wt, 'old 上没测过的提交')
     assert.match(testpace(wt, ['status'], env).out, /合并门：已装上/)
-    assert.match(agent(wt, 'git update-ref refs/heads/main old', env).out, /testpace 合并门：这次要把 main 更新到/)
+    assert.match(agent(wt, 'git update-ref refs/heads/main old', agentEnv).out, /testpace 合并门：这次要把 main 更新到/)
 
     // 命令不是这一版的：提示更新，install 改回来
     sh(repo, `git config --file '${env.GIT_CONFIG_GLOBAL}' hook.testpace.command 'testpace gate'`)
@@ -334,17 +348,17 @@ describe('会话开始', () => {
     process.env.GIT_CONFIG_GLOBAL = global
     try {
       const repo = sampleRepo()
-      const first = handle({ hook_event_name: 'SessionStart', session_id: 'auto-1', cwd: repo }, Date.now()) as Output
+      const first = handle({ hook_event_name: 'SessionStart', session_id: 'auto-1', cwd: repo }, Date.now(), 'claude') as Output
       assert.match(String(first?.systemMessage), /^testpace：在全局 git 配置里配上了合并门/)
       assert.equal(sh(repo, `git config --file '${global}' --get hook.testpace.command`).trim(), HOOK_COMMAND)
       assert.doesNotMatch(String(first?.hookSpecificOutput?.additionalContext), /合并门没配/)
-      const second = handle({ hook_event_name: 'SessionStart', session_id: 'auto-2', cwd: repo }, Date.now()) as Output
+      const second = handle({ hook_event_name: 'SessionStart', session_id: 'auto-2', cwd: repo }, Date.now(), 'claude') as Output
       assert.equal(second?.systemMessage, undefined, '配好了不再说')
 
       // 照说明删掉
       const remove = String(first?.systemMessage).match(/git config --global --remove-section (\S+)，/)![1]
       sh(repo, `git config --file '${global}' --remove-section ${remove}`)
-      const removed = handle({ hook_event_name: 'SessionStart', session_id: 'auto-3', cwd: repo }, Date.now()) as Output
+      const removed = handle({ hook_event_name: 'SessionStart', session_id: 'auto-3', cwd: repo }, Date.now(), 'claude') as Output
       assert.equal(removed?.systemMessage, undefined)
       assert.equal(sh(repo, `git config --file '${global}' --get-all hook.testpace.command || true`), '', '用户删掉的不配回去')
       assert.match(String(removed?.hookSpecificOutput?.additionalContext), /合并门没配（用户自己删掉了，或还没配过）/)
@@ -359,13 +373,13 @@ describe('会话开始', () => {
     try {
       const fresh = tempDir('testpace-new-')
       sh(fresh, 'git init -qb main')
-      const start = handle({ hook_event_name: 'SessionStart', session_id: 'new-1', cwd: fresh }, Date.now()) as Output
+      const start = handle({ hook_event_name: 'SessionStart', session_id: 'new-1', cwd: fresh }, Date.now(), 'claude') as Output
       assert.match(String(start?.hookSpecificOutput?.additionalContext), /^这是个新仓库，还没接入 testpace[\s\S]*不用问用户/)
 
       const old = tempDir('testpace-old-')
       sh(old, 'git init -qb main && for i in $(seq 21); do git -c user.name=t -c user.email=t@t commit --allow-empty -qm "$i"; done')
-      assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'old-1', cwd: old }, Date.now()), undefined)
-      assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'none-1', cwd: tempDir('testpace-plain-') }, Date.now()), undefined)
+      assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'old-1', cwd: old }, Date.now(), 'claude'), undefined)
+      assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'none-1', cwd: tempDir('testpace-plain-') }, Date.now(), 'claude'), undefined)
     } finally {
       process.env.GIT_CONFIG_GLOBAL = saved
     }
@@ -375,9 +389,9 @@ describe('会话开始', () => {
 describe('软提示', () => {
   test('会话开始时注入节奏说明，没接入约定的仓库不注入', () => {
     const repo = gatedRepo()
-    const output = handle({ hook_event_name: 'SessionStart', session_id: 's', cwd: repo }, Date.now()) as Output
+    const output = handle({ hook_event_name: 'SessionStart', session_id: 's', cwd: repo }, Date.now(), 'claude') as Output
     assert.deepEqual(output, { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: RHYTHM } })
-    assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 's-none', cwd: tempDir('testpace-none-') }, Date.now()), undefined)
+    assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 's-none', cwd: tempDir('testpace-none-') }, Date.now(), 'claude'), undefined)
   })
 
   test('会话不在接入的仓库里开始时，第一条碰到那个仓库的命令补说一次节奏，写上是哪个仓库', () => {
@@ -385,8 +399,8 @@ describe('软提示', () => {
     const root = sh(repo, 'git rev-parse --show-toplevel').trim()
     const parent = tempDir('testpace-parent-')
     const run = (cwd: string, command: string): Output =>
-      handle({ hook_event_name: 'PreToolUse', session_id: 'p', cwd, tool_name: 'Bash', tool_input: { command } }, Date.now()) as Output
-    assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'p', cwd: parent }, Date.now()), undefined)
+      handle({ hook_event_name: 'PreToolUse', session_id: 'p', cwd, tool_name: 'Bash', tool_input: { command } }, Date.now(), 'claude') as Output
+    assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'p', cwd: parent }, Date.now(), 'claude'), undefined)
     assert.equal(run(parent, 'ls'), undefined, '没碰到接入的仓库不说')
     const told = run(parent, `cd ${repo} && git status`)?.hookSpecificOutput?.additionalContext
     assert.equal(told, rhythm(`${root} 这个仓库`))
@@ -394,11 +408,11 @@ describe('软提示', () => {
     assert.equal(run(repo, 'git status'), undefined, '会话后来在仓库里也不再说')
     assert.match(String(run(repo, 'node scripts/full.mjs')?.hookSpecificOutput?.additionalContext), /^这是 testpace.json 里 full 的检查/)
     // 压缩、恢复后会话重新开始：碰过的仓库再说一次，之后的命令不再说
-    const again = handle({ hook_event_name: 'SessionStart', session_id: 'p', cwd: parent }, Date.now()) as Output
+    const again = handle({ hook_event_name: 'SessionStart', session_id: 'p', cwd: parent }, Date.now(), 'claude') as Output
     assert.equal(again?.hookSpecificOutput?.additionalContext, rhythm(`${root} 这个仓库`))
     assert.equal(run(parent, `cd ${repo} && git status`), undefined)
     // 换一个会话，补说和别的提示一起出
-    const both = handle({ hook_event_name: 'PreToolUse', session_id: 'q', cwd: repo, tool_name: 'Bash', tool_input: { command: 'node scripts/full.mjs' } }, Date.now()) as Output
+    const both = handle({ hook_event_name: 'PreToolUse', session_id: 'q', cwd: repo, tool_name: 'Bash', tool_input: { command: 'node scripts/full.mjs' } }, Date.now(), 'claude') as Output
     assert.match(String(both?.hookSpecificOutput?.additionalContext), /用 testpace 管测试节奏[\s\S]*\n\n这是 testpace.json 里 full 的检查/)
   })
 
@@ -406,7 +420,7 @@ describe('软提示', () => {
     const repo = gatedRepo()
     assert.equal(fullIn(repo, 'k'), 0)
     writeFileSync(join(repo, 'testpace.json'), '{')
-    const start = handle({ hook_event_name: 'SessionStart', session_id: 'k', cwd: repo }, Date.now()) as Output
+    const start = handle({ hook_event_name: 'SessionStart', session_id: 'k', cwd: repo }, Date.now(), 'claude') as Output
     assert.match(
       String(start?.hookSpecificOutput?.additionalContext),
       /用 testpace 管测试节奏[\s\S]*\ntestpace\.json 有问题：testpace\.json 不是合法的 JSON：.+。$/,
@@ -430,35 +444,39 @@ describe('软提示', () => {
 describe('停止门', () => {
   test('这个会话起的整组跑完还没看结果时拦一次；看过（testpace status）就放行', () => {
     const repo = sampleRepo()
-    handle({ hook_event_name: 'SessionStart', session_id: 'a', cwd: repo }, Date.now())
+    handle({ hook_event_name: 'SessionStart', session_id: 'a', cwd: repo }, Date.now(), 'claude')
     assert.equal(stop(repo, 'a'), undefined)
     assert.equal(fullIn(repo, 'a'), 0)
-    assert.match(stop(repo, 'a')?.reason ?? '', /^这个会话跑的整组已经结束（通过），还没看结果。先跑 testpace status/)
-    assert.equal(stop(repo, 'a')?.decision, 'block')
-    assert.equal(stop(repo, 'a', true), undefined, '已经因为停止门继续过一次，不再拦')
-    testpace(repo, ['status'], { ...ENV, CLAUDE_CODE_SESSION_ID: 'z' })
-    assert.ok(stop(repo, 'a')?.reason, '别的会话看了结果不算')
+    const first = stop(repo, 'a')
+    assert.match(first?.reason ?? '', /^这个会话跑的整组已经结束（通过），还没看结果。先跑 testpace status/)
+    assert.equal(first?.decision, 'block')
+    assert.equal(stop(repo, 'a'), undefined, '同一次整组只拦一次：停止门自己记着，不靠 agent 给的 stop_hook_active')
+    testpace(repo, ['status'], { ...ENV, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'z' })
+    assert.ok(stopAgain(repo, 'a')?.reason, '别的会话看了结果不算')
     testpace(repo, ['status'])
-    assert.ok(stop(repo, 'a')?.reason, '用户在终端里看了也不算')
-    testpace(repo, ['status'], { ...ENV, CLAUDE_CODE_SESSION_ID: 'a' })
-    assert.equal(stop(repo, 'a'), undefined)
+    assert.ok(stopAgain(repo, 'a')?.reason, '用户在终端里看了也不算')
+    testpace(repo, ['status'], { ...ENV, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'a' })
+    assert.equal(stopAgain(repo, 'a'), undefined)
+    change(repo)
+    assert.equal(fullIn(repo, 'a'), 0)
+    assert.ok(stop(repo, 'a')?.reason, '新的一次整组又拦一次')
   })
 
   test('会话从仓库外开始时，也查它碰过的仓库，话里写上是哪个仓库', () => {
     const repo = sampleRepo()
     const root = sh(repo, 'git rev-parse --show-toplevel').trim()
     const parent = tempDir('testpace-parent-')
-    handle({ hook_event_name: 'SessionStart', session_id: 'o', cwd: parent }, Date.now())
-    handle({ hook_event_name: 'PreToolUse', session_id: 'o', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && testpace full` } }, Date.now())
+    handle({ hook_event_name: 'SessionStart', session_id: 'o', cwd: parent }, Date.now(), 'claude')
+    handle({ hook_event_name: 'PreToolUse', session_id: 'o', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && testpace full` } }, Date.now(), 'claude')
     assert.equal(fullIn(repo, 'o'), 0)
     assert.equal(stop(parent, 'o')?.reason, `这个会话在 ${root} 跑的整组已经结束（通过），还没看结果。先跑 testpace status 看结果，再收尾。`)
-    testpace(repo, ['status'], { ...ENV, CLAUDE_CODE_SESSION_ID: 'o' })
+    testpace(repo, ['status'], { ...ENV, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'o' })
     assert.equal(stop(parent, 'o'), undefined)
     // 没有插件数据目录（不在 Claude Code 里跑）时只认会话所在目录
     const data = process.env.CLAUDE_PLUGIN_DATA
     delete process.env.CLAUDE_PLUGIN_DATA
     try {
-      handle({ hook_event_name: 'PreToolUse', session_id: 'o2', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && ls` } }, Date.now())
+      handle({ hook_event_name: 'PreToolUse', session_id: 'o2', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && ls` } }, Date.now(), 'claude')
       assert.equal(fullIn(repo, 'o2'), 0)
       assert.equal(stop(parent, 'o2'), undefined)
     } finally {
@@ -468,38 +486,39 @@ describe('停止门', () => {
 
   test('前台跑完 testpace full 算看过，失败的（Claude Code 发 PostToolUseFailure）也算；放到后台的不算', () => {
     const repo = sampleRepo()
-    handle({ hook_event_name: 'SessionStart', session_id: 'b', cwd: repo }, Date.now())
+    handle({ hook_event_name: 'SessionStart', session_id: 'b', cwd: repo }, Date.now(), 'claude')
     assert.equal(fullIn(repo, 'b'), 0)
     const post = (event: string, input: Record<string, unknown>, response?: unknown): unknown =>
-      handle({ hook_event_name: event, session_id: 'b', cwd: repo, tool_name: 'Bash', tool_input: { command: 'testpace full', ...input }, tool_response: response }, Date.now())
+      handle({ hook_event_name: event, session_id: 'b', cwd: repo, tool_name: 'Bash', tool_input: { command: 'testpace full', ...input }, tool_response: response }, Date.now(), 'claude')
     post('PostToolUse', {}, { backgroundTaskId: 'task1' })
-    assert.ok(stop(repo, 'b')?.reason)
+    assert.ok(stopAgain(repo, 'b')?.reason)
     post('PostToolUse', { run_in_background: true }, {})
-    assert.ok(stop(repo, 'b')?.reason)
+    assert.ok(stopAgain(repo, 'b')?.reason)
     post('PostToolUse', {}, { stdout: '整组通过' })
-    assert.equal(stop(repo, 'b'), undefined)
+    assert.equal(stopAgain(repo, 'b'), undefined)
 
     setConfig(repo, { full: 'false' })
     assert.equal(fullIn(repo, 'b'), 1)
-    assert.match(stop(repo, 'b')?.reason ?? '', /^这个会话跑的整组已经结束（失败），还没看结果/)
+    assert.match(stopAgain(repo, 'b')?.reason ?? '', /^这个会话跑的整组已经结束（失败），还没看结果/)
     post('PostToolUseFailure', {})
-    assert.equal(stop(repo, 'b'), undefined)
+    assert.equal(stopAgain(repo, 'b'), undefined)
   })
 
   test('整组还在跑时拦下来', () => {
     const repo = sampleRepo()
-    handle({ hook_event_name: 'SessionStart', session_id: 'c', cwd: repo }, Date.now())
+    handle({ hook_event_name: 'SessionStart', session_id: 'c', cwd: repo }, Date.now(), 'claude')
     const store = new Store(join(repo, '.git'))
     // 和 testpace full 一样按 git 给的根目录登记（macOS 上临时目录的真实路径在 /private 下）
     const root = sh(repo, 'git rev-parse --show-toplevel').trim()
     assert.equal(store.claim({ id: 'r1', kind: 'full', pid: process.pid, worktree: root, tree: 't', startedAt: Date.now(), session: 'c', log: '/dev/null' }), undefined)
     try {
       assert.match(stop(repo, 'c')?.reason ?? '', /^这个工作区的整组还在跑（开始于 .+，已 \d+秒）/)
+      assert.equal(stop(repo, 'c'), undefined, '还在跑时只拦一次')
       // 别的会话想跑整组，发现已经在跑：它等着用这次的结果，也要拦
-      handle({ hook_event_name: 'SessionStart', session_id: 'c2', cwd: repo }, Date.now())
-      assert.equal(testpace(repo, ['full'], { ...ENV, CLAUDE_CODE_SESSION_ID: 'c2' }).code, 3)
+      handle({ hook_event_name: 'SessionStart', session_id: 'c2', cwd: repo }, Date.now(), 'claude')
+      assert.equal(testpace(repo, ['full'], { ...ENV, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'c2' }).code, 3)
       assert.match(stop(repo, 'c2')?.reason ?? '', /^这个工作区的整组还在跑/)
-      handle({ hook_event_name: 'SessionStart', session_id: 'c3', cwd: repo }, Date.now())
+      handle({ hook_event_name: 'SessionStart', session_id: 'c3', cwd: repo }, Date.now(), 'claude')
       assert.equal(stop(repo, 'c3'), undefined, '没起也没等的会话不管')
     } finally {
       store.release(root, 'r1')
@@ -509,19 +528,19 @@ describe('停止门', () => {
   test('等着用别人整组结果的会话：跑完还没看结果时也拦', () => {
     const repo = sampleRepo()
     const root = sh(repo, 'git rev-parse --show-toplevel').trim()
-    handle({ hook_event_name: 'SessionStart', session_id: 'w', cwd: repo }, Date.now())
+    handle({ hook_event_name: 'SessionStart', session_id: 'w', cwd: repo }, Date.now(), 'claude')
     new Store(join(repo, '.git')).appendRun({
       id: 'r2', kind: 'full', worktree: root, tree: 't', treeAtEnd: 't', startedAt: Date.now() - 2000, durationMs: 1000,
       exitCode: 0, result: 'pass', session: 'a', waiting: ['w'], log: '/dev/null',
     })
     assert.match(stop(repo, 'w')?.reason ?? '', /^这个会话等的整组已经结束（通过），还没看结果/)
-    testpace(repo, ['status'], { ...ENV, CLAUDE_CODE_SESSION_ID: 'w' })
+    testpace(repo, ['status'], { ...ENV, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'w' })
     assert.equal(stop(repo, 'w'), undefined)
   })
 
   test('别的会话、或不在 Claude Code 里起的整组不管', () => {
     const repo = sampleRepo()
-    handle({ hook_event_name: 'SessionStart', session_id: 'd', cwd: repo }, Date.now())
+    handle({ hook_event_name: 'SessionStart', session_id: 'd', cwd: repo }, Date.now(), 'claude')
     assert.equal(fullIn(repo, 'other'), 0)
     assert.equal(stop(repo, 'd'), undefined)
     change(repo)
@@ -532,12 +551,12 @@ describe('停止门', () => {
 
   test('本地或远程默认分支在会话里有了没测过的提交，提示用户一次', () => {
     const repo = sampleRepo()
-    handle({ hook_event_name: 'SessionStart', session_id: 'e', cwd: repo }, Date.now())
+    handle({ hook_event_name: 'SessionStart', session_id: 'e', cwd: repo }, Date.now(), 'claude')
     change(repo)
     commit(repo, '用户在终端里提交')
     const head = sh(repo, 'git rev-parse --short=10 HEAD').trim()
     const first = stop(repo, 'e')
-    assert.equal(first?.systemMessage, `testpace：main 的最新提交 ${head} 没有整组通过记录（可能是在 Claude Code 之外提交的，或者合并门没装上）。`)
+    assert.equal(first?.systemMessage, `testpace：main 的最新提交 ${head} 没有整组通过记录（可能不是 agent 提交的（合并门只管 agent 的命令），或者合并门没装上）。`)
     assert.equal(first?.decision, undefined, '只提示，不拦')
     assert.equal(stop(repo, 'e'), undefined, '同一个提交只提示一次')
     // 推送别的分支到默认分支、在 GitHub 上合并 PR：本地 main 没动，fetch 之后 origin/main 有了没测过的提交
@@ -558,7 +577,7 @@ describe('停止门', () => {
   test('默认分支的新提交和合并门一样按提交里的 testpace.json 判断，工作区里的文件不影响', () => {
     const repo = sampleRepo()
     assert.equal(testpace(repo, ['full']).code, 0)
-    handle({ hook_event_name: 'SessionStart', session_id: 'f', cwd: repo }, Date.now())
+    handle({ hook_event_name: 'SessionStart', session_id: 'f', cwd: repo }, Date.now(), 'claude')
     mkdirSync(join(repo, 'docs'), { recursive: true })
     writeFileSync(join(repo, 'docs', 'note.md'), '说明\n')
     commit(repo, '只改了提交里 ignore 的路径')
@@ -573,7 +592,7 @@ describe('停止门', () => {
     const fresh = sampleRepo()
     sh(fresh, 'git rm -q --cached testpace.json && echo testpace.json >> .git/info/exclude')
     commit(fresh, '还没接入')
-    handle({ hook_event_name: 'SessionStart', session_id: 'g', cwd: fresh }, Date.now())
+    handle({ hook_event_name: 'SessionStart', session_id: 'g', cwd: fresh }, Date.now(), 'claude')
     change(fresh)
     sh(fresh, `git add src && git -c user.name=t -c user.email=t@t commit -qm '只提交代码'`)
     assert.equal(stop(fresh, 'g'), undefined)
@@ -583,15 +602,19 @@ describe('停止门', () => {
 test('hook 入口：从标准输入读事件，把判断写到标准输出', () => {
   const repo = gatedRepo()
   const run = (input: unknown): string =>
-    spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', ENTRY], { input: JSON.stringify(input), env: ENV, encoding: 'utf8' }).stdout
+    spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', ENTRY, 'claude'], { input: JSON.stringify(input), env: ENV, encoding: 'utf8' }).stdout
   const pre = (command: string): string => run({ hook_event_name: 'PreToolUse', session_id: 'x', cwd: repo, tool_name: 'Bash', tool_input: { command } })
   const output = JSON.parse(pre('node scripts/full.mjs'))
   assert.match(output.hookSpecificOutput.additionalContext, /用 testpace 管测试节奏[\s\S]*改用 testpace full/)
   assert.equal(pre('ls'), '', '节奏只说一次')
-  // 输入坏了也不挡 agent
-  const broken = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', ENTRY], { input: '{', env: ENV, encoding: 'utf8' })
+  // 输入坏了也不挡 agent，但要让人看到出了错
+  const broken = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', ENTRY, 'claude'], { input: '{', env: ENV, encoding: 'utf8' })
   assert.equal(broken.status, 0)
-  assert.equal(broken.stdout, '')
+  assert.match(JSON.parse(broken.stdout).systemMessage, /^testpace hook 出错，这次没有检查：/)
+  // 没说是哪个 agent：hook 配置写错了，同样不挡但说出来
+  const unnamed = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', ENTRY], { input: '{}', env: ENV, encoding: 'utf8' })
+  assert.equal(unnamed.status, 0)
+  assert.equal(JSON.parse(unnamed.stdout).systemMessage, 'testpace hook 出错，这次没有检查：不认识的 agent "undefined"')
 })
 
 test('hooks.json 把用到的事件都交给入口：Bash 的三个工具事件只看 Bash', () => {
@@ -601,6 +624,6 @@ test('hooks.json 把用到的事件都交给入口：Bash 的三个工具事件�
   const registered = Object.fromEntries(Object.entries(hooks).map(([event, entries]) => [event, entries.map(entry => entry.matcher ?? '')]))
   assert.deepEqual(registered, { SessionStart: [''], PreToolUse: ['Bash'], PostToolUse: ['Bash'], PostToolUseFailure: ['Bash'], Stop: [''] })
   for (const entries of Object.values(hooks)) {
-    for (const entry of entries) assert.match(entry.hooks[0]!.command, /"\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/testpace\.ts"$/)
+    for (const entry of entries) assert.match(entry.hooks[0]!.command, /"\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/testpace\.ts" claude$/, '说明是 Claude Code')
   }
 })

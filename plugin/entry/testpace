@@ -1,0 +1,19 @@
+#!/bin/sh
+# testpace 固定入口：testpace install 把这个文件放到 ~/.local/bin/testpace（Codex 的命令和终端的 PATH 里都有这个目录）。
+# 插件的安装目录随版本变，不能写死，这里每次运行时找这台机器上装着的最高版本的 testpace，Claude Code 和 Codex 装的都算。
+# 只认装着的：Claude Code 看它的安装记录（卸载、降级后缓存里留下的旧目录不算；没有记录就是没装）；
+# Codex 卸载插件时会删掉缓存，缓存里有的就是装着的。
+# 找不到时退出码 2：合并门的钩子把 2 当成这次没法检查，不挡。
+installed="$HOME/.claude/plugins/installed_plugins.json"
+candidates() {
+  [ ! -f "$installed" ] || grep -o '"installPath": *"[^"]*/testpace/[^"]*"' "$installed" | sed 's/.*"\([^"]*\)"$/\1\/bin\/testpace/'
+  ls -d "${CODEX_HOME:-$HOME/.codex}"/plugins/cache/*/testpace/*/bin/testpace 2>/dev/null
+}
+tab=$(printf '\t')
+best=$(
+  candidates | while IFS= read -r bin; do
+    [ -x "$bin" ] && printf '%s\t%s\n' "$(basename "$(dirname "$(dirname "$bin")")")" "$bin"
+  done | sort -t "$tab" -k1,1V | tail -n 1 | cut -f 2
+)
+[ -n "$best" ] || { echo 'testpace：这台机器上没找到装着的 testpace 插件（Claude Code、Codex 里都没有）。' >&2; exit 2; }
+exec "$best" "$@"
