@@ -176,7 +176,8 @@ async function focused(args: string[]): Promise<number> {
   const ctx = context()
   if (!ctx) return EXIT.usage
   const { config, problems } = loadConfig(ctx.root)
-  if (!config?.fast || !config.files) {
+  // 相关测试只从整组的测试里选，tests 规则写坏了就没法选
+  if (!config?.fast || !config.files || config.tests.length === 0) {
     console.error(`没法跑 focused：${problems.join('；')}`)
     return EXIT.usage
   }
@@ -200,19 +201,21 @@ async function focused(args: string[]): Promise<number> {
   // 不在默认分支上（包括分离的 HEAD）：要落地还得合并，合并前的整组兜底，选测靠不住也不用现在跑整组
   const onBranch = branch !== undefined && currentBranch(ctx.root) !== branch
   const base = at !== -1 ? args[at + 1]! : (branch && commitOf(ctx.root, 'HEAD') && mergeBase(ctx.root, 'HEAD', `refs/heads/${branch}`)) || 'HEAD'
-  const selection = askLayermap(ctx.root, base, ignoredBy(config))
+  const isIgnored = ignoredBy(config)
+  const selection = askLayermap(ctx.root, base, isIgnored, new Set(findTests(ctx.root, config.tests)), testMatcher(config.tests))
   const reasons = fullReasons(selection)
 
   let code: number = EXIT.ok
   if (selection.kind === 'selected' && selection.changed.length === 0) {
     lines.push(`相对 ${short(base)} 没有改动，不用跑测试。`)
-  } else if (selection.kind === 'selected' && selection.onlyIgnored) {
-    lines.push('改动只涉及 ignore 里的路径，不用跑测试。')
+  } else if (selection.kind === 'selected' && selection.nothingToTest) {
+    lines.push(selection.changed.every(isIgnored) ? '改动只涉及 ignore 里的路径，不用跑测试。' : '改动里没有整组要跑的东西（只有 ignore 里的路径、tests 规则外或删掉的测试），不用跑测试。')
   } else if (selection.kind === 'selected' && selection.tests.length > 0) {
     const shown = selection.tests.slice(0, 10).map(test => `  ${test}`)
     if (selection.tests.length > 10) shown.push(`  等 ${selection.tests.length} 个`)
     const indirect = selection.indirect ? `；另有 ${selection.indirect} 个只是间接导入改动，没选` : ''
-    lines.push(`相关测试 ${selection.tests.length} 个（对比 ${short(base)}${indirect}）：`, ...shown)
+    const outside = selection.outside.length ? `；另有 ${selection.outside.length} 个不在 tests 规则里，整组不跑，没选` : ''
+    lines.push(`相关测试 ${selection.tests.length} 个（对比 ${short(base)}${indirect}${outside}）：`, ...shown)
     const related = await runRecorded(ctx, 'files', config.files, selection.tests, tree)
     if ('busy' in related) {
       console.log([...lines, busyText(related.busy, tree)].join('\n'))

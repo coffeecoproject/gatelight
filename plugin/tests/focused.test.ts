@@ -1,7 +1,7 @@
 // testpace focused 和 testpace files：用一个假的 layermap 命令决定选出哪些测试。
 
 import assert from 'node:assert/strict'
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fullReasons, type LayermapCheck, parseCheck, parseUntested, select, type Untested } from '../src/focused.ts'
@@ -11,29 +11,35 @@ import { commit, ENV, runs, sampleRepo, sh, tempDir, testpace } from './helpers.
 const check = (partial: Partial<LayermapCheck>): LayermapCheck => ({ files: [], tests: [], unmapped: [], incomplete: [], ...partial })
 
 describe('选测', () => {
-  const exists = (path: string): boolean => !path.includes('deleted')
+  // 整组的测试：tests 规则在工作区里找到的，已删除的不在里面
+  const suite = new Set(['t/a.test.ts', 't/b.test.ts', 't/s.test.ts', 't/c.test.ts', 'tests/a.test.ts'])
+  const inRules = (path: string): boolean => /^(t|tests)\/.*\.test\.ts$/.test(path)
 
-  test('选 rank 4 以下（含 3.5）而且还在的测试文件', () => {
+  test('选 rank 4 以下（含 3.5）而且在整组里的测试文件', () => {
     const selection = select(
       check({
-        files: [{ path: 'src/a.ts', status: 'MODIFIED' }],
+        files: [
+          { path: 'src/a.ts', status: 'MODIFIED' },
+          { path: 't/deleted.test.ts', status: 'DELETED' },
+        ],
         tests: [
           { path: 't/a.test.ts', rank: 0, why: 'calls a' },
           { path: 't/b.test.ts', rank: 3, why: 'same directory' },
           { path: 't/s.test.ts', rank: 3.5, why: 'may use it through t/support.ts' },
-          { path: 't/deleted.test.ts', rank: 1, why: 'changed' },
           { path: 't/c.test.ts', rank: 4, why: 'imports' },
         ],
       }),
       () => false,
-      exists,
+      suite,
+      inRules,
     )
     assert.deepEqual(selection, {
       kind: 'selected',
-      changed: ['src/a.ts'],
-      onlyIgnored: false,
+      changed: ['src/a.ts', 't/deleted.test.ts'],
+      nothingToTest: false,
       tests: ['t/a.test.ts', 't/b.test.ts', 't/s.test.ts'],
       indirect: 1,
+      outside: [],
       unmapped: [],
       incomplete: [],
       untested: null,
@@ -45,7 +51,8 @@ describe('选测', () => {
     const selection = select(
       check({ files: [{ path: 'src/a.ts', status: 'MODIFIED' }], tests: [{ path: 't/b.test.ts', rank: 3, why: 'same directory' }] }),
       () => false,
-      () => true,
+      suite,
+      inRules,
     )
     assert.ok(selection.kind === 'selected')
     selection.untested = { changed: [], truncated: false }
@@ -67,7 +74,8 @@ describe('选测', () => {
     const selection = select(
       check({ files: [{ path: 'config.yaml', status: 'MODIFIED' }], unmapped: [{ path: 'config.yaml', kind: 'configuration' }], incomplete: ['the trace stopped at 8 levels or 2000 declarations; continue with project_explore_map from the last ones'] }),
       () => false,
-      exists,
+      suite,
+      inRules,
     )
     assert.deepEqual(fullReasons(selection), [
       '改了 config.yaml（configuration），地图跟不到它们影响哪些测试',
@@ -77,8 +85,8 @@ describe('选测', () => {
   })
 
   test('只改了 ignore 路径时不用跑测试，也不建议整组', () => {
-    const selection = select(check({ files: [{ path: 'docs/a.md', status: 'MODIFIED' }] }), matcher(['docs/**']), exists)
-    assert.equal(selection.kind === 'selected' && selection.onlyIgnored, true)
+    const selection = select(check({ files: [{ path: 'docs/a.md', status: 'MODIFIED' }] }), matcher(['docs/**']), suite, inRules)
+    assert.equal(selection.kind === 'selected' && selection.nothingToTest, true)
     assert.deepEqual(fullReasons(selection), [])
   })
 
@@ -97,10 +105,92 @@ describe('选测', () => {
         ],
       }),
       matcher(['docs/**']),
-      exists,
+      suite,
+      inRules,
     )
     assert.deepEqual(selection.kind === 'selected' && selection.unmapped, [{ path: 'scripts/deploy.sh', kind: 'shell script' }])
     assert.deepEqual(fullReasons(selection), ['改了 scripts/deploy.sh（shell script），地图跟不到它们影响哪些测试'])
+  })
+
+  test('规则排除的测试和规则外的练习脚本不选；改到的规则内测试 layermap 认不出也选', () => {
+    const selection = select(
+      check({
+        files: [
+          { path: 'src/shared.ts', status: 'MODIFIED' },
+          { path: 'checks/db.check.ts', status: 'MODIFIED' },
+        ],
+        tests: [
+          { path: 'messages/send.test.ts', rank: 0, why: 'calls fmt' },
+          { path: 'e2e/import/load.spec.ts', rank: 0, why: 'calls fmt' },
+          { path: 'src/order.test.ts', rank: 0.1, why: 'calls order' },
+          { path: 'messages/far.test.ts', rank: 4, why: 'imports indirectly' },
+        ],
+      }),
+      () => false,
+      new Set(['src/order.test.ts', 'checks/db.check.ts']),
+      path => ['src/order.test.ts', 'checks/db.check.ts'].includes(path),
+    )
+    assert.ok(selection.kind === 'selected')
+    assert.deepEqual(selection.tests, ['src/order.test.ts', 'checks/db.check.ts'])
+    assert.deepEqual(selection.outside, ['messages/send.test.ts', 'e2e/import/load.spec.ts'])
+    assert.equal(selection.indirect, 0, '整组外的间接导入不算')
+    assert.equal(selection.nothingToTest, false)
+  })
+
+  test('只改了规则外的测试（和 ignore 路径）时不用跑测试，也不建议整组', () => {
+    const selection = select(
+      check({
+        files: [
+          { path: 'messages/send.test.ts', status: 'MODIFIED' },
+          { path: 'docs/a.md', status: 'MODIFIED' },
+        ],
+        tests: [{ path: 'messages/send.test.ts', rank: 1, why: 'changed in this diff' }],
+      }),
+      matcher(['docs/**']),
+      suite,
+      inRules,
+    )
+    assert.equal(selection.kind === 'selected' && selection.nothingToTest, true)
+    assert.deepEqual(fullReasons(selection), [])
+  })
+
+  test('只删了整组的测试时不用跑测试；删了规则外的代码文件不算', () => {
+    // layermap 不列删掉的文件，靠 tests 规则认出删的是整组的测试
+    const removed = select(check({ files: [{ path: 't/old.test.ts', status: 'DELETED' }] }), () => false, suite, inRules)
+    assert.equal(removed.kind === 'selected' && removed.nothingToTest, true)
+    assert.deepEqual(fullReasons(removed), [])
+    const code = select(check({ files: [{ path: 'src/old.ts', status: 'DELETED' }] }), () => false, suite, inRules)
+    assert.equal(code.kind === 'selected' && code.nothingToTest, false)
+    assert.deepEqual(fullReasons(code), ['layermap 没找到和这次改动相关的测试'])
+  })
+
+  test('规则外的测试被整组测试用到时，照样跑整组里相关的那些', () => {
+    const selection = select(
+      check({
+        files: [{ path: 'e2e/helpers/login.spec.ts', status: 'MODIFIED' }],
+        tests: [
+          { path: 'e2e/helpers/login.spec.ts', rank: 1, why: 'changed in this diff' },
+          { path: 'tests/a.test.ts', rank: 2, why: 'imports e2e/helpers/login.spec.ts' },
+        ],
+      }),
+      () => false,
+      suite,
+      inRules,
+    )
+    assert.ok(selection.kind === 'selected')
+    assert.equal(selection.nothingToTest, false)
+    assert.deepEqual(selection.tests, ['tests/a.test.ts'])
+  })
+
+  test('相关测试都不在规则里、又改了别的代码时，说明找到的都在规则外，建议跑整组', () => {
+    const selection = select(
+      check({ files: [{ path: 'src/shared.ts', status: 'MODIFIED' }], tests: [{ path: 'messages/send.test.ts', rank: 0, why: 'calls fmt' }] }),
+      () => false,
+      suite,
+      inRules,
+    )
+    assert.equal(selection.kind === 'selected' && selection.nothingToTest, false)
+    assert.deepEqual(fullReasons(selection), ['layermap 没找到和这次改动相关的测试（它找到的 1 个都不在 tests 规则里）'])
   })
 
   test('layermap 的输出缺字段时说明可能是版本太旧', () => {
@@ -268,6 +358,45 @@ describe('testpace focused', () => {
     assert.equal(testpace(repo, ['focused', 'extra']).code, 2)
     assert.equal(testpace(repo, ['focused', '--base']).code, 2)
     assert.equal(testpace(repo, ['focused', '--base', 'HEAD', 'x']).code, 2)
+  })
+
+  test('只交给 files 规则里的测试；规则外的说一句没选', () => {
+    const repo = sampleRepo()
+    mkdirSync(join(repo, 'scratch'))
+    writeFileSync(join(repo, 'scratch', 'try.test.mjs'), "throw new Error('不该跑')\n")
+    const layermap = fakeLayermap(check({
+      files: [{ path: 'src/format.mjs', status: 'MODIFIED' }],
+      tests: [
+        { path: 'scratch/try.test.mjs', rank: 0, why: 'calls yuan' },
+        { path: 'tests/format.test.mjs', rank: 0, why: 'calls yuan' },
+      ],
+    }))
+    const r = testpace(repo, ['focused'], layermap.env)
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /相关测试 1 个（对比 [0-9a-f]{10}；另有 1 个不在 tests 规则里，整组不跑，没选）：\n {2}tests\/format\.test\.mjs\n/)
+    assert.deepEqual(runs(repo).at(-1)!.files, ['tests/format.test.mjs'])
+    assert.deepEqual(layermap.calls()[1]!.slice(4), ['tests/format.test.mjs'], '交回 layermap 核对的也只有规则里的')
+  })
+
+  test('只改了规则外的测试时说明不用跑测试', () => {
+    const repo = sampleRepo()
+    const r = testpace(repo, ['focused'], fakeLayermap(check({
+      files: [{ path: 'scratch/try.test.mjs', status: 'ADDED' }],
+      tests: [{ path: 'scratch/try.test.mjs', rank: 1, why: 'changed in this diff' }],
+    })).env)
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /改动里没有整组要跑的东西（只有 ignore 里的路径、tests 规则外或删掉的测试），不用跑测试。\n$/)
+    assert.deepEqual(runs(repo).map(run => run.kind), ['fast'])
+  })
+
+  test('tests 规则写坏了时不跑，说明原因', () => {
+    const repo = sampleRepo()
+    const config = JSON.parse(readFileSync(join(repo, 'testpace.json'), 'utf8'))
+    delete config.tests
+    writeFileSync(join(repo, 'testpace.json'), JSON.stringify(config))
+    const r = testpace(repo, ['focused'], fakeLayermap(FORMAT_CHANGE).env)
+    assert.equal(r.code, 2, r.out)
+    assert.match(r.out, /没法跑 focused：缺少 "tests"/)
   })
 
   test('只改了 ignore 路径时说明不用跑测试', () => {
