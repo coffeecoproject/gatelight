@@ -221,15 +221,19 @@ describe('固定命令入口', () => {
     assert.equal(readFileSync(entry, 'utf8'), readFileSync(join(PLUGIN, 'entry', 'testpace'), 'utf8'))
     assert.match(testpace(repo, ['status'], env).out, /固定命令入口（.+）：已放好/)
 
-    const fake = (base: string, version: string): void => {
+    const fake = (base: string, version: string, complete = true): void => {
       const bin = join(base, 'testpace', version, 'bin')
       mkdirSync(bin, { recursive: true })
       writeFileSync(join(bin, 'testpace'), `#!/bin/sh\necho "${base.includes('.codex') ? 'codex' : 'claude'} ${version} $*"\n`, { mode: 0o755 })
+      if (complete) {
+        mkdirSync(join(base, 'testpace', version, 'src'), { recursive: true })
+        writeFileSync(join(base, 'testpace', version, 'src', 'cli.ts'), '')
+      }
     }
     const run = (extra: NodeJS.ProcessEnv = {}) => spawnSync(entry, ['status'], { env: { ...env, ...extra }, encoding: 'utf8' })
     const none = run()
-    assert.equal(none.status, 2, '找不到装着的插件：退出码 2，合并门当成没法检查，不挡')
-    assert.match(none.stderr, /没找到装着的 testpace 插件/)
+    assert.equal(none.status, 2, '找不到装着的插件：退出码 2（配置问题）')
+    assert.match(none.stderr, /没找到装着的、完整的 testpace 插件/)
     // Claude Code 只认安装记录里的：卸载、降级后缓存里留下的旧目录不算
     const claudeCache = join(home, '.claude', 'plugins', 'cache', 'm')
     const record = join(home, '.claude', 'plugins', 'installed_plugins.json')
@@ -241,6 +245,10 @@ describe('固定命令入口', () => {
     claudeInstalls('0.10.0')
     fake(join(home, '.codex', 'plugins', 'cache', 'x'), '0.9.5')
     assert.equal(run().stdout, 'claude 0.10.0 status\n', '按版本号比，不按字面')
+    fake(join(home, '.codex', 'plugins', 'cache', 'x'), '0.10.0', false)
+    assert.equal(run().stdout, 'claude 0.10.0 status\n', '版本一样时 Codex 那份缺 src/（缓存只复制了一部分）：不用它')
+    fake(join(home, '.codex', 'plugins', 'cache', 'x'), '0.11.0', false)
+    assert.equal(run().stdout, 'claude 0.10.0 status\n', '残缺的那份版本再高也不用')
     fake(join(home, '.codex', 'plugins', 'cache', 'x'), '0.11.0')
     assert.equal(run().stdout, 'codex 0.11.0 status\n', 'Codex 装的更新就用 Codex 的')
     rmSync(join(home, '.codex'), { recursive: true })

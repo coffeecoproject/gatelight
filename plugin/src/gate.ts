@@ -18,8 +18,14 @@ import { compareVersions, VERSION } from './version.ts'
 const HOOK = 'testpace'
 const EVENT = 'reference-transaction'
 
-const NO_TESTPACE = 'testpace 合并门：找不到 testpace 命令（插件没启用），这次没有检查。'
-const OLD_TESTPACE = 'testpace 合并门：这个会话里的 testpace 没法做合并门的检查（版本太旧，或找不到能运行它的 node、插件没装好），这次没有检查。插件更新后，开着的会话要重开才换成新版本。'
+/**
+ * testpace gate 拒绝这次更新时的退出码。钩子只认它和 0：别的退出码都不是检查结论，放行。
+ * 不和 node、sh 自己出错时的退出码（1、2、9、13、126、127、128 以上等）重合：
+ * testpace 没能运行（找不到命令、插件没装全、找不到 node、崩了）时不会碰巧拿到它。
+ */
+export const GATE_REJECT = 20
+
+const NOT_CHECKED = 'testpace 合并门：testpace 没有给出检查结论（退出码 %s），这次没有检查。可能是找不到 testpace 命令、插件没装全、找不到能运行它的 node，或会话里的 testpace 是旧版本（插件更新后，开着的会话要重开才换成新版本）。'
 
 /**
  * 钩子命令，写在全局 git 配置里，所有仓库都跑它。git 用 sh 运行，把钩子参数接在命令后面，
@@ -29,19 +35,20 @@ const OLD_TESTPACE = 'testpace 合并门：这个会话里的 testpace 没法做
  *   不来回覆盖。正文没变时不看这一句，发版不用重配。
  * - 只管 agent 的命令（命令环境里有已接入的 agent 的标记变量，见 agent.ts 的 AGENTS），用户自己在终端里的操作不管。
  * - 没有分支要动（只是远程跟踪分支、HEAD）的不调用 testpace：agent 每次更新引用都会经过这里，不用每次启动 node。
- * - 找不到 testpace 命令时不挡；仓库里有 testpace.json（钩子在工作区根目录运行）才说一句，别的仓库不打扰。
- * - testpace gate 只用退出码 0（放行）和 1（拦下）。2 是没法检查：还没有 gate 命令的旧版 testpace
- *   （插件更新后，开着的会话要重开才换成新版本）、找不到能运行它的 node、固定入口找不到装着的插件。和找不到 testpace 一样处理。
+ * - 只有 testpace gate 明确拒绝（退出码 GATE_REJECT）才拦。别的都是没检查：放行，仓库里有 testpace.json
+ *   （钩子在工作区根目录运行）才说一句、附上 testpace 的输出，别的仓库不打扰。
  */
 const HOOK_BODY = [
   'testpace_gate() {',
   `[ "$1" = prepared ] && [ -n "${AGENT_MARKERS.map(name => `$${name}`).join('')}" ] || return 0;`,
   `testpace_refs=$(cat); case $testpace_refs in *' refs/heads/'*) ;; *) return 0 ;; esac;`,
-  `command -v testpace >/dev/null 2>&1 || { [ ! -f testpace.json ] || echo '${NO_TESTPACE}' >&2; return 0; };`,
   `testpace_msg=$(printf '%s\\n' "$testpace_refs" | testpace gate 2>&1); testpace_code=$?;`,
-  `if [ "$testpace_code" = 2 ]; then [ ! -f testpace.json ] || echo '${OLD_TESTPACE}' >&2; return 0; fi;`,
+  `[ "$testpace_code" != 0 ] || return 0;`,
+  `if [ "$testpace_code" = ${GATE_REJECT} ]; then printf '%s\\n' "$testpace_msg" >&2; return 1; fi;`,
+  `[ -f testpace.json ] || return 0;`,
+  `printf '${NOT_CHECKED}\\n' "$testpace_code" >&2;`,
   `[ -z "$testpace_msg" ] || printf '%s\\n' "$testpace_msg" >&2;`,
-  'return "$testpace_code";',
+  'return 0;',
   '}; testpace_gate',
 ].join(' ')
 

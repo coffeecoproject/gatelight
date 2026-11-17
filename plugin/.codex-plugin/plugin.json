@@ -1,6 +1,6 @@
 {
   "name": "testpace",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Test pacing for coding agents: run the tests a change reaches while working, prove the full suite passed before landing, and record where test time goes",
   "author": {
     "name": "coffeecoproject"
