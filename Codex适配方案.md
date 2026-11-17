@@ -251,7 +251,7 @@ testpace 的命令要在沙箱外跑：要写 `.git/testpace/`，项目的测试
 - 旧版本来回改全局钩子（2.8 第 3 条）实际出现了：Claude Code 里装的还是 0.5.0，它把 0.6.0 的钩子命令当成"不是这一版的"，下次开 Claude Code 会话会改回旧命令（只认 `CLAUDECODE`）；Codex 会话开始又改回新的。Claude Code 里的插件升到 0.6.0 以后就不会了。
 - 在 Codex 沙箱里跑 `testpace status` 会因为写不了"看过结果"退出码 2；结果照常输出，提权再跑一次才会记下看过。（复查后改成沙箱里直接拒跑 status）
 
-留在机器上的：Codex 里装着这个分支的 testpace 0.6.0（marketplace 指向这个 worktree）、`~/.local/bin/testpace`、全局 git 配置里 0.6.0 的合并门钩子。实测前的配置备份在这个会话的 scratchpad。
+实测期间 Codex 的 marketplace 临时指向这个分支的 worktree；落地后已改指仓库主目录（见文末"落地"）。
 
 **复查后改的（2026-11-17）**：
 
@@ -265,3 +265,13 @@ testpace 的命令要在沙箱外跑：要写 `.git/testpace/`，项目的测试
 - 测试：类型检查通过；agents、cli、focused、units、hooks 134 个全过（shell.test.ts 没跑）。合并门"更新的版本"那条测试改用正文不同的命令，否则正文一样会按"已装上"通过，测不到只升不降。
 
 主线程第二轮审查后收窄两处：合并门不看 dsh（"只留口子"）；Claude Code 的标记只留 `CLAUDECODE`，会话号照旧取 `CLAUDE_CODE_SESSION_ID`（测试里给会话号的地方一起带上 `CLAUDECODE`）。这样钩子正文和实测时写进全局配置的一样，本机不会来回改。过渡期还会来回覆盖的只有 Claude Code 里的 0.5.0：合进 main 后把 Claude Code 的插件更新到 0.6.0。
+
+## 8. 落地（2026-11-17）
+
+- 合进 main：7eb8836，发版号 0.6.0。合并前在提交的代码上跑了插件的全部测试（6 个文件，含 shell.test.ts），140 个全过。
+- Claude Code 的插件已更新到 0.6.0；`testpace install` 把全局合并门和 `~/.local/bin/testpace` 更新成 0.6.0 版。
+- Codex 的 marketplace 改指仓库主目录，重装了 testpace 0.6.0；实测用的分支和 worktree 已删。
+- 第 4 节：固定入口已放；命令放行规则没放（Codex 下每次提权）；layermap 的 Codex 命令入口还没定。
+- 还没验证：`systemMessage` 在 Codex 交互界面里显不显示。
+- 过渡期提醒：更新前就开着的 Claude Code 会话还在跑 0.5.0，会话开始或压缩时可能把合并门改回只认 `CLAUDECODE` 的旧版；重开这些会话即可，之后任何 0.6.0 会话开始时也会改回新版。
+- dsh 接入暂缓。
