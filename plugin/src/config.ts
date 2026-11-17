@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { PROJECT_ENV } from './execute.ts'
 
 export const CONFIG_FILE = 'testpace.json'
 export const COMMAND_KEYS = ['fast', 'files', 'full'] as const
@@ -95,12 +96,12 @@ export function commandWord(command: string): string | undefined {
   return undefined
 }
 
-/** 在仓库根目录用 sh 的 `command -v` 找命令，内建命令、PATH 和相对路径都认。 */
+/** 在仓库根目录用 sh 的 `command -v` 找命令，内建命令、PATH 和相对路径都认。PATH 和跑项目命令时一样，testpace 自己也找得到。 */
 export function commandExists(root: string, command: string): boolean {
   const word = commandWord(command)
   if (!word) return false
   try {
-    execFileSync('/bin/sh', ['-c', 'command -v -- "$1"', 'sh', word], { cwd: root, stdio: 'ignore' })
+    execFileSync('/bin/sh', ['-c', 'command -v -- "$1"', 'sh', word], { cwd: root, env: PROJECT_ENV, stdio: 'ignore' })
     return true
   } catch {
     return false

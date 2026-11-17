@@ -3,6 +3,17 @@
 
 import { spawn } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
+import { delimiter } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/**
+ * 跑项目命令的环境：testpace 自己的命令目录放在 PATH 最前面。项目命令和脚本里调的 testpace（比如 files 里的
+ * testpace run）就是正在跑的这一版，Claude Code、Codex、合并门的钩子里都一样，不靠 PATH 上碰巧有哪一版。
+ */
+export const PROJECT_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  PATH: [fileURLToPath(new URL('../bin', import.meta.url)), process.env.PATH].filter(Boolean).join(delimiter),
+}
 
 export interface Execution {
   /** 正常退出时的退出码；被信号终止或没能启动时为 null。 */
@@ -25,6 +36,7 @@ export function execute(command: string, args: string[], cwd: string, logPath: s
   const script = args.length > 0 ? `${command} "$@"` : command
   const child = spawn('/bin/sh', ['-c', script, 'sh', ...args], {
     cwd,
+    env: PROJECT_ENV,
     stdio: ['ignore', log, log],
     detached: true,
   })
