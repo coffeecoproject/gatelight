@@ -51,14 +51,21 @@ testpace 不管测试的写法风格（分几层、怎么组织、写多细）�
 
 | 检查 | 做法 |
 |---|---|
-| 测试里不能留着只跑这一个（`.only`） | 留着时只跑了那几个也报全过。优先用测试框架自带的开关，比如 Playwright 的 `forbidOnly: true`；没有开关的，用项目已有的 lint 规则（如 eslint 的 jest、vitest 插件里的 `no-focused-tests`，Biome 的 `noFocusedTests`） |
-| 每个测试都要有断言 | 只调用一下函数、什么都不判断的测试永远会过。用项目已有的 lint 规则（如 eslint 的 jest、vitest、playwright 插件里的 `expect-expect`）；测试框架自带"测试必须有断言"的开关时也可以用它 |
+| 测试里不能留着只跑这一个（`.only`） | 留着时只跑了那几个也报全过。优先用测试框架自带的开关（见下面各框架的做法）；没有开关的，用 lint 规则（如 eslint 的 jest、vitest 插件里的 `no-focused-tests`，Biome 的 `noFocusedTests`） |
+| 每个测试都要有断言 | 只调用一下函数、什么都不判断的测试永远会过。优先在测试跑的时候查：测试框架自带的开关，或者数测试实际做了几次断言，写在辅助函数里的断言也认得出。做不到的，用 lint 规则（如 eslint 的 jest、vitest、playwright 插件里的 `expect-expect`） |
 | `files` 给了不存在的文件要失败 | 见第 2 步。这条是 testpace 约定本身要求的，所有项目都要做到 |
 
-- **什么时候加**：新项目，或者项目还没有自己的 lint 和测试规范时，加上前两条。项目已经有自己的 lint 和测试规范的，不动它原有的配置，只做 `files` 那条和第 6 步的抽查。
+各框架的做法（除了 node:test 的断言，都不用新装依赖）：
+
+- **Vitest**：配置的 `test` 里写 `allowOnly: false` 和 `expect: { requireAssertions: true }`。
+- **Playwright**：配置里写 `forbidOnly: true`。断言没有自带开关，加一个自定义报告器：`onTestEnd` 里只看通过的测试，在它的步骤（`result.steps`，逐层往下找）里找 `category` 是 `expect` 的，一个都没有就记下；`onEnd` 把记下的列出来，返回 `{ status: 'failed' }`，整轮就失败。往下找时跳过 `category` 是 `fixture`、`hook` 的步骤：共用的 fixture、`beforeEach` 里的断言不是测试自己的，算上它们，每个测试都会过关。只查 `tests` 规则圈的测试文件，准备登录状态这类 setup 不查。报告器写进配置的 `reporter`：命令行传 `--reporter` 会把配置里的整个换掉，`files` 要别的报告（比如给脚本读的 JSON）也写进配置。写好后放一个没有断言的测试跑一次，确认它被点名、整轮失败，再删掉。
+- **node:test**：不加 `--test-only` 时 `.only` 不起作用，测试命令里别加它，这条就不用做。断言没有自带开关，用 eslint 的 jest 插件的 `jest/expect-expect`，配上 `additionalTestBlockFunctions: ['test']`（插件认不出从 `node:test` 导入的 `test`）和 `assertFunctionNames: ['assert', 'assert.*', 't.assert.*']`。项目没有 eslint 时要新装依赖，照下面先问用户。
+- **别的框架**：先找自带的开关，没有再用 lint 规则。
+
+- **什么时候加**：新项目，或者项目还没有自己的 lint 和测试规范时，加上前两条。项目已经有自己的 lint 和测试规范的，不动它原有的 lint 配置；前两条还缺、又能用测试框架自带的开关或报告器补上（不用新装依赖）的，照样补上。所有项目都做 `files` 那条和第 6 步的抽查。
 - **放在哪**：前两条要放进 `fast`、`files` 或 `full` 会跑到的地方（比如 lint 本来就在 `fast` 里），否则不起作用。
 - **要新装依赖时**（比如项目完全没有 lint 工具），先用大白话问用户，比如"要给项目装一个检查工具，用来发现写坏的测试，会往项目里加一个依赖，可以吗"。用户不同意就跳过前两条，第 7 步告诉用户少了什么。
-- **加上后先跑一次**：测试通过自己写的辅助函数断言时（比如 `expectSaved(page)`），把这些函数名配进规则（`expect-expect` 的 `assertFunctionNames`），别把它们误报成没有断言。剩下被报出来的已有测试多半是假绿：不改测试，把它们列给用户，用大白话说明，问用户怎么处理。
+- **加上后先跑一次**：用 lint 规则查断言时，测试通过自己写的辅助函数断言的（比如 `expectSaved(page)`），把这些函数名配进规则（`expect-expect` 的 `assertFunctionNames`），别把它们误报成没有断言。剩下被报出来的已有测试多半是假绿：不改测试，把它们列给用户，用大白话说明，问用户怎么处理。
 - `.skip`（暂时跳过某个测试）不禁止：有时是正当的。
 
 ## 步骤
