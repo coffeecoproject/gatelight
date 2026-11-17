@@ -104,7 +104,7 @@ codex plugin add testpace@testpace
 
 需要 Node 22.18 以上（直接运行 TypeScript，不需要构建）和 git 2.54 以上（PATH 里排在前面的那个；合并门的测试要用）。测试用自己的全局 git 配置，不读也不改 `~/.gitconfig`。
 
-这个仓库自己也接入了 testpace（`testpace.json`）：先 `npm install`，改完跑 `testpace focused`，合回 main 前跑 `testpace full`。`fast`、`full` 是类型检查加 lint（lint 只查每个测试都有断言），`files` 是仓库里这一版的 `plugin/bin/testpace run node-test`：测的就是正在改的跑法，不是本机装的那版。
+这个仓库自己也接入了 testpace（`testpace.json`）：先 `npm install`，改完跑 `testpace focused`，合回 main 前跑 `testpace full`。`fast`、`full` 是类型检查加 lint（lint 只查每个测试都有断言），`files` 是 `testpace run node-test`：用的是跑整组的那个 testpace（本机装的），不是仓库里正在改的这一版，正在改的跑法要是坏了（比如吞掉失败），不会连整组的结论一起带坏。`testpace run` 自己的测试另外调仓库里这一版（`plugin/bin/testpace`）。
 
 ```bash
 testpace focused
