@@ -40,6 +40,11 @@ describe('testpace run vitest', () => {
     write('excluded.test.mjs', "import { expect, test } from 'vitest'\ntest('对', () => { expect(1).toBe(1) })\n")
     write('ok.test.ts', "import { expect, test } from 'vitest'\ntest('对', () => { expect(1).toBe(1) })\n")
     write('ok.test.tsx', "import { expect, test } from 'vitest'\ntest('也对', () => { expect(1).toBe(1) })\n")
+    write('nested.test.ts', "import { describe, expect, test } from 'vitest'\ndescribe('外层', () => {\n  describe('内层', () => {\n    test('对', () => { expect(1).toBe(1) })\n  })\n})\n")
+    // 另一份配置带着项目自己的报告器：testpace 不能把它换掉
+    write('own-reporter.mjs', "export default class { onTestRunEnd() { console.log('项目自己的报告器跑过了') } }\n")
+    write('own.config.mjs', "export default { test: { include: ['**/*.test.ts'], reporters: ['default', './own-reporter.mjs'] } }\n")
+    write('broken.config.mjs', "throw new Error('配置写错了')\n")
   })
 
   test('按行跑只跑那几行；同一个文件也给了整个文件时整个跑', () => {
@@ -55,7 +60,7 @@ describe('testpace run vitest', () => {
   test('给的行上没有测试、文件里没有测试时失败并点名，不说成全被跳过', () => {
     const r = run('app/pick.test.ts:4', 'app/empty.test.ts', 'app/ok.test.ts')
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /一个测试都没跑到（[^）]+）：app\/pick\.test\.ts、app\/empty\.test\.ts\n/)
+    assert.match(r.out, /一个测试都没跑到（[^）]+）：app\/pick\.test\.ts:4、app\/empty\.test\.ts\n/)
     assert.doesNotMatch(r.out, /全被跳过/)
   })
 
@@ -68,13 +73,43 @@ describe('testpace run vitest', () => {
   test('测试全被跳过不算失败，但要说一句；只跳过一部分的不说', () => {
     const r = run('app/skipped.test.ts', 'app/partly.test.ts')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /这些文件的测试这次全被跳过，什么都没验证：app\/skipped\.test\.ts\n/)
+    assert.match(r.out, /这些给的文件或行上的测试这次全被跳过，什么都没验证：app\/skipped\.test\.ts\n/)
   })
 
   test('按名字片段还跑了没给的文件时说一句', () => {
     const r = run('app/ok.test.ts')
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /框架还跑了这些没给的文件（[^）]+）：app\/ok\.test\.tsx\n/)
+  })
+
+  test('按行给外层分组的行，跑组里的测试，不算没跑到', () => {
+    const r = run('app/nested.test.ts:2')
+    assert.equal(r.code, 0, r.out)
+    assert.doesNotMatch(r.out, /没跑到|全被跳过/)
+  })
+
+  test('项目配置里的报告器照常起作用', () => {
+    const r = run('--vitest-arg=--config=own.config.mjs', 'app/ok.test.ts')
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /项目自己的报告器跑过了/)
+  })
+
+  test('Vitest 不认的参数、testpace 不支持的参数（另起分支、不跑一次就结束的）退出码 2', () => {
+    const unknown = run('--vitest-arg=--fooBar=1', 'app/ok.test.ts')
+    assert.equal(unknown.code, 2, unknown.out)
+    assert.match(unknown.out, /Vitest 不认这些参数/)
+    const watch = run('--vitest-arg=--watch', 'app/ok.test.ts')
+    assert.equal(watch.code, 2, watch.out)
+    assert.match(watch.out, /testpace run vitest 不支持这些参数：--watch/)
+    // 没跑测试，不再逐个核对
+    assert.doesNotMatch(unknown.out + watch.out, /没跑到/)
+  })
+
+  test('配置写错（选测试之前就停了）时失败，不逐个核对', () => {
+    const r = run('--vitest-arg=--config=broken.config.mjs', 'app/ok.test.ts')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /Startup Error[\s\S]*配置写错了/)
+    assert.doesNotMatch(r.out, /没跑到/)
   })
 
   test('--vitest-arg 交给 Vitest', () => {
@@ -90,12 +125,13 @@ describe('testpace run vitest', () => {
 
   test('被中断时停掉 Vitest 和它跑测试的子进程、删掉临时文件，退出码 130', async () => {
     const pidFile = join(dir, 'worker.pid')
-    write('slow.test.ts', `import { expect, test } from 'vitest'\nimport { writeFileSync } from 'node:fs'\ntest('很慢', async () => {\n  writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))\n  await new Promise(resolve => setTimeout(resolve, 60_000))\n  expect(1).toBe(1)\n}, 120_000)\n`)
+    // 跑测试的子进程一直忙着（同步地跑，不回头处理消息）：Vitest 退出时转告不到它，要 testpace 给整个进程组发信号才停得下来
+    write('slow.test.ts', `import { expect, test } from 'vitest'\nimport { writeFileSync } from 'node:fs'\ntest('很慢', () => {\n  writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))\n  const end = Date.now() + 60_000\n  while (Date.now() < end) {}\n  expect(1).toBe(1)\n}, 120_000)\n`)
     const child = spawn(BIN, ['run', 'vitest', '--cwd', 'app', 'app/slow.test.ts'], { cwd: dir, env: { ...ENV, TMPDIR: tmp }, stdio: 'ignore' })
     const closed = new Promise<number | null>(resolve => child.on('close', code => resolve(code)))
     while (!existsSync(pidFile)) await sleep(50)
     const worker = Number(readFileSync(pidFile, 'utf8'))
-    // 和 testpace 停整个进程组时一样，用 SIGTERM：Vitest 自己收到 SIGTERM 会把跑测试的子进程丢下不管
+    // 只给 testpace 发：跑测试的子进程收不到这个信号，要靠 testpace 转给整个进程组
     child.kill('SIGTERM')
     const code = await Promise.race([closed, sleep(10_000, 'timeout' as const, { ref: false })])
     if (code === 'timeout') {

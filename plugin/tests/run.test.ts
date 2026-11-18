@@ -33,6 +33,8 @@ describe('testpace run node-test', () => {
     writeFileSync(join(dir, 'failing.test.mjs'), "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\ntest('算错', () => assert.equal(1 + 1, 3))\n")
     writeFileSync(join(dir, 'global.test.mjs'), "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\ntest('预加载过', () => assert.equal(globalThis.preloaded, true))\n")
     writeFileSync(join(dir, 'setup.mjs'), 'globalThis.preloaded = true\n')
+    writeFileSync(join(dir, 'nested.test.mjs'), "import { describe, test } from 'node:test'\ndescribe('外层', () => {\n  describe('内层', () => {\n    test('对', () => {})\n  })\n})\ndescribe('整组先不跑', { skip: '还没做' }, () => {\n  test('不跑', () => {})\n})\n")
+    writeFileSync(join(dir, 'group-skipped.test.mjs'), "import { describe, test } from 'node:test'\ndescribe('整组先不跑', { skip: true }, () => {\n  test('不跑', () => {})\n})\n")
   })
 
   test('文件不存在或不是文件时退出码 2，一个测试都不跑', () => {
@@ -55,13 +57,29 @@ describe('testpace run node-test', () => {
     assert.equal(r.code, 1, r.out)
     assert.match(r.out, /✖ 算错/)
     assert.match(r.out, /一个测试都没跑到（没加载起来、里面没有测试、给的行上没有测试，或被框架的配置排除了）：empty\.test\.mjs\n/)
+    // 已有测试没过时，没跑到的可能是框架提前停下了，提醒先修没过的
+    assert.match(r.out, /这次已有测试没过，框架可能没跑到它们就停下了/)
+  })
+
+  test('按行给的整个文件跑，跑完核对这一行：测试或任一层分组声明在这一行的才算，行上没有的失败并点名这一行', () => {
+    assert.equal(run('nested.test.mjs:2', 'nested.test.mjs:3', 'nested.test.mjs:4').code, 0)
+    const r = run('nested.test.mjs:4', 'nested.test.mjs:5')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /一个测试都没跑到（[^）]+）：nested\.test\.mjs:5\n/)
+    assert.doesNotMatch(r.out, /已有测试没过/)
+  })
+
+  test('整组被跳过（node:test 只报这一组、不报组里的测试）算全被跳过，不算没跑到', () => {
+    const r = run('group-skipped.test.mjs', 'nested.test.mjs:7')
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /这些给的文件或行上的测试这次全被跳过，什么都没验证：group-skipped\.test\.mjs、nested\.test\.mjs:7\n/)
   })
 
   test('测试全被跳过不算失败，但要说一句', () => {
     const r = run('skipped.test.mjs', 'partly.test.mjs')
     assert.equal(r.code, 0, r.out)
     // 只跳过了一部分的不算
-    assert.match(r.out, /这些文件的测试这次全被跳过，什么都没验证：skipped\.test\.mjs\n/)
+    assert.match(r.out, /这些给的文件或行上的测试这次全被跳过，什么都没验证：skipped\.test\.mjs\n/)
   })
 
   test('认 文件:行号 和 文件:行号:列号：整个文件跑一次，说一句', () => {
@@ -75,6 +93,17 @@ describe('testpace run node-test', () => {
     const r = run('--cwd', 'sub', '--node-arg=--import=../setup.mjs', 'global.test.mjs')
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /✔ 预加载过/)
+  })
+
+  test('框架在选测试之前就停了（没写报告）时不核对，用它的退出码；退出码是 0 也不算通过', () => {
+    const bad = run('--node-arg=--no-such-flag', 'ok.test.mjs')
+    assert.notEqual(bad.code, 0, bad.out)
+    assert.doesNotMatch(bad.out, /没跑到/)
+    // node --version 只印版本就退出，一个测试都不跑
+    const version = run('--node-arg=--version', 'ok.test.mjs')
+    assert.equal(version.code, 1, version.out)
+    assert.match(version.out, /框架退出了，却没写出跑了哪些测试，什么都没验证到/)
+    assert.doesNotMatch(version.out, /没跑到/)
   })
 
   test('不认识的框架时退出码 2，列出认的框架', () => {
@@ -143,7 +172,7 @@ describe('files 里写 testpace run', () => {
     const env = { ...ENV, PATH: path }
     const status = testpace(repo, ['status'], env)
     assert.match(status.out, /files: testpace run node-test\n/, status.out)
-    const r = testpace(repo, ['files', 'tests/price.test.mjs:1'], env)
+    const r = testpace(repo, ['files', 'tests/price.test.mjs:5'], env)
     assert.equal(r.code, 0, r.out)
   })
 })

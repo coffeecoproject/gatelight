@@ -35,12 +35,17 @@ describe('testpace run playwright', () => {
     write('own-reporter.mjs', "export default class { onEnd() { console.log('项目自己的报告器跑过了') } }\n")
     // 配置排除 ignored 开头的文件：给了它 Playwright 也不跑
     write('playwright.config.mjs', "export default { testDir: './tests', testIgnore: /ignored/, reporter: [['list'], ['./own-reporter.mjs']] }\n")
+    write('broken.config.mjs', "throw new Error('配置写错了')\n")
     write('tests/pick.spec.mjs', "import { expect, test } from '@playwright/test'\n\ntest('对', () => {\n  expect(1 + 1).toBe(2)\n})\n\ntest('错', () => {\n  expect(1 + 1).toBe(3)\n})\n")
     write('tests/ok.spec.mjs', passing('也对'))
     write('tests/empty.spec.mjs', "import { test } from '@playwright/test'\n")
     write('tests/ignored.spec.mjs', passing('被排除'))
     write('tests/skipped.spec.mjs', "import { test } from '@playwright/test'\ntest.skip('先不跑', () => {})\n")
     write('tests/t(1)+x/odd.spec.mjs', passing('路径怪'))
+    write('tests/nested.spec.mjs', "import { expect, test } from '@playwright/test'\ntest.describe('外层', () => {\n  test('对', () => { expect(1).toBe(1) })\n})\n")
+    // serial 模式：前一个没过，后一个就不跑了，Playwright 把它报成跳过
+    write('tests/serial.spec.mjs', "import { expect, test } from '@playwright/test'\ntest.describe.configure({ mode: 'serial' })\ntest('先错', () => { expect(1).toBe(2) })\ntest('后面的', () => { expect(1).toBe(1) })\n")
+    write('tests/a-fail.spec.mjs', "import { expect, test } from '@playwright/test'\ntest('错', () => { expect(1).toBe(2) })\n")
   })
 
   test('按行跑只跑那几行；同一个文件也给了整个文件时整个跑', () => {
@@ -55,7 +60,40 @@ describe('testpace run playwright', () => {
   test('给的行上没有测试、文件里没有测试、文件被配置排除时算失败，哪怕别的文件跑了测试、Playwright 照样通过', () => {
     const r = run('e2e/tests/pick.spec.mjs:4', 'e2e/tests/empty.spec.mjs', 'e2e/tests/ignored.spec.mjs', 'e2e/tests/ok.spec.mjs')
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /一个测试都没跑到（[^）]+）：e2e\/tests\/pick\.spec\.mjs、e2e\/tests\/empty\.spec\.mjs、e2e\/tests\/ignored\.spec\.mjs\n/)
+    assert.match(r.out, /一个测试都没跑到（[^）]+）：e2e\/tests\/pick\.spec\.mjs:4、e2e\/tests\/empty\.spec\.mjs、e2e\/tests\/ignored\.spec\.mjs\n/)
+  })
+
+  test('同一个文件给两行、其中一行上没有测试时失败并点名这一行，哪怕 Playwright 照样通过', () => {
+    const r = run('e2e/tests/pick.spec.mjs:3', 'e2e/tests/pick.spec.mjs:4')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /一个测试都没跑到（[^）]+）：e2e\/tests\/pick\.spec\.mjs:4\n/)
+  })
+
+  test('按行给分组的行，跑组里的测试，不算没跑到', () => {
+    const r = run('e2e/tests/nested.spec.mjs:2')
+    assert.equal(r.code, 0, r.out)
+    assert.doesNotMatch(r.out, /没跑到|全被跳过/)
+  })
+
+  test('前面的没过、后面的就没跑（serial 模式）时算没跑到，不算跳过', () => {
+    const r = run('e2e/tests/serial.spec.mjs:3', 'e2e/tests/serial.spec.mjs:4')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /一个测试都没跑到（[^）]+）：e2e\/tests\/serial\.spec\.mjs:4\n/)
+    assert.doesNotMatch(r.out, /全被跳过/)
+  })
+
+  test('框架提前停下时，没跑到的照样点名，并提醒先修没过的', () => {
+    const r = run('--playwright-arg=--max-failures=1', '--playwright-arg=--workers=1', 'e2e/tests/a-fail.spec.mjs', 'e2e/tests/ok.spec.mjs')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /一个测试都没跑到（[^）]+）：e2e\/tests\/ok\.spec\.mjs\n/)
+    assert.match(r.out, /这次已有测试没过，框架可能没跑到它们就停下了/)
+  })
+
+  test('配置写错（选测试之前就停了）时失败，不逐个核对', () => {
+    const r = run('--playwright-arg=--config=broken.config.mjs', 'e2e/tests/ok.spec.mjs')
+    assert.notEqual(r.code, 0, r.out)
+    assert.match(r.out, /配置写错了/)
+    assert.doesNotMatch(r.out, /没跑到/)
   })
 
   test('项目配置里的报告器照常起作用', () => {
@@ -75,7 +113,7 @@ describe('testpace run playwright', () => {
   test('测试全被跳过不算失败，但要说一句', () => {
     const r = run('e2e/tests/skipped.spec.mjs', 'e2e/tests/ok.spec.mjs')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /这些文件的测试这次全被跳过，什么都没验证：e2e\/tests\/skipped\.spec\.mjs\n/)
+    assert.match(r.out, /这些给的文件或行上的测试这次全被跳过，什么都没验证：e2e\/tests\/skipped\.spec\.mjs\n/)
   })
 
   test('--playwright-arg 交给 Playwright', () => {

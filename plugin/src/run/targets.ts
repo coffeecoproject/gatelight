@@ -61,34 +61,66 @@ function isFile(path: string): boolean {
   }
 }
 
-/** 一个测试跑完的记录：哪个文件（绝对路径），是不是被跳过。 */
+/**
+ * 一个测试的记录，三个框架的计数报告器都写成这样：哪个文件（真实的绝对路径）、声明在哪一行、外层各级分组（describe）声明在哪几行、结果。
+ * 只记跑过或被跳过的；没跑到的（框架提前停下、准备项目没过）不记。
+ * 没有行号的（Vitest 没打开 includeTaskLocation 时）只能按整个文件核对。
+ */
 export interface Ran {
   file: string
-  skipped: boolean
+  line?: number
+  ancestors: number[]
+  status: 'passed' | 'failed' | 'skipped'
 }
 
-/** 读插件自己的计数报告器写的报告：每行一条 Ran。报告没写出来（框架起来就出错）时返回空。 */
-export function readRanLines(report: string): Ran[] {
-  if (!existsSync(report)) return []
+/** 读计数报告器写的报告：每行一条 Ran。没写报告（框架在选测试之前就停了）时返回 undefined。 */
+export function readRanLines(report: string): Ran[] | undefined {
+  if (!existsSync(report)) return undefined
   return readFileSync(report, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as Ran)
 }
 
+export interface Tally {
+  /** 一个测试都没跑到的：整个文件给的写文件，按行给的写原样的 文件:行号。 */
+  notRun: string[]
+  /** 选中的测试全被跳过的，写法同上。 */
+  allSkipped: string[]
+  /** 框架还跑了的没给的文件（按名字片段匹配到的，或给的测试依赖的准备项目）。 */
+  others: string[]
+  /** 有测试没过：没跑到的可能是框架提前停下了。 */
+  failed: boolean
+}
+
 /**
- * 逐个文件核对：一个测试都没跑到的算失败；测试全被跳过的不算失败，但要说；
- * 框架还跑了没给的文件（按名字片段匹配到的，或给的测试依赖的准备项目）的，也要说。
+ * 逐个核对给的文件和 文件:行号：整个文件给的看这个文件的测试，按行给的看这一行选中的测试
+ * （测试自己声明在这一行，或它外层哪一级分组声明在这一行；三个框架按行跑都是这么选的）。
+ * 一个测试都没跑到的算失败；全被跳过的不算失败，但要说。同一个文件也给了整个文件时，按行给的不另核对。
  */
-export function tally(targets: Target[], ran: Ran[]): { empty: Target[]; allSkipped: Target[]; others: string[] } {
-  const counts = new Map(targets.map(target => [target.path, { ran: 0, skipped: 0 }]))
+export function tally(targets: Target[], ran: Ran[]): Tally {
+  const byFile = new Map<string, Ran[]>(targets.map(target => [target.path, []]))
   const others = new Set<string>()
   for (const test of ran) {
-    const count = counts.get(test.file)
-    if (count) count[test.skipped ? 'skipped' : 'ran'] += 1
+    const tests = byFile.get(test.file)
+    if (tests) tests.push(test)
     else others.add(test.file)
   }
-  const count = (target: Target) => counts.get(target.path)!
-  return {
-    empty: targets.filter(target => count(target).ran + count(target).skipped === 0),
-    allSkipped: targets.filter(target => count(target).ran === 0 && count(target).skipped > 0),
-    others: [...others],
+  const notRun: string[] = []
+  const allSkipped: string[] = []
+  const check = (name: string, tests: Ran[]): void => {
+    if (tests.length === 0) notRun.push(name)
+    else if (tests.every(test => test.status === 'skipped')) allSkipped.push(name)
   }
+  for (const target of targets) {
+    const tests = byFile.get(target.path)!
+    if (target.whole) {
+      check(target.file, tests)
+      continue
+    }
+    const seen = new Set<number>()
+    for (const { text, line } of target.located) {
+      if (seen.has(line)) continue // 同一行带列号、不带列号各给了一次
+      seen.add(line)
+      check(text, tests.filter(test => test.line === line || test.ancestors.includes(line)))
+    }
+  }
+  return { notRun, allSkipped, others: [...others], failed: ran.some(test => test.status === 'failed') }
 }
