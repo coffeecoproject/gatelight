@@ -1,12 +1,12 @@
 // testpace run 各框架共用的跑法：解析选项和测试文件、起框架、跑完逐个文件核对、说明、退出码。
-// 各框架只管怎么起（命令和参数，报告写到哪）和怎么读报告，各一个文件（node-test.ts、vitest.ts、playwright.ts）。
+// 各框架只管怎么起（命令和参数，报告写到哪），各一个文件（node-test.ts、vitest.ts、playwright.ts）；报告都写成 targets.ts 的 Ran。
 
-import { spawn } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
-import { parseTargets, type Ran, type Target, tally } from './targets.ts'
+import { FRAMEWORK_KILL_AFTER_MS, type GroupRun, spawnGroup } from '../process-group.ts'
+import { parseTargets, readRanLines, type Target, tally } from './targets.ts'
 
 export interface Framework {
   /** 用法里的一行，比如 testpace run node-test [--cwd 目录] [--node-arg 参数]... 文件[:行号[:列号]]... */
@@ -16,12 +16,12 @@ export interface Framework {
   /** 能按行跑。不能的，按行给的整个文件跑，runner 说一句。 */
   byLine: boolean
   /**
-   * 怎么起：程序、参数，要另加的环境变量。cwd 是框架的工作目录，report 是给框架写报告的临时文件，args 是用户交给框架的参数。
+   * 怎么起：程序、参数，要另加的环境变量。cwd 是框架的工作目录，args 是用户交给框架的参数。
+   * report 是给框架写报告的临时文件：框架选好测试、跑完，把每个跑过或被跳过的测试写一行 Ran（见 targets.ts）；
+   * 选测试之前就停了（参数不认、配置写错）不写。
    * 起不了（比如项目里没装这个框架）时返回说明。
    */
   command(targets: Target[], args: string[], cwd: string, report: string): Command | string
-  /** 读报告：每个跑完的测试。报告没写出来（框架起来就出错）时返回空。 */
-  read(report: string): Ran[]
 }
 
 export interface Command {
@@ -72,20 +72,31 @@ export async function runFramework(framework: Framework, argv: string[]): Promis
       return 2
     }
     const run = await spawnFramework(command, cwd)
-    if (run.kind === 'error') {
-      console.error(`[testpace] 没能起 ${command.program}：${run.message}`)
+    if (run.interrupted) return 130
+    if (run.error) {
+      console.error(`[testpace] 没能起 ${command.program}：${run.error.code === 'ENOENT' ? 'PATH 上找不到它' : run.error.message}`)
       return 2
     }
-    if (run.kind === 'interrupted') return 130
+    // 被信号终止（不是 testpace 转过去的）算没过
+    const code = run.exitCode ?? 1
 
-    // 框架没过也照样核对：没跑到测试的文件一并说出来
-    const { empty, allSkipped, others } = tally(targets, framework.read(report))
-    const names = (list: Target[]) => list.map(target => target.file).join('、')
+    const ran = readRanLines(report)
+    // 没写报告：框架在选测试之前就停了，原因它已经说过，没有可核对的。退出码是 0 却没报告，什么都没验证到，不算通过
+    if (ran === undefined) {
+      if (code !== 0) return code
+      console.error('[testpace] 框架退出了，却没写出跑了哪些测试，什么都没验证到')
+      return 1
+    }
+    // 框架没过也照样核对：没跑到测试的文件和行一并说出来
+    const { notRun, allSkipped, others, failed } = tally(targets, ran)
     if (others.length > 0) console.log(`[testpace] 框架还跑了这些没给的文件（名字片段匹配到的，或给的测试依赖的准备项目）：${others.map(file => relative(process.cwd(), file)).join('、')}`)
-    if (allSkipped.length > 0) console.log(`[testpace] 这些文件的测试这次全被跳过，什么都没验证：${names(allSkipped)}`)
-    if (empty.length > 0) console.error(`[testpace] 这些文件一个测试都没跑到（没加载起来、里面没有测试、给的行上没有测试，或被框架的配置排除了）：${names(empty)}`)
-    if (run.code !== 0) return run.code
-    return empty.length > 0 ? 1 : 0
+    if (allSkipped.length > 0) console.log(`[testpace] 这些给的文件或行上的测试这次全被跳过，什么都没验证：${allSkipped.join('、')}`)
+    if (notRun.length > 0) {
+      console.error(`[testpace] 这些给的文件或行上一个测试都没跑到（没加载起来、里面没有测试、给的行上没有测试，或被框架的配置排除了）：${notRun.join('、')}`)
+      if (failed) console.error('[testpace] 这次已有测试没过，框架可能没跑到它们就停下了（比如 bail、max-failures、依赖的准备项目没过）：先修没过的测试，再看这几个')
+    }
+    if (code !== 0) return code
+    return notRun.length > 0 ? 1 : 0
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -122,31 +133,17 @@ function parseOptions(argv: string[], argOption: string): Options | string {
   return options
 }
 
-type FrameworkRun = { kind: 'done'; code: number } | { kind: 'error'; message: string } | { kind: 'interrupted' }
-
 /**
- * 起框架，输出直通。testpace 被中断时给框架发 SIGINT（不管 testpace 收到的是哪个信号）：
- * 框架都把它当成 Ctrl-C，停下并收拾自己起的进程；Vitest 5.0 及以前收到 SIGTERM 时会把跑测试的子进程丢下不管。等它退出再返回。
+ * 起框架，输出直通，不接输入（testpace 跑测试不回答框架的提问，比如 Vitest 问要不要装缺的包；框架在自己的进程组里，
+ * 从终端读输入会被系统停住）。testpace 被中断时（不管收到的是哪个信号）给框架的整个进程组发 SIGINT：框架当成 Ctrl-C 停下，
+ * 它起的跑测试的子进程也一起收到，不靠框架转告（Vitest 收到信号只管自己退出，跑测试的子进程要等手上的测试跑完才走）。
  */
-function spawnFramework({ program, args, env }: Command, cwd: string): Promise<FrameworkRun> {
-  const child = spawn(program, args, { cwd, stdio: 'inherit', ...(env ? { env: { ...process.env, ...env } } : {}) })
-  let interrupted = false
-  const forward = (): void => {
-    interrupted = true
-    child.kill('SIGINT')
-  }
-  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
-  for (const signal of signals) process.on(signal, forward)
-  return new Promise(resolvePromise => {
-    let done = false
-    const finish = (run: FrameworkRun): void => {
-      if (done) return // 启动失败时 error 和 close 都会来
-      done = true
-      for (const signal of signals) process.off(signal, forward)
-      resolvePromise(interrupted ? { kind: 'interrupted' } : run)
-    }
-    child.on('error', error => finish({ kind: 'error', message: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'PATH 上找不到它' : error.message }))
-    // 被信号终止（不是 testpace 转过去的）算没过
-    child.on('close', code => finish({ kind: 'done', code: code ?? 1 }))
+function spawnFramework({ program, args, env }: Command, cwd: string): Promise<GroupRun> {
+  return spawnGroup(program, args, {
+    cwd,
+    env: env ? { ...process.env, ...env } : process.env,
+    stdio: ['ignore', 'inherit', 'inherit'],
+    stopSignal: 'SIGINT',
+    killAfterMs: FRAMEWORK_KILL_AFTER_MS,
   })
 }

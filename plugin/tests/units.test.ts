@@ -8,7 +8,9 @@ import { matcher } from '../src/glob.ts'
 import { failedThenPassed, fileRole, landingCost, renderReport, repeatedFiles, rerunsAfterFailure, weekly } from '../src/report.ts'
 import { KEEP_LOGS, type RunRecord, Store } from '../src/store.ts'
 import { firstTest } from '../src/verify.ts'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnGroup } from '../src/process-group.ts'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -262,5 +264,43 @@ describe('verify', () => {
     assert.equal(firstTest('const testing = 1\nexport function it() {}\n'), undefined)
     // 钩子和配置那一行没有测试，按行跑会落空：跳过它们
     assert.deepEqual(firstTest("test.use({ locale: 'zh' })\ntest.beforeEach(() => {})\ntest.describe.configure({ mode: 'serial' })\ntest.skip('a', () => {})\n"), { line: 4, column: 1 })
+  })
+})
+
+describe('进程组', () => {
+  test('被中断时给整个组发停止信号，不肯退出的过一会儿强杀整个组，它起的进程一起停', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'testpace-group-'))
+    const pidFile = join(dir, 'pids')
+    // 子进程和它起的孙进程都不理 SIGTERM
+    const stubborn = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"
+    const script = `${stubborn}; const c = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(stubborn)}], { stdio: 'ignore' }); require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, process.pid + ' ' + c.pid)`
+    const running = spawnGroup(process.execPath, ['-e', script], { cwd: dir, env: process.env, stdio: 'ignore', stopSignal: 'SIGTERM', killAfterMs: 300 })
+    while (!existsSync(pidFile)) await sleep(20)
+    const pids = readFileSync(pidFile, 'utf8').split(' ').map(Number)
+    const alive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    await sleep(100) // 等孙进程挂好 SIGTERM 的处理
+    process.emit('SIGTERM')
+    const run = await Promise.race([running, sleep(5_000, 'timeout' as const, { ref: false })])
+    if (run === 'timeout') {
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL')
+      assert.fail('中断后 5 秒子进程还没停')
+    }
+    assert.equal(run.interrupted, true)
+    assert.equal(run.signal, 'SIGKILL')
+    // 孙进程被强杀后要等系统收走，最多等 2 秒
+    const grandchild = pids[1]!
+    for (let waited = 0; alive(grandchild) && waited < 2_000; waited += 20) await sleep(20)
+    if (alive(grandchild)) {
+      process.kill(grandchild, 'SIGKILL')
+      assert.fail('孙进程没跟着停')
+    }
+    rmSync(dir, { recursive: true, force: true })
   })
 })
