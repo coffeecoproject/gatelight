@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs'
 
 export const VERSION: string = (
-  JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8')) as { version: string }
+  JSON.parse(readFileSync(new URL('../../.claude-plugin/plugin.json', import.meta.url), 'utf8')) as { version: string }
 ).version
 
 /** 比较两个 x.y.z 版本号：a 新返回正数，旧返回负数，一样返回 0。 */

@@ -192,7 +192,7 @@ testpace 的命令要在沙箱外跑：要写 `.git/testpace/`，项目的测试
 
 **已做完**（单元测试 135 个通过，类型检查通过；shell.test.ts 没碰，没跑）：
 
-- `src/agent.ts` 认 agent：Codex 优先，dsh 认 `DSH_SHELL`、`DSH_SESSION_ID`；会话号、在不在沙箱都从这里取，`cli.ts` 不再直接读 `CLAUDE_*`。（复查后改成一张表，见下面“复查后改的”）
+- `src/base/agent.ts` 认 agent：Codex 优先，dsh 认 `DSH_SHELL`、`DSH_SESSION_ID`；会话号、在不在沙箱都从这里取，`cli.ts` 不再直接读 `CLAUDE_*`。（复查后改成一张表，见下面“复查后改的”）
 - 合并门：钩子命令认各 agent 的标记变量，开头记着 testpace 版本；更新的版本配的不改回去。
 - 停止门：每次整组只拦一次，拦过的记在会话状态（`blocked`），不再用 `stop_hook_active`，Claude Code 下也一样。
 - hook：入口参数说明是哪个 agent；工具名不分大小写；出错时输出 `systemMessage`，不再一声不响。Codex 会话开始时多说两句：要在沙箱外跑、没放固定入口时用插件里 `testpace` 的完整路径并先问用户。

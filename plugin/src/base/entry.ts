@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-const SOURCE = new URL('../entry/testpace', import.meta.url)
+const SOURCE = new URL('../../entry/testpace', import.meta.url)
 /** 入口文件里认得出是 testpace 放的那一行。 */
 const MARK = '# testpace 固定入口'
 

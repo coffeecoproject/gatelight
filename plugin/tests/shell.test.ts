@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { homedir } from 'node:os'
 import { describe, test } from 'node:test'
-import { invocations, runsCommand, tokenize } from '../src/shell.ts'
+import { invocations, runsCommand, tokenize } from '../src/base/shell.ts'
 
 describe('拆命令', () => {
   test('引号、转义、注释和操作符', () => {

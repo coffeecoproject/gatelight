@@ -1,11 +1,12 @@
 // 计时诊断：只汇总和报告，不替项目改任何东西。
 
-import { AGENTS } from './agent.ts'
+import { AGENTS } from '../base/agent.ts'
 import { COMMAND_KEYS } from './config.ts'
-import { isValidPass } from './coverage.ts'
-import { duration, day, short, when } from './format.ts'
-import type { Landing } from './git.ts'
-import { type RunRecord, testFile } from './store.ts'
+import { isValidPass } from '../base/coverage.ts'
+import { duration, day, short, when } from '../base/format.ts'
+import type { Landing } from '../base/git.ts'
+import type { PaceRun } from './record.ts'
+import { testFile } from './testlist.ts'
 
 /** fast 平均超过这个时长，提示它可能不是增量的。 */
 export const FAST_SLOW_MS = 20_000
@@ -21,7 +22,7 @@ export interface CommandStats {
   totalMs: number
 }
 
-export function commandStats(runs: RunRecord[]): Map<string, CommandStats> {
+export function commandStats(runs: PaceRun[]): Map<string, CommandStats> {
   const stats = new Map<string, CommandStats>()
   for (const run of runs) {
     const s = stats.get(run.kind) ?? { count: 0, pass: 0, fail: 0, totalMs: 0 }
@@ -35,13 +36,13 @@ export function commandStats(runs: RunRecord[]): Map<string, CommandStats> {
 }
 
 /** 谁跑的：agent 的名字；记了版本却没有 agent 的是用户在终端里跑的；版本也没有的是旧版本写的，不知道谁跑的。 */
-function runnerOf(run: RunRecord): string {
+function runnerOf(run: PaceRun): string {
   if (run.agent) return AGENTS[run.agent].name
   return run.version ? '终端' : '未记录（旧版本）'
 }
 
 /** 按谁跑的分开：次数、合计用时、整组次数，多的在前。只有一种时返回空：不用分。 */
-export function byRunner(runs: RunRecord[]): Array<{ runner: string; count: number; totalMs: number; fulls: number }> {
+export function byRunner(runs: PaceRun[]): Array<{ runner: string; count: number; totalMs: number; fulls: number }> {
   const rows = new Map<string, { runner: string; count: number; totalMs: number; fulls: number }>()
   for (const run of runs) {
     const runner = runnerOf(run)
@@ -55,7 +56,7 @@ export function byRunner(runs: RunRecord[]): Array<{ runner: string; count: numb
 }
 
 /** 测试文件被 files 跑了多少次，多的在前。 */
-export function repeatedFiles(runs: RunRecord[]): Array<[string, number]> {
+export function repeatedFiles(runs: PaceRun[]): Array<[string, number]> {
   const counts = new Map<string, number>()
   for (const run of runs) {
     // 连跑（--repeat）是有意的，不算反复跑
@@ -67,8 +68,8 @@ export function repeatedFiles(runs: RunRecord[]): Array<[string, number]> {
 }
 
 /** 每个工作区里，整组失败后连续又跑了几轮才通过。 */
-export function rerunsAfterFailure(runs: RunRecord[]): number[] {
-  const byWorktree = new Map<string, RunRecord[]>()
+export function rerunsAfterFailure(runs: PaceRun[]): number[] {
+  const byWorktree = new Map<string, PaceRun[]>()
   for (const run of runs) {
     if (run.kind !== 'full') continue
     const list = byWorktree.get(run.worktree) ?? []
@@ -92,13 +93,13 @@ export function rerunsAfterFailure(runs: RunRecord[]): number[] {
 /** 同一份代码整组先失败、后通过：可能是测试不稳定，也可能是环境问题（数据库没起来这类），要看失败的日志才分得清。 */
 export interface FailedThenPassed {
   tree: string
-  failed: RunRecord
-  passed: RunRecord
+  failed: PaceRun
+  passed: PaceRun
 }
 
 /** 同一份代码内容，整组先失败、后通过。只看跑的过程中代码没改过的运行。 */
-export function failedThenPassed(runs: RunRecord[]): FailedThenPassed[] {
-  const byTree = new Map<string, RunRecord[]>()
+export function failedThenPassed(runs: PaceRun[]): FailedThenPassed[] {
+  const byTree = new Map<string, PaceRun[]>()
   for (const run of runs) {
     if (run.kind !== 'full' || run.tree !== run.treeAtEnd) continue
     const list = byTree.get(run.tree) ?? []
@@ -154,7 +155,7 @@ function median(values: number[]): number | undefined {
 }
 
 /** 按周汇总落地的测试行数、主代码行数，以及通过的整组耗时中位数。周从 since 开始算。 */
-export function weekly(runs: RunRecord[], landingList: Landing[], since: number, now: number): WeekRow[] {
+export function weekly(runs: PaceRun[], landingList: Landing[], since: number, now: number): WeekRow[] {
   const rows: WeekRow[] = []
   for (let start = since; start < now; start += WEEK_MS) {
     const end = start + WEEK_MS
@@ -180,7 +181,7 @@ export function weekly(runs: RunRecord[], landingList: Landing[], since: number,
  * 平均每次落地花在测试上的时间和整组次数：看工作方式（比如攒几个分支一起合）有没有降下测试成本。
  * 落地从这段时间里 testpace 第一次运行算起，接入前的落地不摊；分支上跑了、还没落地的也算在里面。
  */
-export function landingCost(runs: RunRecord[], landings: Landing[], branch: string | undefined): string | undefined {
+export function landingCost(runs: PaceRun[], landings: Landing[], branch: string | undefined): string | undefined {
   if (!branch || runs.length === 0) return undefined
   const from = Math.min(...runs.map(run => run.startedAt))
   const landed = landings.filter(landing => landing.time >= from).length
@@ -194,7 +195,7 @@ export interface ReportInput {
   repo: string
   days: number
   now: number
-  runs: RunRecord[]
+  runs: PaceRun[]
   defaultBranch?: string
   landings: Landing[]
 }
@@ -211,7 +212,7 @@ export interface StepStats {
  * 整组的时间花在哪一段：每条附加检查、整组的检查（full）、全部测试，各跑了几次、共多久。按第一次出现的顺序。
  * 只算记了分段的整组（旧版本写的记录没有分段）；fulls 是这样的整组有几次。
  */
-export function fullSteps(runs: RunRecord[]): { fulls: number; steps: StepStats[] } {
+export function fullSteps(runs: PaceRun[]): { fulls: number; steps: StepStats[] } {
   const stats = new Map<string, StepStats>()
   let fulls = 0
   for (const run of runs) {

@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { before, describe, test } from 'node:test'
-import { landings } from '../src/git.ts'
+import { landings } from '../src/base/git.ts'
 import { BIN, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, setConfig as setConfigWith, sh, tempDir, testpace as run } from './helpers.ts'
 
 const testpace = (cwd: string, ...args: string[]) => run(cwd, args)

@@ -1,21 +1,23 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { commandWord, parseConfig } from '../src/config.ts'
-import { findCoverage } from '../src/coverage.ts'
-import { cleanLines, failureExcerpt } from '../src/excerpt.ts'
-import { duration } from '../src/format.ts'
-import { matcher } from '../src/glob.ts'
-import { failedThenPassed, fileRole, fullSteps, landingCost, renderReport, repeatedFiles, rerunsAfterFailure, weekly } from '../src/report.ts'
-import { KEEP_LOGS, type RunRecord, Store } from '../src/store.ts'
-import { firstTest } from '../src/verify.ts'
-import { spawnGroup } from '../src/process-group.ts'
+import '../src/modules.ts'
+import { commandWord, parseConfig } from '../src/pace/config.ts'
+import { findCoverage } from '../src/base/coverage.ts'
+import { cleanLines, failureExcerpt } from '../src/base/excerpt.ts'
+import { duration } from '../src/base/format.ts'
+import { matcher } from '../src/base/glob.ts'
+import { failedThenPassed, fileRole, fullSteps, landingCost, renderReport, repeatedFiles, rerunsAfterFailure, weekly } from '../src/pace/report.ts'
+import { KEEP_LOGS, Store } from '../src/base/store.ts'
+import type { PaceRun } from '../src/pace/record.ts'
+import { firstTest } from '../src/pace/verify.ts'
+import { spawnGroup } from '../src/base/process-group.ts'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 let seq = 0
-function run(partial: Partial<RunRecord>): RunRecord {
+function run(partial: Partial<PaceRun>): PaceRun {
   seq += 1
   return {
     id: `r${seq}`,

@@ -2,7 +2,7 @@
 
 给 agent 开发用的测试节奏插件（Claude Code、Codex）：开发中只跑和改动相关的测试，代码落到默认分支前由程序确认整组通过，并记录测试时间花在哪。
 
-把关只管 agent 执行的命令：合并门是配在全局 git 配置里的 git 钩子，只检查带着 agent 环境变量（Claude Code 的 `CLAUDECODE`、Codex 的 `CODEX_THREAD_ID` 等，见 `plugin/src/agent.ts`）的 git 命令；停止门是 agent 的 Stop hook。两边共用同一份记录：Claude 里测过的代码，Codex 合并时不用重跑。
+把关只管 agent 执行的命令：合并门是配在全局 git 配置里的 git 钩子，只检查带着 agent 环境变量（Claude Code 的 `CLAUDECODE`、Codex 的 `CODEX_THREAD_ID` 等，见 `plugin/src/base/agent.ts`）的 git 命令；停止门是 agent 的 Stop hook。两边共用同一份记录：Claude 里测过的代码，Codex 合并时不用重跑。
 
 ## 安装
 

@@ -1,5 +1,5 @@
 // 停止门：agent 要结束这一轮时，这个会话起的整组还在跑、或跑完还没看结果，就拦一次。
-// 这个会话认出了时好时坏的测试、还在名单上的，每个也拦一次。
+// 各模块在这个会话里还没处理完的事（module.ts 的 unfinished，比如认出的时好时坏测试），每件也拦一次。
 // 每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里，不靠 agent 给的 stop_hook_active：
 // 有的 agent 不给或总是 false，靠它会反复拦。
 // 谁起的整组看记录里的会话号（testpace full 从命令环境里 agent 的会话号记下，见 agent.ts）；
@@ -8,12 +8,11 @@
 // 合并门只在 agent 移动本地默认分支时把关，推送别的分支到默认分支、在 GitHub 上合并 PR 不经过它。
 // 这一项和合并门一样看提交里的 testpace.json：管不管、按哪些 ignore 判断，都不看工作区里的文件。
 
-import { CONFIG_FILE, configExists } from './config.ts'
+import { contractAt, CONTRACT_FILE, joined } from './contract.ts'
 import { duration, short, when } from './format.ts'
 import { hasFile, refTip } from './git.ts'
-import { contractAt, coverageOf, defaultTips, openRepo } from './repo.ts'
-import { describeTest } from './results.ts'
-import { testKey } from './store.ts'
+import { modules } from './module.ts'
+import { coverageOf, defaultTips, openRepo } from './repo.ts'
 
 export interface StopInput {
   sessionId: string
@@ -32,7 +31,7 @@ export interface StopResult {
 
 export function stopCheck(input: StopInput): StopResult {
   const repo = openRepo(input.cwd)
-  if (!repo || !configExists(repo.root)) return {}
+  if (!repo || !joined(repo.root)) return {}
   const session = repo.store.session(input.sessionId, input.now, () => defaultTips(repo))
   const result: StopResult = {}
   const place = input.named ? `${repo.root} 这个工作区` : '这个工作区'
@@ -57,13 +56,13 @@ export function stopCheck(input: StopInput): StopResult {
     result.block = `这个会话${input.named ? `在 ${repo.root} ` : ''}${verb}的整组已经结束（${outcome}），还没看结果。先跑 testpace status 看结果，再收尾。`
   }
 
-  // 这个会话认出的时好时坏测试，还在名单上的：每个拦一次，免得一句带过
-  if (!result.block) {
-    const found = repo.store.flaky().filter(test => test.session === input.sessionId && !blocked.includes(`flaky:${testKey(test)}`))
-    if (found.length > 0) {
-      blocked.push(...found.map(test => `flaky:${testKey(test)}`))
-      result.block = `这个会话${input.named ? `在 ${repo.root} ` : ''}认出了时好时坏的测试，还在名单上：${found.map(describeTest).join('、')}。不能靠重跑过关：按 testcraft 写测试技能里"测试时好时坏"一节找原因修；和手上的活无关的，告诉用户是哪个测试、在哪次没过、日志在哪（testpace status 列着）。说清楚了再收尾。`
-    }
+  // 各模块在这个会话里还没处理完的事（比如认出的时好时坏测试）：每件拦一次，免得一句带过
+  for (const module of modules()) {
+    if (result.block) break
+    const left = module.unfinished?.(repo, input.sessionId, blocked, input.named === true)
+    if (!left) continue
+    blocked.push(...left.keys)
+    result.block = left.text
   }
 
   // 没经过合并门的落地：默认分支在这个会话里有了新提交，却没有整组通过记录
@@ -74,10 +73,10 @@ export function stopCheck(input: StopInput): StopResult {
     const tip = refTip(repo.root, ref)
     if (!tip) continue
     // 和合并门一样：会话开始时它指向的代码或现在的代码里有 testpace.json 才管
-    const contract = contractAt(repo, tip.commit)
+    const contract = contractAt(repo.root, tip.commit)
     const start = session.tipsAtStart[ref]
-    if (!contract && !(start && hasFile(repo.root, start, CONFIG_FILE))) continue
-    if (coverageOf(repo, contract?.config ?? { tests: [], ignore: [] }, tip.tree).kind !== 'none') continue
+    if (!contract && !(start && hasFile(repo.root, start, CONTRACT_FILE))) continue
+    if (coverageOf(repo, contract?.ignore ?? [], tip.tree).kind !== 'none') continue
     warned.push(commit)
     const name = ref.replace(/^refs\/(heads|remotes)\//, '')
     const how = ref.startsWith('refs/heads/') ? '可能不是 agent 提交的（合并门只管 agent 的命令），或者合并门没装上' : '可能是推送了别的分支到默认分支，或者在 GitHub 上合并了 PR'

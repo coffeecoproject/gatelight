@@ -9,21 +9,16 @@ import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentKind } from './agent.ts'
-import type { CommandKey } from './config.ts'
 
 export type RunResult = 'pass' | 'fail'
 
-/** files 的参数可以是 文件:行号，只跑那一行的测试；测试框架输出里常见的 文件:行号:列号 也算。 */
-export const LOCATED = /:\d+(?::\d+)?$/
-
-/** files 的一个参数对应的测试文件。 */
-export function testFile(target: string): string {
-  return target.replace(LOCATED, '')
-}
-
+/**
+ * 一次运行的记录。这里是底座认的字段；模块跑的命令可以带自己的字段（见各模块自己的记录类型），底座原样存取。
+ * kind 是跑的什么：整组是 full，别的由模块定。
+ */
 export interface RunRecord {
   id: string
-  kind: CommandKey
+  kind: string
   worktree: string
   branch?: string
   head?: string
@@ -35,8 +30,6 @@ export interface RunRecord {
   durationMs: number
   exitCode: number | null
   result: RunResult
-  /** files 命令的参数：测试文件，或 文件:行号。 */
-  files?: string[]
   /** 起这次整组的 agent 会话；用户在终端里起的、或 agent 没给会话号的没有。 */
   session?: string
   /** 跑这次的 agent；用户在终端里跑的没有。旧版本写的记录也没有。 */
@@ -49,57 +42,21 @@ export interface RunRecord {
   checks?: string[]
   /** 整组各段的耗时，按跑的顺序；一段没过，后面的没有跑，就没有。旧版本写的记录没有。 */
   steps?: RunStep[]
-  /** 整组：tests 规则找到、交给 files 跑的测试文件数。 */
-  tests?: number
-  /** 没过的测试（经 testpace run 跑、交回了每个测试结果的才有）。 */
-  failed?: TestId[]
-  /** testpace files --repeat 连跑的第几次（从 1 起）、共几次。 */
-  repeat?: { index: number; of: number }
   log: string
 }
 
-/** 整组的一段：一条附加检查（check 是登记的命令）、整组的检查（full）、全部测试（tests）。 */
+/** 整组的一段：一条附加检查（kind 是 check，check 是登记的命令），或模块交的一段（kind 由模块定，见 module.ts 的 FullStep）。 */
 export interface RunStep {
-  kind: 'check' | 'full' | 'tests'
+  kind: string
   check?: string
   durationMs: number
-}
-
-/** 一个测试：文件（相对仓库根目录）和带外层分组的名字认它；行号用来显示和重跑。 */
-export interface TestId {
-  file: string
-  line?: number
-  name: string
-}
-
-/** 时好时坏名单上的一个测试。 */
-export interface FlakyTest extends TestId {
-  /** 怎么认出来的：同一份代码上先没过后过了（或连跑时前面过了后面没过），还是框架重试后才过。 */
-  how: 'reran' | 'retried'
-  foundAt: number
-  tree: string
-  worktree: string
-  /** 没过那次的日志。重试后才过的就是通过那次的日志。 */
-  failLog: string
-  passLog: string
-  /** 认出它的 agent 会话。 */
-  session?: string
-}
-
-/** 一个测试在一个工作区里连着几轮没过：每轮的代码、日志、时间。 */
-export interface Rounds extends TestId {
-  rounds: Array<{ tree: string; log: string; at: number }>
-}
-
-/** 名单、计数里认同一个测试用的键。 */
-export function testKey(test: Pick<TestId, 'file' | 'name'>): string {
-  return `${test.file}\0${test.name}`
 }
 
 /** testpace 跑项目命令时占着工作区的登记。 */
 export interface RunMarker {
   id: string
-  kind: CommandKey
+  /** 跑的什么：整组是 full，别的由模块定。不会是 hold。 */
+  kind: string
   /** testpace 进程。 */
   pid: number
   /** 测试命令的进程组：testpace 被强杀后测试可能还在跑，看它才知道这个工作区是不是真的空出来了。 */
@@ -126,6 +83,11 @@ export interface HoldMarker {
 
 export type RunningMarker = RunMarker | HoldMarker
 
+/** 这份登记是借用工作区的（testpace hold），不是在跑命令。 */
+export function isHold(marker: RunningMarker): marker is HoldMarker {
+  return marker.kind === 'hold'
+}
+
 export interface SessionState {
   startedAt: number
   /** 会话开始时本地和远程默认分支（引用 → 提交）：之后变了才检查落地的代码有没有整组通过记录。 */
@@ -143,7 +105,8 @@ export interface SessionState {
 /** 会话记录留多久。 */
 export const SESSION_KEEP_MS = 7 * 24 * 3600 * 1000
 
-function worktreeKey(worktree: string): string {
+/** 按工作区存的文件用它当文件名。 */
+export function worktreeKey(worktree: string): string {
   return createHash('sha1').update(worktree).digest('hex').slice(0, 16)
 }
 
@@ -326,51 +289,6 @@ export class Store {
     writeWhole(join(dir, `${id.replace(/[^\w.-]/g, '_')}.json`), JSON.stringify(state))
   }
 
-  private get flakyDir(): string {
-    return join(this.dir, 'flaky')
-  }
-
-  private flakyPath(test: Pick<TestId, 'file' | 'name'>): string {
-    return join(this.flakyDir, `${createHash('sha1').update(testKey(test)).digest('hex').slice(0, 16)}.json`)
-  }
-
-  /** 时好时坏的名单，先认出的在前。一个测试一份文件：几个工作区同时跑完时各写各的，不会互相覆盖。 */
-  flaky(): FlakyTest[] {
-    if (!existsSync(this.flakyDir)) return []
-    const list: FlakyTest[] = []
-    for (const name of readdirSync(this.flakyDir).filter(name => name.endsWith('.json'))) {
-      try {
-        list.push(JSON.parse(readFileSync(join(this.flakyDir, name), 'utf8')) as FlakyTest)
-      } catch {
-        // 写坏了的跳过
-      }
-    }
-    return list.sort((a, b) => a.foundAt - b.foundAt)
-  }
-
-  addFlaky(test: FlakyTest): void {
-    mkdirSync(this.flakyDir, { recursive: true })
-    writeWhole(this.flakyPath(test), JSON.stringify(test))
-  }
-
-  removeFlaky(test: Pick<TestId, 'file' | 'name'>): void {
-    rmSync(this.flakyPath(test), { force: true })
-  }
-
-  /** 这个工作区里连着没过的测试，按 testKey。同一个工作区一次只跑一轮，读写不会撞上。 */
-  rounds(worktree: string): Record<string, Rounds> {
-    try {
-      return JSON.parse(readFileSync(join(this.dir, 'rounds', `${worktreeKey(worktree)}.json`), 'utf8')) as Record<string, Rounds>
-    } catch {
-      return {}
-    }
-  }
-
-  saveRounds(worktree: string, rounds: Record<string, Rounds>): void {
-    mkdirSync(join(this.dir, 'rounds'), { recursive: true })
-    writeWhole(join(this.dir, 'rounds', `${worktreeKey(worktree)}.json`), JSON.stringify(rounds))
-  }
-
   /** 各工作区正在跑的命令。进程都不在了的登记不算，留给下一次 claim 清掉。 */
   running(): RunningMarker[] {
     if (!existsSync(this.runningDir)) return []
@@ -406,7 +324,7 @@ function readMarker(path: string): RunningMarker | undefined {
 
 /** 登记的进程（testpace、借用工作区的进程）或测试的进程组还有一个在。 */
 function markerAlive(marker: RunningMarker): boolean {
-  return processAlive(marker.pid) || (marker.kind !== 'hold' && marker.group !== undefined && processAlive(-marker.group))
+  return processAlive(marker.pid) || (!isHold(marker) && marker.group !== undefined && processAlive(-marker.group))
 }
 
 /** 进程（pid 为负时是进程组）还在。 */

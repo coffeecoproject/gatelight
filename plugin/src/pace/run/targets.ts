@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { LOCATED, testFile } from '../store.ts'
+import { LOCATED, testFile } from '../testlist.ts'
 
 export interface Target {
   /** 照给的写法，去掉了行号、列号。 */

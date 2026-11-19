@@ -4,8 +4,8 @@ import assert from 'node:assert/strict'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { fullReasons, type LayermapCheck, outsideNote, parseCheck, parseUntested, select, type Untested } from '../src/focused.ts'
-import { matcher } from '../src/glob.ts'
+import { fullReasons, type LayermapCheck, outsideNote, parseCheck, parseUntested, select, type Untested } from '../src/pace/focused.ts'
+import { matcher } from '../src/base/glob.ts'
 import { commit, ENV, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
 
 const check = (partial: Partial<LayermapCheck>): LayermapCheck => ({ files: [], tests: [], unmapped: [], incomplete: [], ...partial })

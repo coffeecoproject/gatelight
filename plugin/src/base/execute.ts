@@ -21,7 +21,7 @@ export const RUN_ENV = 'TESTPACE_RUN'
 const { [RUN_ENV]: _inheritedRun, ...inherited } = process.env
 export const PROJECT_ENV: NodeJS.ProcessEnv = {
   ...inherited,
-  PATH: [fileURLToPath(new URL('../bin', import.meta.url)), process.env.PATH].filter(Boolean).join(delimiter),
+  PATH: [fileURLToPath(new URL('../../bin', import.meta.url)), process.env.PATH].filter(Boolean).join(delimiter),
 }
 
 export interface Execution {

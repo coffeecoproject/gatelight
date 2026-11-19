@@ -6,8 +6,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { AGENTS } from '../src/agent.ts'
-import { HOOK_COMMAND } from '../src/gate.ts'
+// 先装配：把检查模块登记给底座（测试里直接调 hook 的判断、读约定时要用）
+import '../src/modules.ts'
+import { AGENTS } from '../src/base/agent.ts'
+import { HOOK_COMMAND } from '../src/base/gate.ts'
 
 export const BIN = fileURLToPath(new URL('../bin/testpace', import.meta.url))
 /** 插件的 bin 目录：Claude Code 里它在 Bash 工具的 PATH 上，合并门的 git 钩子靠它找到 testpace。 */

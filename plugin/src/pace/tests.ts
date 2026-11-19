@@ -3,8 +3,8 @@
 
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { git } from './git.ts'
-import { matcher } from './glob.ts'
+import { git } from '../base/git.ts'
+import { matcher } from '../base/glob.ts'
 
 /** 规则选中这个路径：匹配某条规则，且不匹配以 ! 开头的排除规则。 */
 export function testMatcher(patterns: string[]): (path: string) => boolean {
