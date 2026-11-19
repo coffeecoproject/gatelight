@@ -7,7 +7,7 @@ import { CHECK_KEY, extraChecks } from './checks.ts'
 import { COMMAND_KEYS, commandExists, CONFIG_FILE, configExists, loadConfig } from './config.ts'
 import { type Execution, execute } from './execute.ts'
 import { entryPath, entryState, installEntry } from './entry.ts'
-import { askLayermap, fullReasons, LAYERMAP_HINT } from './focused.ts'
+import { askLayermap, fullReasons, LAYERMAP_HINT, outsideNote } from './focused.ts'
 import { duration, short, when } from './format.ts'
 import { checkRefUpdates, GATE_REJECT, gateProblem, installGate } from './gate.ts'
 import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
@@ -255,8 +255,7 @@ async function focused(args: string[]): Promise<number> {
     const shown = selection.tests.slice(0, 10).map(test => `  ${test}`)
     if (selection.tests.length > 10) shown.push(`  等 ${selection.tests.length} 个`)
     const indirect = selection.indirect ? `；另有 ${selection.indirect} 个只是间接导入改动，没选` : ''
-    const outside = selection.outside.length ? `；另有 ${selection.outside.length} 个不在 tests 规则里，整组不跑，没选` : ''
-    lines.push(`相关测试 ${selection.tests.length} 个（对比 ${short(base)}${indirect}${outside}）：`, ...shown)
+    lines.push(`相关测试 ${selection.tests.length} 个（对比 ${short(base)}${indirect}）：`, ...shown)
     const related = await runRecorded(ctx, 'files', config.files, selection.tests, tree)
     if ('busy' in related) {
       console.log([...lines, busyText(related.busy, tree)].join('\n'))
@@ -269,6 +268,8 @@ async function focused(args: string[]): Promise<number> {
     }
     lines.push(`相关测试通过 · 用时 ${duration(related.execution.durationMs)}`, ...related.notes)
   }
+  const outside = outsideNote(selection)
+  if (outside) lines.push(outside)
   if (reasons.length > 0 && onBranch) {
     lines.push(`这次选测不完全可靠：${reasons.join('；')}。在分支上不用现在跑整组，合回 ${branch} 时的整组会覆盖。`)
   } else if (reasons.length > 0) {
