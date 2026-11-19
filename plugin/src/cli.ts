@@ -1,4 +1,4 @@
-// testpace 命令行：focused、files、full、status、running、report、verify、install、run，以及 git 钩子调用的 gate。
+// testpace 命令行：focused、files、full、status、hold、release、report、verify、install、run，以及 git 钩子调用的 gate。
 
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
@@ -18,7 +18,7 @@ import { type Framework, runFramework } from './run/runner.ts'
 import { vitest } from './run/vitest.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runningText, runRecorded, started } from './repo.ts'
 import { failedTests, flakyStatus, noteResults, PROVE_RUNS, provenFixed, readResults, RESULTS_ENV, resultsFile, type TestResult } from './results.ts'
-import { LOCATED, newRunId, type RunRecord, testKey } from './store.ts'
+import { LOCATED, newRunId, processAlive, type RunRecord, testKey } from './store.ts'
 import { findTests, testMatcher } from './tests.ts'
 import { verifyFiles } from './verify.ts'
 
@@ -29,8 +29,10 @@ const USAGE = `用法：
                                  --repeat N 连跑 N 次、没过就停：造出时好时坏的测试的失败，或修好后连跑 10 次证明
   testpace full                  跑整组：附加检查、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
-  testpace running               这个工作区有没有 testpace 的命令在跑：有就说明跑的是什么、谁起的，退出码 3；没有退出码 0。
-                                 整组先跑的附加检查带着这一轮的 TESTPACE_RUN，在里面问不算在跑；别的项目命令和测试里问照样算
+  testpace hold PID 说明         借用这个工作区（比如 testcraft 建副本）：占着时别的 testpace 命令不跑，说明是谁占着。
+                                 PID 是借用的那个进程，它不在了占用就作废。占上时输出这次的 id，退出码 0；有在跑的、占着的，说明是谁，退出码 3。
+                                 整组先跑的附加检查带着这一轮的 TESTPACE_RUN，工作区已经是这一轮的，不另占、什么也不输出，退出码 0
+  testpace release ID            放开 hold 占的工作区
   testpace report [--days N]     计时诊断，默认最近 28 天
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
   testpace install               这台机器配一次：在全局 git 配置里配上合并门（agent 移动默认分支时，要求落地的代码有整组通过记录），
@@ -44,7 +46,7 @@ const USAGE = `用法：
 
 /**
  * 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；
- * 3 这个工作区已有测试在跑（running：有 testpace 的命令在跑），或别处在跑同一份代码的整组；4 在默认分支上，跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
+ * 3 这个工作区已有测试在跑或被借用着（hold：占不上），或别处在跑同一份代码的整组；4 在默认分支上，跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
  * gate 拒绝时是 GATE_REJECT（见 gate.ts）。
  */
 const EXIT = { ok: 0, fail: 1, usage: 2, busy: 3, fullNeeded: 4, interrupted: 130 } as const
@@ -119,7 +121,7 @@ async function full(): Promise<number> {
   // 最后把 tests 规则找到的全部测试文件交给 files。都过了才算整组通过
   const checks = extraChecks(ctx.root)
   const steps = [
-    // 只有附加检查拿到这一轮的运行 id（见 RUN_ENV）：它们在测试之前跑，在里面问 testpace running 不算在跑
+    // 只有附加检查拿到这一轮的运行 id（见 RUN_ENV）：它们在测试之前跑，在里面借用工作区（testpace hold）不另占
     ...checks.map(check => ({ title: `附加检查 ${check}`, header: `附加检查：${check}`, command: check, args: [] as string[], check, env: { [RUN_ENV]: id } })),
     { title: '整组的检查（full）', header: `整组的检查（full）：${config.full}`, command: config.full, args: [] as string[] },
     { title: `全部测试（${tests.length} 个文件）`, header: `全部测试（${tests.length} 个文件）：${config.files}`, command: config.files, args: tests },
@@ -212,20 +214,52 @@ async function full(): Promise<number> {
 }
 
 /**
- * 这个工作区有没有 testpace 的命令在跑（只看这个工作区，别的工作区在跑的不管）。给要复制或接着用工作区的工具问，
- * 比如 testcraft 建副本前：跑到一半的状态（锁文件、临时文件）会一起带进副本。
- * 在跑的正是问的这一轮（环境变量 RUN_ENV 里的运行 id 和登记的一样）时不算：只有整组的附加检查拿得到它，那时还没有测试在跑。
+ * 借用这个工作区（只占这个工作区，别的工作区不管）：要复制或接着用工作区的工具用，比如 testcraft 建副本。
+ * 借用期间别的 testpace 命令不跑，免得跑到一半的状态（锁文件、临时文件）被带进副本。
+ * 查有没有在跑的和占上是同一步（同 runClaimed 的登记），问完到用完之间不会有新起的插进来。
+ * 登记的是借用的那个进程（pid）：它被杀了，占用跟着作废，不会把工作区永远锁住。
+ * 在跑的正是调用它的这一轮（环境变量 RUN_ENV 里的运行 id 和登记的一样）时不另占：只有整组的附加检查拿得到它，
+ * 那时还没有测试在跑，工作区已经是这一轮的。
  */
-function running(): number {
+function hold(args: string[]): number {
+  const [pid, ...what] = args
+  const by = what.join(' ').trim()
+  if (!pid || !/^[1-9]\d*$/.test(pid) || !by) {
+    console.error(USAGE)
+    return EXIT.usage
+  }
+  // 进程不在了的登记马上作废，调用方会以为占上了
+  if (!processAlive(Number(pid))) {
+    console.error(`进程 ${pid} 不在，借用要登记正在用工作区的那个进程。`)
+    return EXIT.usage
+  }
   const ctx = context()
   if (!ctx) return EXIT.usage
-  const marker = ctx.store.running().find(m => m.worktree === ctx.root)
-  if (!marker || marker.id === process.env[RUN_ENV]) {
-    console.log('这个工作区没有测试在跑。')
-    return EXIT.ok
+  const current = ctx.store.running().find(m => m.worktree === ctx.root)
+  if (current && current.id === process.env[RUN_ENV]) return EXIT.ok
+  const startedAt = Date.now()
+  const id = newRunId(startedAt)
+  const busy = ctx.store.claim({ id, kind: 'hold', by, pid: Number(pid), worktree: ctx.root, startedAt })
+  if (busy) {
+    console.log(`${runningText(busy)}。`)
+    return EXIT.busy
   }
-  console.log(`${runningText(marker)}。`)
-  return EXIT.busy
+  console.log(id)
+  return EXIT.ok
+}
+
+/** 放开 hold 占的工作区。只放借用的登记：跑着的命令自己结束时放开。已经放开、借用的进程已经不在的，什么也不做。 */
+function release(args: string[]): number {
+  const [id] = args
+  if (!id || args.length !== 1) {
+    console.error(USAGE)
+    return EXIT.usage
+  }
+  const ctx = context()
+  if (!ctx) return EXIT.usage
+  const current = ctx.store.running().find(m => m.worktree === ctx.root)
+  if (current?.kind === 'hold' && current.id === id) ctx.store.release(ctx.root, id)
+  return EXIT.ok
 }
 
 async function focused(args: string[]): Promise<number> {
@@ -392,6 +426,10 @@ function status(): number {
     lines.push(`当前代码（${short(tree)}）：${describeCoverage(coverageOf(ctx, config, tree, runs))}`)
 
     for (const marker of ctx.store.running().filter(m => m.worktree === ctx.root)) {
+      if (marker.kind === 'hold') {
+        lines.push(`${runningText(marker)}，已 ${duration(Date.now() - marker.startedAt)}`)
+        continue
+      }
       const changed = marker.tree === tree ? '开始后代码没改过' : '开始后代码改过，跑完的结果不算当前代码的记录'
       lines.push(`正在跑：${marker.kind}，${started(marker)}（已 ${duration(Date.now() - marker.startedAt)}），${changed}`)
     }
@@ -617,8 +655,10 @@ async function dispatch(command: string | undefined, rest: string[]): Promise<nu
       return full()
     case 'status':
       return status()
-    case 'running':
-      return running()
+    case 'hold':
+      return hold(rest)
+    case 'release':
+      return release(rest)
     case 'report':
       return report(rest)
     case 'verify':

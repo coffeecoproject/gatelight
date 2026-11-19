@@ -85,22 +85,27 @@ export function defaultTips(repo: Repo): Record<string, string> {
   return tips
 }
 
-/** 在跑的那次是什么时候、哪个进程起的。testpace 被强杀后测试可能还在跑，说清楚怎么停。 */
+/**
+ * 在跑的那次是什么时候、哪个进程起的。testpace 被强杀后测试可能还在跑，说清楚怎么停。
+ * 借用工作区的登记只认那一个进程，列得出来就是它还在。
+ */
 export function started(marker: RunningMarker): string {
-  const owner = processAlive(marker.pid)
+  const owner = marker.kind === 'hold' || processAlive(marker.pid)
     ? `进程 ${marker.pid}`
     : `起它的 testpace 已经退出，测试进程组 ${marker.group} 还在跑，不要了用 kill -- -${marker.group} 停掉`
   return `开始于 ${when(marker.startedAt)}，${owner}`
 }
 
-/** 这个工作区在跑的是哪种命令、什么时候哪个进程起的。 */
+/** 这个工作区在跑的是哪种命令（或被谁借用着）、什么时候哪个进程起的。 */
 export function runningText(marker: RunningMarker): string {
+  if (marker.kind === 'hold') return `这个工作区正被 ${marker.by} 占着（${started(marker)}）`
   const what = marker.kind === 'full' ? '整组' : ` ${marker.kind} `
   return `这个工作区正在跑${what}（${started(marker)}）`
 }
 
 /** 因为这个工作区已经在跑测试而不跑时的说明。 */
 export function busyText(marker: RunningMarker, tree: string): string {
+  if (marker.kind === 'hold') return `${runningText(marker)}，占着时不跑测试，等它放开再跑。`
   const stale = marker.kind === 'full' && marker.tree !== tree ? '那次整组开始后代码改过，它跑完的结果不算当前代码的记录。' : ''
   return `${runningText(marker)}，同一个工作区一次只跑一轮测试，等它结束再跑。${stale}`
 }
