@@ -5,7 +5,7 @@ import { currentAgent } from './agent.ts'
 import { CONTRACT_FILE } from './contract.ts'
 import { type Coverage, findCoverage } from './coverage.ts'
 import { failureExcerpt } from './excerpt.ts'
-import { type Execution, execute } from './execute.ts'
+import { type Execution, execute, RUN_ENV } from './execute.ts'
 import { duration, when } from './format.ts'
 import { changedPaths, commonDir, defaultBranch, refTip, repoRoot } from './git.ts'
 import { matcher } from './glob.ts'
@@ -111,6 +111,29 @@ export async function runClaimed(
   } finally {
     repo.store.release(repo.root, id)
   }
+}
+
+/**
+ * 借用这个工作区（只占这个工作区，别的工作区不管）：要复制或接着用工作区的时候用，比如建一次性副本。
+ * 借用期间别的 testpace 命令不跑，免得跑到一半的状态（锁文件、临时文件）被带进副本。
+ * 查有没有在跑的和占上是同一步（同 runClaimed 的登记），问完到用完之间不会有新起的插进来。
+ * 登记的是借用的那个进程（pid）：它被杀了，占用跟着作废，不会把工作区永远锁住。
+ * 在跑的正是调用它的这一轮（环境变量 RUN_ENV 里的运行 id 和登记的一样）时不另占、没有 id：只有整组里测试之前的段拿得到它，
+ * 那时还没有测试在跑，工作区已经是这一轮的。已经有在跑的、被借用着的，返回它。
+ */
+export function borrow(repo: Repo, pid: number, by: string): { id?: string } | { busy: RunningMarker } {
+  const current = repo.store.running().find(marker => marker.worktree === repo.root)
+  if (current && current.id === process.env[RUN_ENV]) return {}
+  const startedAt = Date.now()
+  const id = newRunId(startedAt)
+  const busy = repo.store.claim({ id, kind: 'hold', by, pid, worktree: repo.root, startedAt })
+  return busy ? { busy } : { id }
+}
+
+/** 放开 borrow 占的工作区。只放借用的登记：跑着的命令自己结束时放开。已经放开、借用的进程已经不在的，什么也不做。 */
+export function giveBack(repo: Repo, id: string): void {
+  const current = repo.store.running().find(marker => marker.worktree === repo.root)
+  if (current && isHold(current) && current.id === id) repo.store.release(repo.root, id)
 }
 
 /** 命令为什么算失败：退出码、信号，或没能启动。 */

@@ -4,11 +4,10 @@
 import { readFileSync } from 'node:fs'
 import { AGENTS, currentAgent } from './agent.ts'
 import { entryPath, installEntry } from './entry.ts'
-import { RUN_ENV } from './execute.ts'
 import { EXIT } from './exit.ts'
 import { checkRefUpdates, GATE_REJECT, gateProblem, installGate } from './gate.ts'
-import { openRepo, type Repo, runningText } from './repo.ts'
-import { isHold, newRunId, processAlive } from './store.ts'
+import { borrow, giveBack, openRepo, type Repo, runningText } from './repo.ts'
+import { processAlive } from './store.ts'
 
 /** 跑这条命令的 agent：会话号、在不在沙箱里。用户在终端里跑的没有。 */
 export const AGENT = currentAgent()
@@ -31,14 +30,7 @@ export function context(): Repo | undefined {
   return repo
 }
 
-/**
- * 借用这个工作区（只占这个工作区，别的工作区不管）：要复制或接着用工作区的工具用，比如 testcraft 建副本。
- * 借用期间别的 testpace 命令不跑，免得跑到一半的状态（锁文件、临时文件）被带进副本。
- * 查有没有在跑的和占上是同一步（同 runClaimed 的登记），问完到用完之间不会有新起的插进来。
- * 登记的是借用的那个进程（pid）：它被杀了，占用跟着作废，不会把工作区永远锁住。
- * 在跑的正是调用它的这一轮（环境变量 RUN_ENV 里的运行 id 和登记的一样）时不另占：只有整组的附加检查拿得到它，
- * 那时还没有测试在跑，工作区已经是这一轮的。
- */
+/** testpace hold：别的工具借用这个工作区（见 repo.ts 的 borrow）。占上了输出借用的 id，放开时用。 */
 export function hold(args: string[], usage: string): number {
   const [pid, ...what] = args
   const by = what.join(' ').trim()
@@ -53,20 +45,16 @@ export function hold(args: string[], usage: string): number {
   }
   const ctx = context()
   if (!ctx) return EXIT.usage
-  const current = ctx.store.running().find(m => m.worktree === ctx.root)
-  if (current && current.id === process.env[RUN_ENV]) return EXIT.ok
-  const startedAt = Date.now()
-  const id = newRunId(startedAt)
-  const busy = ctx.store.claim({ id, kind: 'hold', by, pid: Number(pid), worktree: ctx.root, startedAt })
-  if (busy) {
-    console.log(`${runningText(busy)}。`)
+  const held = borrow(ctx, Number(pid), by)
+  if ('busy' in held) {
+    console.log(`${runningText(held.busy)}。`)
     return EXIT.busy
   }
-  console.log(id)
+  if (held.id) console.log(held.id)
   return EXIT.ok
 }
 
-/** 放开 hold 占的工作区。只放借用的登记：跑着的命令自己结束时放开。已经放开、借用的进程已经不在的，什么也不做。 */
+/** testpace release：放开 hold 占的工作区。 */
 export function release(args: string[], usage: string): number {
   const [id] = args
   if (!id || args.length !== 1) {
@@ -75,8 +63,7 @@ export function release(args: string[], usage: string): number {
   }
   const ctx = context()
   if (!ctx) return EXIT.usage
-  const current = ctx.store.running().find(m => m.worktree === ctx.root)
-  if (current && isHold(current) && current.id === id) ctx.store.release(ctx.root, id)
+  giveBack(ctx, id)
   return EXIT.ok
 }
 

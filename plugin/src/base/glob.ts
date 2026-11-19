@@ -1,4 +1,4 @@
-// `ignore` 里的路径规则。相对仓库根目录匹配完整路径：
+// 路径规则（约定里的 ignore、各模块配置里的规则）。相对仓库根目录匹配完整路径：
 // `**` 跨目录，`*` 和 `?` 不跨目录，以 `/` 结尾表示整个目录。
 
 export function globToRegExp(pattern: string): RegExp {
@@ -31,4 +31,8 @@ export function globToRegExp(pattern: string): RegExp {
 export function matcher(patterns: string[]): (path: string) => boolean {
   const res = patterns.map(globToRegExp)
   return path => res.some(re => re.test(path))
+}
+
+export function matchesAny(path: string, patterns: readonly string[]): boolean {
+  return patterns.some(pattern => globToRegExp(pattern).test(path))
 }

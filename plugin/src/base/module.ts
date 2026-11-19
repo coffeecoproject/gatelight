@@ -14,6 +14,8 @@ export interface FullStep {
   header: string
   command: string
   args: string[]
+  /** 这一段要借用工作区（比如建副本）：底座把这一轮的运行 id 给它（见 execute.ts 的 RUN_ENV），它借用时不另占。只给测试之前跑的段。 */
+  borrows?: boolean
 }
 
 /** 一个模块在这一轮整组里的部分。 */
@@ -40,8 +42,13 @@ export interface Module {
   /** 这个模块的字段写得对不对（raw 是 testpace.json 的内容）。问题说给 agent，整组跑不了。 */
   contractProblems?(raw: Record<string, unknown>): string[]
 
-  /** 会话说明：在这个仓库里干活要知道的规矩。会话开始、压缩后、会话第一次碰到这个仓库时说。repo 是话里指这个仓库的写法。 */
-  brief?(repo: string): string[]
+  /**
+   * 会话说明：在这个仓库里干活要知道的规矩。会话开始、压缩后、会话第一次碰到这个仓库时说。label 是话里指这个仓库的写法；
+   * 给了 repo 就是在说那个仓库，模块没在那个仓库里启用的不用说。
+   */
+  brief?(label: string, repo?: Repo): string[]
+  /** 会话开始、会话第一次碰到这个仓库时：模块记下自己要记的（比如这时测试的样子，停止门只管这之后改的）。同一个会话会来不止一次。 */
+  onSession?(repo: Repo, sessionId: string): void
   /** 会话说明里跟在后面的提醒：这个仓库现在有什么要留意的（比如时好时坏的测试）。 */
   alerts?(repo: Repo): string[]
 

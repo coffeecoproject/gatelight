@@ -6,7 +6,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path'
 import { before, describe, test } from 'node:test'
 import { landings } from '../src/base/git.ts'
-import { BIN, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, setConfig as setConfigWith, sh, tempDir, testpace as run } from './helpers.ts'
+import { BIN, commit, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, setConfig as setConfigWith, sh, tempDir, testpace as run } from './helpers.ts'
 
 const testpace = (cwd: string, ...args: string[]) => run(cwd, args)
 const setConfig = (repo: string, full: string): void => setConfigWith(repo, { full })
@@ -89,6 +89,7 @@ describe('结果的可信度', () => {
     const repo = sampleRepo()
     const flag = join(tempDir('testpace-flag-'), 'ok')
     setConfig(repo, `node scripts/full.mjs && test -f '${flag}'`)
+    commit(repo, '配置')
     assert.equal(testpace(repo, 'full').code, 1)
     writeFileSync(flag, '')
     assert.equal(testpace(repo, 'full').code, 0)
@@ -208,6 +209,7 @@ describe('结果的可信度', () => {
   test('整组被信号终止时说明是哪个信号', () => {
     const repo = sampleRepo()
     setConfig(repo, 'kill -KILL $$')
+    commit(repo, '配置')
     const r = testpace(repo, 'full')
     assert.equal(r.code, 1)
     assert.match(r.out, /^整组失败：整组的检查（full）没通过，后面的没有跑（被信号 SIGKILL 终止）/)
@@ -216,6 +218,7 @@ describe('结果的可信度', () => {
   test('被中断时停掉子进程，不记录结果', async () => {
     const repo = sampleRepo()
     setConfig(repo, 'sleep 37')
+    commit(repo, '配置')
     const child = spawn(BIN, ['full'], { cwd: repo, env: ENV })
     let out = ''
     child.stdout.on('data', chunk => (out += chunk))
@@ -233,6 +236,37 @@ describe('结果的可信度', () => {
     assert.match(out, /^整组被中断，没有记录结果/)
     assert.deepEqual(runs(repo), [])
     assert.equal(sh(repo, "pgrep -f 'sleep 37' || true").trim(), '', '子进程组一起停了')
+  })
+
+  test('被中断时等子进程组都退完才退出：组里有进程收到信号后过一会儿才退，testpace 退出时它也已经不在了', async () => {
+    const repo = sampleRepo()
+    const pidFile = join(tempDir('testpace-linger-'), 'pid')
+    // full 的命令：起一个同组的子进程，它收到 TERM 后过 1 秒才退（记下它的进程号）；命令自己收到 TERM 马上退
+    writeFileSync(
+      join(repo, 'scripts', 'linger.mjs'),
+      [
+        "import { spawn } from 'node:child_process'",
+        "import { writeFileSync } from 'node:fs'",
+        `const slow = "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 1000)); setInterval(() => {}, 1000); console.log('ready')"`,
+        "const child = spawn(process.execPath, ['-e', slow], { stdio: ['ignore', 'pipe', 'ignore'] })",
+        "process.on('SIGTERM', () => process.exit(0))",
+        '// 子进程挂好信号处理以后才记下进程号：在这之前发信号，它会直接被停掉',
+        "child.stdout.once('data', () => writeFileSync(process.env.LINGER_PID, String(child.pid)))",
+        'setInterval(() => {}, 1000)',
+        '',
+      ].join('\n'),
+    )
+    setConfig(repo, 'node scripts/linger.mjs')
+    commit(repo, '配置')
+    const child = spawn(BIN, ['full'], { cwd: repo, env: { ...ENV, LINGER_PID: pidFile }, stdio: 'ignore' })
+    const closed = new Promise<number | null>(resolve => child.on('close', resolve))
+    for (let i = 0; i < 400 && !existsSync(pidFile); i++) await new Promise(r => setTimeout(r, 50))
+    assert.ok(existsSync(pidFile), '整组的命令没起来')
+    const lingering = Number(readFileSync(pidFile, 'utf8'))
+    child.kill('SIGTERM')
+    assert.equal(await closed, 130)
+    // 不等：testpace 说自己被中断、退出了，它起的进程就都该不在了（不然这个工作区还占着端口、测试库，下一轮会撞上）
+    assert.throws(() => process.kill(lingering, 0), { code: 'ESRCH' }, '收到信号后过一会儿才退的进程，testpace 退出时还在')
   })
 })
 
@@ -355,6 +389,7 @@ describe('testpace hold / release：借用这个工作区（比如 testcraft 建
   test('整组跑测试的那一段里借用被挡', () => {
     const repo = sampleRepo()
     setConfigWith(repo, { files: probe })
+    commit(repo, '配置')
     const r = testpace(repo, 'full')
     assert.equal(r.code, 0, r.out)
     const log = readFileSync(runs(repo).at(-1)!.log as string, 'utf8')
@@ -585,6 +620,7 @@ describe('整组跑 tests 规则找到的全部测试', () => {
     const repo = sampleRepo()
     writeFileSync(join(repo, 'tests', 'slow.test.mjs'), "import { test } from 'node:test'\ntest('slow', () => { throw new Error('不该跑') })\n")
     setConfigWith(repo, { tests: ['tests/**/*.test.mjs', '!tests/slow.test.mjs'] })
+    commit(repo, '配置')
     const r = testpace(repo, 'full')
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /^整组通过 · 2 个测试文件/)
@@ -689,6 +725,7 @@ describe('附加检查', () => {
   test('附加检查过了、整组失败：不算通过，节选是整组的输出；没登记时照旧', () => {
     const repo = sampleRepo()
     setConfig(repo, 'echo 整组输出 && exit 1')
+    commit(repo, '配置')
     const r = run(repo, ['full'], withChecks('echo 检查输出'))
     assert.equal(r.code, 1, r.out)
     assert.match(r.out, /^整组失败：整组的检查（full）没通过，后面的没有跑/)

@@ -2,7 +2,7 @@
 
 import { appendFileSync, existsSync, statSync } from 'node:fs'
 import { CHECK_KEY, extraChecks } from './checks.ts'
-import { loadContract } from './contract.ts'
+import { countedIgnore, loadContract } from './contract.ts'
 import { type Execution, execute, RUN_ENV } from './execute.ts'
 import { EXIT } from './exit.ts'
 import { duration, short } from './format.ts'
@@ -35,7 +35,7 @@ export async function full(ctx: Repo, sessionId: string | undefined): Promise<nu
     return EXIT.usage
   }
   try {
-    return await run(ctx, sessionId, contract?.ignore ?? [], parts)
+    return await run(ctx, sessionId, countedIgnore(ctx.root, contract).rules, parts)
   } finally {
     dispose()
   }
@@ -75,7 +75,8 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
   const steps: Array<FullStep & { check?: string; env?: Record<string, string> }> = [
     // 只有附加检查拿到这一轮的运行 id（见 RUN_ENV）：它们在测试之前跑，在里面借用工作区（testpace hold）不另占
     ...checks.map(check => ({ kind: 'check', title: `附加检查 ${check}`, header: `附加检查：${check}`, command: check, args: [], check, env: { [RUN_ENV]: id } })),
-    ...parts.flatMap(part => part.steps),
+    // 模块交的段里要借用工作区的（建副本），同样拿到这一轮的运行 id
+    ...parts.flatMap(part => part.steps.map(step => (step.borrows ? { ...step, env: { [RUN_ENV]: id } } : step))),
   ]
   // 各模块给命令的环境变量（比如交每个测试结果的位置），每一段都带着
   const partsEnv: Record<string, string> = Object.assign({}, ...parts.map(part => part.env ?? {}))

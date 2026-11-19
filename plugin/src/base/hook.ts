@@ -33,8 +33,19 @@ export const LANDING_RULE =
   '落到默认分支的代码必须有整组通过记录：合并门在 git 移动默认分支时检查，没测过的提交、合并、cherry-pick、reset 都会被取消。直接跑项目自己的测试、检查命令不留记录。'
 
 /** 会话说明：各模块的规矩（module.ts 的 brief），加上落地的规矩。会话从仓库外（比如上一级目录）开始时，说明里写上是哪个仓库。 */
-export function sessionBrief(repo = '这个仓库'): string {
-  return [...modules().flatMap(module => module.brief?.(repo) ?? []), LANDING_RULE].join('\n')
+export function sessionBrief(label = '这个仓库', repo?: Repo): string {
+  return [...modules().flatMap(module => module.brief?.(label, repo) ?? []), LANDING_RULE].join('\n')
+}
+
+/** 会话碰到了这个仓库：让各模块记下自己要记的。哪个模块出错不挡别的，也不挡会话说明。 */
+function noteSession(repo: Repo, sessionId: string): void {
+  for (const module of modules()) {
+    try {
+      module.onSession?.(repo, sessionId)
+    } catch {
+      // 记不下只是停止门少一个参照，不挡 agent
+    }
+  }
 }
 
 /** 新仓库最多这么多个提交：还没接入时，会话开始就提出接入。老仓库要先改造，不在这里提。 */
@@ -77,7 +88,7 @@ function told(repo: Repo, agent: AgentKind, label?: string): string {
   const broken = problems.length ? `${CONTRACT_FILE} 有问题：${problems.join('；')}。` : undefined
   const gate = gateProblem(repo.root)
   const alerts = modules().flatMap(module => module.alerts?.(repo) ?? [])
-  return [sessionBrief(label), ...(broken ? [broken] : []), ...(gate ? [gate] : []), ...alerts, ...agentNotes(agent)].join('\n')
+  return [sessionBrief(label, repo), ...(broken ? [broken] : []), ...(gate ? [gate] : []), ...alerts, ...agentNotes(agent)].join('\n')
 }
 
 /** 这些目录所在的、接入了 testpace 的仓库（工作区根目录有 testpace.json），按根目录去重。 */
@@ -125,6 +136,7 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
     for (const repo of repos) {
       const state = repo.store.session(sessionId, now, () => defaultTips(repo))
       repo.store.saveSession(sessionId, { ...state, rhythm: true })
+      noteSession(repo, sessionId)
     }
     noteSessionRepos(sessionId, repos.map(repo => repo.root), now)
     const context = [
@@ -142,7 +154,10 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
     // 记下会话第一次出现的时间：停止门只管这之后起的整组。会话不在仓库里开始（SessionStart 没说节奏）时，
     // 第一次碰到接入的仓库就补说一次。
     const untold = untoldRepos(command, cwd, sessionId, now)
-    for (const { repo, state } of untold) repo.store.saveSession(sessionId, { ...state, rhythm: true })
+    for (const { repo, state } of untold) {
+      repo.store.saveSession(sessionId, { ...state, rhythm: true })
+      noteSession(repo, sessionId)
+    }
     const hints = modules().flatMap(module => module.beforeCommand?.(command, cwd) ?? [])
     const context = [...untold.map(({ repo }) => told(repo, agent, `${repo.root} 这个仓库`)), ...hints].join('\n\n')
     if (context) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }

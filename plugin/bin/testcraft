@@ -1,0 +1,7 @@
+#!/bin/sh
+# testcraft 命令入口（"测试写法"模块的命令）。Claude Code 插件启用时这个目录在 Bash 工具的 PATH 里。
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$dir/node.sh"
+# 找不到 node 时退出码 2（配置问题）
+node=$(testpace_node) || { echo 'testcraft：找不到 22.18 以上的 node（要能直接运行 TypeScript）。装一个，或用 TESTPACE_NODE 指给它。' >&2; exit 2; }
+exec "$node" --disable-warning=ExperimentalWarning "$dir/../src/testcraft.ts" "$@"

@@ -3,13 +3,13 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fileAt } from './git.ts'
+import { defaultBranch, fileAt, refTip } from './git.ts'
 import { modules } from './module.ts'
 
 export const CONTRACT_FILE = 'testpace.json'
 
 export interface Contract {
-  /** 不影响结果的路径规则。文件写坏了读不出来时为空（按没有 ignore 算：要内容完全一致的通过记录）。 */
+  /** 这份约定里写的、不影响结果的路径规则。文件写坏了读不出来时为空（按没有 ignore 算：要内容完全一致的通过记录）。判断时认哪些见 effectiveIgnore。 */
   ignore: string[]
   /** 文件的内容；不是合法的 JSON 对象时没有。 */
   raw?: Record<string, unknown>
@@ -35,6 +35,29 @@ export function loadContract(root: string): Contract | undefined {
 export function contractAt(root: string, rev: string): Contract | undefined {
   const text = fileAt(root, rev, CONTRACT_FILE)
   return text === undefined ? undefined : readContract(text)
+}
+
+/** 默认分支上现在那份约定（本地的默认分支，没有就看 origin 上的）；认不出默认分支、那里没有 testpace.json 时没有。 */
+export function landedContract(root: string): Contract | undefined {
+  const branch = defaultBranch(root)
+  const tip = branch ? (refTip(root, `refs/heads/${branch}`) ?? refTip(root, `refs/remotes/origin/${branch}`)) : undefined
+  return tip ? contractAt(root, tip.commit) : undefined
+}
+
+/**
+ * 判断"只改了不影响结果的路径"时认哪些 ignore 规则。ignore 是评判用的配置，走"合并后才生效"（见 judging.ts）：
+ * 这份约定里有、默认分支上原来那份（landed）里也有的才认。分支上新加的规则这次不算，合并以后才生效；删掉的马上生效。
+ * 默认分支上还没有约定（首次接入）时一条也不认。
+ */
+export function effectiveIgnore(contract: Contract | undefined, landed: Contract | undefined): string[] {
+  if (!contract || !landed) return []
+  return contract.ignore.filter(rule => landed.ignore.includes(rule))
+}
+
+/** 工作区里这份约定现在认的 ignore 规则（rules），和写了但要合并后才生效的（deferred）。 */
+export function countedIgnore(root: string, contract: Contract | undefined): { rules: string[]; deferred: string[] } {
+  const rules = effectiveIgnore(contract, landedContract(root))
+  return { rules, deferred: (contract?.ignore ?? []).filter(rule => !rules.includes(rule)) }
 }
 
 /** 从 testpace.json 的内容读约定（工作区里的文件，或某个提交里的那份）。 */

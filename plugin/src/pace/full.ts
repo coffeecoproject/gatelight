@@ -4,6 +4,7 @@
 import type { FullPart } from '../base/module.ts'
 import type { Repo } from '../base/repo.ts'
 import { loadConfig } from './config.ts'
+import { unconfirmedChanges } from './consent.ts'
 import type { PaceRun } from './record.ts'
 import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile } from './results.ts'
 import { findTests } from './tests.ts'
@@ -13,6 +14,9 @@ export function fullPart(repo: Repo): FullPart | { problem: string } {
   if (!config?.full || !config.files || problems.length > 0) return { problem: problems.join('；') }
   const tests = findTests(repo.root, config.tests)
   if (tests.length === 0) return { problem: `按 tests 规则（${config.tests.join('、')}）在工作区里没找到测试文件。` }
+  // 这次改动改了命令、缩小了找测试的范围：用户同意过才跑（不然通过记录是按放松过的办法得来的）
+  const unconfirmed = unconfirmedChanges(repo)
+  if (unconfirmed) return { problem: unconfirmed }
   const resultsAt = resultsFile()
   return {
     steps: [

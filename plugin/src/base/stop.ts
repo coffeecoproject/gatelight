@@ -8,7 +8,7 @@
 // 合并门只在 agent 移动本地默认分支时把关，推送别的分支到默认分支、在 GitHub 上合并 PR 不经过它。
 // 这一项和合并门一样看提交里的 testpace.json：管不管、按哪些 ignore 判断，都不看工作区里的文件。
 
-import { contractAt, CONTRACT_FILE, joined } from './contract.ts'
+import { contractAt, CONTRACT_FILE, effectiveIgnore, joined } from './contract.ts'
 import { duration, short, when } from './format.ts'
 import { hasFile, refTip } from './git.ts'
 import { modules } from './module.ts'
@@ -57,9 +57,17 @@ export function stopCheck(input: StopInput): StopResult {
   }
 
   // 各模块在这个会话里还没处理完的事（比如认出的时好时坏测试）：每件拦一次，免得一句带过
+  const moduleProblems: string[] = []
   for (const module of modules()) {
     if (result.block) break
-    const left = module.unfinished?.(repo, input.sessionId, blocked, input.named === true)
+    let left: ReturnType<NonNullable<typeof module.unfinished>>
+    try {
+      left = module.unfinished?.(repo, input.sessionId, blocked, input.named === true)
+    } catch (error) {
+      // 一个模块出错不挡别的检查，但要让人看得到
+      moduleProblems.push(`testpace：停止门里"${module.name}"这一项检查出错，这次没查它（${(error as Error).message.split('\n')[0]}）。`)
+      continue
+    }
     if (!left) continue
     blocked.push(...left.keys)
     result.block = left.text
@@ -67,7 +75,7 @@ export function stopCheck(input: StopInput): StopResult {
 
   // 没经过合并门的落地：默认分支在这个会话里有了新提交，却没有整组通过记录
   const warned = [...session.warned]
-  const warns: string[] = []
+  const warns: string[] = [...moduleProblems]
   for (const [ref, commit] of Object.entries(defaultTips(repo))) {
     if (commit === session.tipsAtStart[ref] || warned.includes(commit)) continue
     const tip = refTip(repo.root, ref)
@@ -76,7 +84,8 @@ export function stopCheck(input: StopInput): StopResult {
     const contract = contractAt(repo.root, tip.commit)
     const start = session.tipsAtStart[ref]
     if (!contract && !(start && hasFile(repo.root, start, CONTRACT_FILE))) continue
-    if (coverageOf(repo, contract?.ignore ?? [], tip.tree).kind !== 'none') continue
+    // ignore 按会话开始时默认分支上那份认（和合并门一样：新加的规则落地以后才生效）
+    if (coverageOf(repo, effectiveIgnore(contract, start ? contractAt(repo.root, start) : undefined), tip.tree).kind !== 'none') continue
     warned.push(commit)
     const name = ref.replace(/^refs\/(heads|remotes)\//, '')
     const how = ref.startsWith('refs/heads/') ? '可能不是 agent 提交的（合并门只管 agent 的命令），或者合并门没装上' : '可能是推送了别的分支到默认分支，或者在 GitHub 上合并了 PR'

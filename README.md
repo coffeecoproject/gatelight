@@ -48,6 +48,24 @@ codex plugin add testpace@testpace
 
 `examples/sample` 是按约定建的最小示例项目。
 
+## 测试写法（testcraft）
+
+同一个插件里的另一项检查，管 agent 怎么写测试：新测试要证明能抓错（`testcraft prove`），删测试、跳过、改松断言要写理由（`testcraft weaken`），其中删测试、让测试不跑、程序的做法变了、删改清单条目要你在弹窗里同意，写不成测试的坑记成清单（`testcraft checklist`）。
+
+仓库里有 `.testcraft/` 目录才启用，没有的仓库里它不出声、不加检查。启用后 `testpace full` 在测试之前跑一次 `testcraft check`，不用另外登记。接入步骤见 [plugin/skills/setup-testcraft/SKILL.md](plugin/skills/setup-testcraft/SKILL.md)（`testpace:setup-testcraft` 技能），写测试的约定见 `testpace:write-tests`，复查见 `testpace:review-tests`。`examples/craft-sample` 是它的示例项目。
+
+它原来是单独的 testcraft 插件。换成这一版时，把旧插件卸掉，并取消它在本机登记的附加检查：
+
+```bash
+claude plugin uninstall testcraft@testcraft
+```
+
+```bash
+git config --global --fixed-value --unset-all testpace.check 'testcraft check'
+```
+
+旧插件记在 `.git/testcraft/` 下的证明、放水检查、用户同意的记录不带过来：新测试要重新证明一次，同意过的放水要重新同意一次。
+
 ## 开发节奏
 
 - 每个任务在自己的分支上做，最好是自己的 worktree，不和别的会话挤在同一个目录里。
@@ -90,10 +108,16 @@ codex plugin add testpace@testpace
 
 接入与否分两处看：
 
-- 合并门、停止门判断落到默认分支的代码时，看**提交里**的 `testpace.json`，不看工作区里的文件：默认分支现在的代码里有它，或要落地的代码里有它，就管；`ignore` 取要落地的那份代码自己带的。工作区里没提交的改动（删了、写坏了、改了 `ignore`）不影响判断。
+- 合并门、停止门判断落到默认分支的代码时，看**提交里**的 `testpace.json`，不看工作区里的文件：默认分支现在的代码里有它，或要落地的代码里有它，就管；`ignore` 只认要落地的那份代码和默认分支上原来那份里都有的规则。工作区里没提交的改动（删了、写坏了、改了 `ignore`）不影响判断。
 - 会话说明、停止门拦不拦、各条命令，看**工作区根目录**有没有 `testpace.json`。写坏了也算接入：会话开始时照样说明节奏并讲出问题，`testpace status` 给出原因。
 
-通过记录只在 `testpace.json` 相同的代码之间沿用，所以改约定（包括改 `ignore`）的提交要在改完的代码上跑过整组才能落地。提交里的 `testpace.json` 写坏了（`testpace full` 跑不了）的代码拿不到通过记录，合并门拦下时说出坏在哪。删掉 `testpace.json` 的代码也拿不到：退出接入由用户自己在终端里提交；接入之前分出去、本来就没有它的分支，把默认分支合进来再测。
+通过记录只在 `testpace.json` 相同的代码之间沿用，所以改约定（包括改 `ignore`）的提交要在改完的代码上跑过整组才能落地。
+
+改约定来放松把关有两条管法，一次改动改不了评判它自己的检查：
+
+- **`ignore` 合并后才生效**。分支上新加的规则，这次改动自己用不上：落到默认分支以后才认。删掉的规则马上生效。`testpace status` 会列出哪些还没生效。
+- **三条命令和 `tests` 规则要你同意**。和分叉点上的比，改了 `fast`、`files`、`full`，或者缩小了 `tests` 规则（去掉一条找测试的规则、多加一条排除），`testpace full` 先不跑，让 agent 调确认工具弹窗给你看原来是什么、现在是什么，你同意了才跑。多加一条找测试的规则、去掉一条排除是加严，不问。它们调到的脚本改了不在这里问：启用了 testcraft 的仓库里要写理由。
+提交里的 `testpace.json` 写坏了（`testpace full` 跑不了）的代码拿不到通过记录，合并门拦下时说出坏在哪。删掉 `testpace.json` 的代码也拿不到：退出接入由用户自己在终端里提交；接入之前分出去、本来就没有它的分支，把默认分支合进来再测。
 
 - **合并门**（git 的 `reference-transaction` 钩子，会话开始时自动配在全局 git 配置里，也可以用 `testpace install`）：agent 的 git 命令要移动本地默认分支时，git 把分支要指向的提交交给 `testpace gate`；那份代码没有 `testpace full` 通过的记录，git 就取消这次更新，默认分支不动，并说明原因。
   - 按实际要落地的提交判断，不管命令怎么写：`commit`、`merge`、`cherry-pick`、`rebase`、`reset`、包了一层的写法、脚本里的 git 都一样。
@@ -105,18 +129,19 @@ codex plugin add testpace@testpace
   - 只有 `testpace gate` 明确拒绝才拦。没得到检查结论的都不挡：会话里找不到 `testpace` 命令（插件没启用、Codex 里没放固定命令入口）、插件没装全、找不到够新的 node、会话里是旧版本的 testpace，在接入了 testpace 的仓库里说一句，附上 testpace 的输出。插件更新后，开着的会话要重开才换成新版本。`gate` 已经在检查、却确认不了要落地的代码测过时照样拦。
   - 钩子命令里记着是哪一版 testpace 配的。Claude Code 和 Codex 装的版本不同时，会话开始的自动更新只升不降，不来回覆盖。
   - 合并门没配、配的命令是更旧版本的、被仓库自己的配置关掉（`hook.testpace.enabled = false`）、git 太旧，或找不到默认分支（没有 `origin/HEAD`，本地和 origin 上也没有 `main`、`master`）时，`testpace status` 和会话开始时的说明会讲出来。
-- **整组跑全部测试**：测试由 testpace 按 `tests` 规则自己找，交给 `files` 跑，不靠谁记得把新测试加进整组。放松整组（改 `full`、`tests` 规则或它们调到的脚本）testpace 不另外拦：要防 agent 这样放水，装上做这类检查的插件（登记成附加检查）。
+- **整组跑全部测试**：测试由 testpace 按 `tests` 规则自己找，交给 `files` 跑，不靠谁记得把新测试加进整组。放松整组的办法（改 `full`、`tests` 规则）要你同意，见上面。
 - **附加检查**（全局 git 配置 `testpace.check`，可以有多条）：`testpace full` 先在仓库根目录依次跑这台机器上登记的附加检查，再跑 `full` 和全部测试：附加检查便宜，有一条没过就不往下跑、不算整组通过，合并门照常拦。附加检查由别的插件装好时登记；登记在本机、不在仓库里，agent 在改动里删不掉。`testpace status` 列出登记了哪些。登记的命令找不到（插件停用了）时，`full` 不通过并说明怎么取消登记。
-- **停止门**（agent 的 Stop hook）：这个会话认出了时好时坏的测试、还在名单上的，每个拦一次。这个会话起的整组（按 agent 给命令带的会话号认，别的会话和终端里起的不算）还在跑，或这个会话还没看过结果（`testpace status`，或在前台等到了 `testpace full` 的输出，通过、失败都算），拦一次。每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里。本地默认分支或 `origin` 上的默认分支在会话里有了没有通过记录的提交时，提示用户。会话从仓库外开始的，也查它碰过的仓库。
+- **用户确认**（确认工具 `confirm_with_user`）：要你同意的改动，检查把它们按编号存好，agent 调这个工具弹窗给你看，你点了同意才记下；agent 自己说"用户同意了"不算。同意按项记（哪项检查的、改之前是什么、改成什么、你看到的文字），同意过的那一项没再变就不再问。
+- **停止门**（agent 的 Stop hook）：这个会话认出了时好时坏的测试、还在名单上的，每个拦一次。启用了 testcraft 的仓库里，这个会话改了测试却还没过放水检查、新测试还没证明能抓错，或改到了清单条目还没写怎么查的，同一份改动拦一次。这个会话起的整组（按 agent 给命令带的会话号认，别的会话和终端里起的不算）还在跑，或这个会话还没看过结果（`testpace status`，或在前台等到了 `testpace full` 的输出，通过、失败都算），拦一次。每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里。本地默认分支或 `origin` 上的默认分支在会话里有了没有通过记录的提交时，提示用户。会话从仓库外开始的，也查它碰过的仓库。
 - **软提示**（agent 的 hook）：会话开始时说明测试节奏（上一节），会话从仓库外开始的，第一次在仓库里执行命令时补说，压缩、恢复后再说一次；agent 直接跑 `full` 配置的命令时，提示它只是整组的一部分、不留记录，改用 `testpace full`。
 
-记录放在仓库的 `.git/testpace/`（所有 worktree、Claude Code 和 Codex 共用）：`runs.jsonl` 每次运行一行（记着哪个 agent、哪一版 testpace 跑的），`logs/` 是完整输出，`running/` 是每个工作区正在跑的命令（或借用着它的工具），`sessions/` 是各会话的状态，`flaky/` 是时好时坏的测试名单（一个测试一份），`rounds/` 是各工作区里测试连着几轮没过。
+记录放在仓库的 `.git/testpace/`（所有 worktree、Claude Code 和 Codex 共用）：`runs.jsonl` 每次运行一行（记着哪个 agent、哪一版 testpace 跑的），`logs/` 是完整输出，`running/` 是每个工作区正在跑的命令（或借用着它的工具），`sessions/` 是各会话的状态，`flaky/` 是时好时坏的测试名单（一个测试一份），`rounds/` 是各工作区里测试连着几轮没过，`confirm/` 是等你确认的和你同意过的，`craft/` 是 testcraft 的证明、放水检查记录。
 
 ## 开发
 
 需要 Node 22.18 以上（直接运行 TypeScript，不需要构建）和 git 2.54 以上（PATH 里排在前面的那个；合并门的测试要用）。测试用自己的全局 git 配置，不读也不改 `~/.gitconfig`。
 
-这个仓库自己也接入了 testpace（`testpace.json`）：先 `npm install`，改完跑 `testpace focused`，合回 main 前跑 `testpace full`。`fast`、`full` 是类型检查加 lint（lint 只查每个测试都有断言），`files` 是 `testpace run node-test`：用的是跑整组的那个 testpace（本机装的），不是仓库里正在改的这一版，正在改的跑法要是坏了（比如吞掉失败），不会连整组的结论一起带坏。`testpace run` 自己的测试另外调仓库里这一版（`plugin/bin/testpace`）。
+这个仓库自己也接入了 testpace（`testpace.json`）：先 `npm install`，改完跑 `testpace focused`，合回 main 前跑 `testpace full`。`fast`、`full` 是类型检查加 lint（lint 查每个测试都有断言，和源码里模块的边界：底座不引用检查模块，检查模块之间不互相引用），`files` 是 `testpace run node-test`：用的是跑整组的那个 testpace（本机装的），不是仓库里正在改的这一版，正在改的跑法要是坏了（比如吞掉失败），不会连整组的结论一起带坏。`testpace run` 自己的测试另外调仓库里这一版（`plugin/bin/testpace`）。
 
 ```bash
 testpace focused

@@ -1,4 +1,6 @@
 // 在自己的进程组里起子进程，testpace 被中断时停掉整个组：它起的进程一起收到信号，不靠它转告；不肯退出的，过一会儿强杀整个组。
+// 被中断时等整个组都退完才算结束，不只等直接起的那个进程：组里别的进程（测试框架跑测试的子进程、项目脚本起的服务）
+// 可能晚一点才退，testpace 先退出的话，这个工作区看起来空了，其实它们还占着端口、测试库。
 // 跑项目命令（execute.ts）和 testpace run 起框架（run/runner.ts）共用。
 
 import { type StdioOptions, spawn } from 'node:child_process'
@@ -33,9 +35,25 @@ export interface GroupRun {
   error?: NodeJS.ErrnoException
 }
 
+/** 强杀整个组以后，最多再等这么久：正常马上就没了，等不到（查不了这个组）也不卡住。 */
+const AFTER_KILL_MS = 2_000
+const POLL_MS = 20
+
+/** 进程组里还有进程。查不了（没权限）也当还有。 */
+function groupAlive(group: number): boolean {
+  try {
+    process.kill(-group, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
 export function spawnGroup(program: string, args: string[], options: GroupOptions): Promise<GroupRun> {
   const child = spawn(program, args, { cwd: options.cwd, env: options.env, stdio: options.stdio, detached: true })
   let interrupted = false
+  /** 第一次被中断的时间：强杀的计时、等组退完的期限都从它算。 */
+  let interruptedAt = 0
   const signalGroup = (signal: NodeJS.Signals): void => {
     if (child.pid === undefined) return
     try {
@@ -46,7 +64,10 @@ export function spawnGroup(program: string, args: string[], options: GroupOption
   }
   // 每次收到都转给整个组（比如再按一次 Ctrl-C，框架会当成要它马上退）；强杀的计时只从第一次算
   const stop = (): void => {
-    if (!interrupted) setTimeout(() => signalGroup('SIGKILL'), options.killAfterMs).unref()
+    if (!interrupted) {
+      interruptedAt = Date.now()
+      setTimeout(() => signalGroup('SIGKILL'), options.killAfterMs).unref()
+    }
     interrupted = true
     signalGroup(options.stopSignal)
   }
@@ -56,11 +77,23 @@ export function spawnGroup(program: string, args: string[], options: GroupOption
 
   return new Promise(resolve => {
     let done = false
+    const end = (run: Omit<GroupRun, 'interrupted'>): void => {
+      for (const signal of signals) process.off(signal, stop)
+      resolve({ ...run, interrupted })
+    }
     const finish = (run: Omit<GroupRun, 'interrupted'>): void => {
       if (done) return // 启动失败时 error 和 close 都会来
       done = true
-      for (const signal of signals) process.off(signal, stop)
-      resolve({ ...run, interrupted })
+      const group = child.pid
+      if (!interrupted || group === undefined) return end(run)
+      // 被中断：直接起的进程退了，等组里别的进程也退完。信号处理留着（再来一次照样转给组）；
+      // 到强杀的时间还不退的由上面的计时强杀，强杀后再等一小会儿
+      const deadline = interruptedAt + options.killAfterMs + AFTER_KILL_MS
+      const wait = (): void => {
+        if (!groupAlive(group) || Date.now() >= deadline) return end(run)
+        setTimeout(wait, POLL_MS)
+      }
+      wait()
     }
     child.on('error', error => finish({ exitCode: null, signal: null, error }))
     child.on('close', (exitCode, signal) => finish({ exitCode, signal }))
