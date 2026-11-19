@@ -194,12 +194,14 @@ describe('选测', () => {
     assert.equal(outsideNote(selection), '不在 tests 规则里、没选的：messages/send.test.ts。是测试的话整组永远跑不到它，该补进 tests 规则；练习脚本、有意排除的不用管。')
   })
 
-  test('layermap 的输出缺字段时说明可能是版本太旧', () => {
-    assert.throws(() => parseCheck('{"files":[],"tests":[]}'), /版本太旧/)
+  test('layermap 的输出缺字段时读不出来（按版本太旧处理）', () => {
+    assert.equal(parseCheck({ files: [], tests: [] }), undefined)
     // 0.1.40 的输出还没有 incomplete
-    assert.throws(() => parseCheck('{"files":[],"tests":[],"unmapped":[],"truncated":false}'), /要 0\.1\.41 以上/)
-    assert.throws(() => parseUntested('{"files":[],"tests":[],"unmapped":[],"truncated":false}'), /没有输出 untested/)
-    assert.deepEqual(parseUntested('{"untested":{"changed":["src/a.ts: a f1-3"],"routes":[],"truncated":false}}'), {
+    assert.equal(parseCheck({ files: [], tests: [], unmapped: [], truncated: false }), undefined)
+    assert.equal(parseCheck([]), undefined)
+    assert.deepEqual(parseCheck(check({})), check({}))
+    assert.equal(parseUntested({ files: [], tests: [], unmapped: [], truncated: false }), undefined)
+    assert.deepEqual(parseUntested({ untested: { changed: ['src/a.ts: a f1-3'], routes: [], truncated: false } }), {
       changed: ['src/a.ts: a f1-3'],
       truncated: false,
     })

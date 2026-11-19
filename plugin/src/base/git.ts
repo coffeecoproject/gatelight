@@ -1,7 +1,7 @@
 // 和 git 打交道的部分：仓库位置、工作区内容哈希、默认分支、落地历史。
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -139,6 +139,28 @@ export function defaultBranch(root: string): string | undefined {
   return findDefaultBranch(root).branch
 }
 
+export type ForkPoint =
+  | {
+      /** 分叉点的提交。 */
+      commit: string
+      /** 和哪个默认分支比的。 */
+      branch: string
+    }
+  | { commit?: undefined; problem: string }
+
+/**
+ * 这次改动从哪里算起：当前提交和默认分支的分叉点（本地的默认分支，没有就用 origin 上的）。直接在默认分支上就是当前提交。
+ * 只在这里算，选测试的对比、评判用的配置读哪一版（judging.ts）都用这一个结果。算不出时说明原因。
+ */
+export function forkPoint(root: string): ForkPoint {
+  const found = findDefaultBranch(root)
+  if ('problem' in found) return { problem: `认不出默认分支：${found.problem}` }
+  const { branch } = found
+  if (!headCommit(root)) return { problem: '仓库还没有提交' }
+  const commit = mergeBase(root, 'HEAD', `refs/heads/${branch}`) ?? mergeBase(root, 'HEAD', `${ORIGIN}${branch}`)
+  return commit ? { commit, branch } : { problem: `当前提交和 ${branch} 没有共同的祖先` }
+}
+
 export interface LandingFile {
   path: string
   added: number
@@ -195,9 +217,32 @@ export function hasFile(root: string, rev: string, path: string): boolean {
   return gitOrUndefined(root, ['cat-file', '-e', `${rev}:${path}`]) !== undefined
 }
 
-/** 提交（或分支）里这个文件的内容（path 相对仓库根目录）；没有这个文件返回 undefined。 */
+/** 提交（或分支）里这个文件原样的内容（path 相对仓库根目录，末尾的换行不去掉，能和工作区里的直接比）；没有这个文件返回 undefined。 */
 export function fileAt(root: string, rev: string, path: string): string | undefined {
-  return gitOrUndefined(root, ['cat-file', 'blob', `${rev}:${path}`])
+  try {
+    return execFileSync('git', ['cat-file', 'blob', `${rev}:${path}`], { cwd: root, encoding: 'utf8', maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return undefined
+  }
+}
+
+/** 提交（或分支）里这个目录下的全部文件（路径相对仓库根目录）；没有这个目录时为空。 */
+export function filesAt(root: string, rev: string, dir: string): string[] {
+  // -z：路径原样输出，不转义中文
+  const out = gitOrUndefined(root, ['ls-tree', '-r', '-z', '--name-only', rev, '--', `${dir.replace(/\/+$/, '')}/`])
+  return (out ?? '').split('\0').filter(Boolean)
+}
+
+/** 工作区里这个文件现在的内容。只读普通文件（跟着软链走）；目录、不存在的都是 undefined。 */
+export function fileNow(root: string, path: string): string | undefined {
+  const full = join(root, path)
+  return statSync(full, { throwIfNoEntry: false })?.isFile() ? readFileSync(full, 'utf8') : undefined
+}
+
+/** 工作区里这个目录下现有的文件：跟踪的，加上没跟踪、没被 .gitignore 忽略的；删掉了的不算。 */
+export function filesNow(root: string, dir: string): string[] {
+  const out = git(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', `${dir.replace(/\/+$/, '')}/`])
+  return [...new Set(out.split('\0').filter(Boolean))].filter(path => statSync(join(root, path), { throwIfNoEntry: false })?.isFile() === true)
 }
 
 export function hasRemote(root: string): boolean {

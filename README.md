@@ -40,7 +40,7 @@ codex plugin add testpace@testpace
 
 只装 testpace 也能把关：合并门、停止门和其余命令都不依赖 layermap。但开发中没法按改动选测试，`focused` 每次都会建议跑整组。装上 layermap 后只跑和改动相关的测试。在一个整组要跑约 11 分钟的项目里，相关测试每次在 1 分钟以内到 5 分钟之间（只是这一个项目的实测）。
 
-`focused` 调的是 `layermap check --json`（layermap 0.1.41 起），PATH 里要有 `layermap` 命令，装上 layermap 插件并开新会话就有。
+`focused` 调的是 `layermap check --json`（layermap 0.1.48 起），PATH 里要有 `layermap` 命令，装上 layermap 插件并开新会话就有。
 
 ## 项目约定
 

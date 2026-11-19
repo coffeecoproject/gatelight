@@ -7,7 +7,7 @@ import { CONTRACT_FILE } from '../base/contract.ts'
 import { EXIT } from '../base/exit.ts'
 import { duration, short } from '../base/format.ts'
 import { gateProblem } from '../base/gate.ts'
-import { commitOf, currentBranch, defaultBranch, landings, mergeBase, workTreeId } from '../base/git.ts'
+import { currentBranch, defaultBranch, forkPoint, landings, workTreeId } from '../base/git.ts'
 import { busyText, failureText, ignoredBy } from '../base/repo.ts'
 import { commandExists, COMMAND_KEYS, loadConfig } from './config.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT, outsideNote } from './focused.ts'
@@ -51,11 +51,11 @@ export async function focused(args: string[], usage: string): Promise<number> {
   }
   lines.push(`fast 通过 · 用时 ${duration(fast.execution.durationMs)}`, ...fast.notes)
 
-  // 对比和默认分支的分叉点：分支上已经提交的改动也算这次的改动。
+  // 对比和默认分支的分叉点：分支上已经提交的改动也算这次的改动。算不出分叉点时只比没提交的改动。
   const branch = defaultBranch(ctx.root)
   // 不在默认分支上（包括分离的 HEAD）：要落地还得合并，合并前的整组兜底，选测靠不住也不用现在跑整组
   const onBranch = branch !== undefined && currentBranch(ctx.root) !== branch
-  const base = at !== -1 ? args[at + 1]! : (branch && commitOf(ctx.root, 'HEAD') && mergeBase(ctx.root, 'HEAD', `refs/heads/${branch}`)) || 'HEAD'
+  const base = at !== -1 ? args[at + 1]! : (forkPoint(ctx.root).commit ?? 'HEAD')
   const isIgnored = ignoredBy(config.ignore)
   const selection = askLayermap(ctx.root, base, isIgnored, new Set(findTests(ctx.root, config.tests)), testMatcher(config.tests))
   const reasons = fullReasons(selection)
