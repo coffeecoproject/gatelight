@@ -34,6 +34,8 @@ const DROPPED = new Set([
   'CODEX_HOME',
   // 外层 testpace 给的交结果的文件也不带：测试里起的 testpace run 不把结果交给跑这些测试的那次
   'TESTPACE_RESULTS',
+  // 外层 testpace 这一轮的运行 id 也不带：测试里的 testpace running 默认是终端里问的
+  'TESTPACE_RUN',
   ...Object.values(AGENTS).flatMap(agent => [...agent.markers, agent.session, ...(agent.sandbox ? [agent.sandbox] : [])]),
 ])
 export const ENV: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !DROPPED.has(key)))

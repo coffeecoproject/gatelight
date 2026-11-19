@@ -11,7 +11,7 @@ import { duration, when } from './format.ts'
 import { changedPaths, commonDir, currentBranch, defaultBranch, fileAt, headCommit, refTip, repoRoot, workTreeId } from './git.ts'
 import { matcher } from './glob.ts'
 import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, type TestResult, wholeFiles } from './results.ts'
-import { newRunId, processAlive, type RunningMarker, type RunRecord, Store } from './store.ts'
+import { newRunId, processAlive, RUN_ENV, type RunningMarker, type RunRecord, Store } from './store.ts'
 import { VERSION } from './version.ts'
 
 export interface Repo {
@@ -93,11 +93,16 @@ export function started(marker: RunningMarker): string {
   return `开始于 ${when(marker.startedAt)}，${owner}`
 }
 
+/** 这个工作区在跑的是哪种命令、什么时候哪个进程起的。 */
+export function runningText(marker: RunningMarker): string {
+  const what = marker.kind === 'full' ? '整组' : ` ${marker.kind} `
+  return `这个工作区正在跑${what}（${started(marker)}）`
+}
+
 /** 因为这个工作区已经在跑测试而不跑时的说明。 */
 export function busyText(marker: RunningMarker, tree: string): string {
-  const what = marker.kind === 'full' ? '整组' : ` ${marker.kind} `
   const stale = marker.kind === 'full' && marker.tree !== tree ? '那次整组开始后代码改过，它跑完的结果不算当前代码的记录。' : ''
-  return `这个工作区正在跑${what}（${started(marker)}），同一个工作区一次只跑一轮测试，等它结束再跑。${stale}`
+  return `${runningText(marker)}，同一个工作区一次只跑一轮测试，等它结束再跑。${stale}`
 }
 
 /**
@@ -118,7 +123,7 @@ export async function runClaimed(
   const busy = repo.store.claim({ id, kind, pid: process.pid, worktree: repo.root, tree, startedAt, log })
   if (busy) return { busy }
   try {
-    const execution = await execute(command, args, repo.root, log, group => repo.store.update(repo.root, id, { group }), env)
+    const execution = await execute(command, args, repo.root, log, group => repo.store.update(repo.root, id, { group }), { ...env, [RUN_ENV]: id })
     return { id, startedAt, log, execution }
   } finally {
     repo.store.release(repo.root, id)

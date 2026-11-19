@@ -236,6 +236,77 @@ describe('结果的可信度', () => {
   })
 })
 
+describe('testpace running：这个工作区有没有测试在跑', () => {
+  /** 在 repo 里起一次停在那里的 files（等 go 文件出现才跑），等它登记好测试的进程组，返回登记的运行 id。 */
+  const slowFiles = async (repo: string): Promise<{ id: string; go: () => void; done: Promise<unknown>; kill: () => void }> => {
+    const go = join(tempDir('testpace-go-'), 'go')
+    setConfigWith(repo, { files: `while [ ! -f '${go}' ]; do sleep 0.1; done; node scripts/test-files.mjs` })
+    sh(repo, 'git add -A && git -c user.name=t -c user.email=t@t commit -qm slow')
+    const child = spawn(BIN, ['files', 'tests/format.test.mjs'], { cwd: repo, env: ENV })
+    const done = new Promise(resolve => child.on('close', resolve))
+    const running = join(repo, '.git', 'testpace', 'running')
+    const marker = (): { id: string; group?: number } | undefined => {
+      const file = existsSync(running) ? readdirSync(running).find(name => name.endsWith('.json')) : undefined
+      return file ? JSON.parse(readFileSync(join(running, file), 'utf8')) : undefined
+    }
+    for (let i = 0; i < 100 && marker()?.group === undefined; i++) await new Promise(r => setTimeout(r, 50))
+    return { id: marker()!.id, go: () => writeFileSync(go, ''), done, kill: () => child.kill('SIGKILL') }
+  }
+
+  test('没有测试在跑：说没有，退出码 0', () => {
+    const r = testpace(sampleRepo(), 'running')
+    assert.equal(r.code, 0, r.out)
+    assert.equal(r.out, '这个工作区没有测试在跑。\n')
+  })
+
+  test('这个工作区有测试在跑：说明跑的是什么、什么时候哪个进程起的，退出码 3；跑完就没有了', { timeout: 60_000 }, async () => {
+    const repo = sampleRepo()
+    const slow = await slowFiles(repo)
+    const r = testpace(repo, 'running')
+    assert.equal(r.code, 3, r.out)
+    assert.match(r.out, /^这个工作区正在跑 files （开始于 .+，进程 \d+）。\n$/)
+    slow.go()
+    assert.equal(await slow.done, 0)
+    assert.equal(testpace(repo, 'running').code, 0)
+  })
+
+  test('别的工作区在跑的不算', { timeout: 60_000 }, async () => {
+    const repo = sampleRepo()
+    const other = join(tempDir('testpace-wt-'), 'wt')
+    sh(repo, `git worktree add -q --detach '${other}'`)
+    const slow = await slowFiles(repo)
+    const r = testpace(other, 'running')
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /^这个工作区没有测试在跑/)
+    slow.go()
+    await slow.done
+  })
+
+  test('带着在跑那一轮的 TESTPACE_RUN 来问（那一轮自己起的命令）不算在跑，别的运行 id 照样算', { timeout: 60_000 }, async () => {
+    const repo = sampleRepo()
+    const slow = await slowFiles(repo)
+    const own = run(repo, ['running'], { ...ENV, TESTPACE_RUN: slow.id })
+    assert.equal(own.code, 0, own.out)
+    assert.match(own.out, /^这个工作区没有测试在跑/)
+    assert.equal(run(repo, ['running'], { ...ENV, TESTPACE_RUN: `${slow.id}-别的` }).code, 3)
+    slow.go()
+    await slow.done
+  })
+
+  test('testpace 被强杀、测试进程组还在跑：照样算在跑，说清楚怎么停', { timeout: 60_000 }, async () => {
+    const repo = sampleRepo()
+    const slow = await slowFiles(repo)
+    slow.kill()
+    await slow.done
+    const r = testpace(repo, 'running')
+    assert.equal(r.code, 3, r.out)
+    assert.match(r.out, /起它的 testpace 已经退出，测试进程组 (\d+) 还在跑，不要了用 kill -- -\1 停掉/)
+    slow.go()
+    for (let i = 0; i < 100 && testpace(repo, 'running').code === 3; i++) await new Promise(r => setTimeout(r, 100))
+    assert.equal(testpace(repo, 'running').code, 0, '测试进程组结束后就没有在跑的了')
+  })
+})
+
 describe('配置和报告', () => {
   test('没有 testpace.json 时说明原因', () => {
     const repo = sampleRepo()
@@ -502,6 +573,14 @@ describe('附加检查', () => {
     const record = runs(repo).at(-1)!
     assert.equal(record.result, 'fail')
     assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /后一条\n/)
+  })
+
+  test('附加检查拿得到这一轮的运行 id（TESTPACE_RUN），在里面问 testpace running 不算在跑', () => {
+    const repo = sampleRepo()
+    const r = run(repo, ['full'], withChecks('echo "运行 $TESTPACE_RUN" && testpace running'))
+    assert.equal(r.code, 0, r.out)
+    const record = runs(repo).at(-1)!
+    assert.match(readFileSync(record.log as string, 'utf8'), new RegExp(`运行 ${record.id}\\n这个工作区没有测试在跑。`))
   })
 
   test('登记的命令找不到：说明怎么取消登记', () => {

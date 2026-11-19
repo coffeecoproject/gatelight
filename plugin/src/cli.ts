@@ -1,4 +1,4 @@
-// testpace 命令行：focused、files、full、status、report、verify、install、run，以及 git 钩子调用的 gate。
+// testpace 命令行：focused、files、full、status、running、report、verify、install、run，以及 git 钩子调用的 gate。
 
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
@@ -16,9 +16,9 @@ import { nodeTest } from './run/node-test.ts'
 import { playwright } from './run/playwright.ts'
 import { type Framework, runFramework } from './run/runner.ts'
 import { vitest } from './run/vitest.ts'
-import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runRecorded, started } from './repo.ts'
+import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runningText, runRecorded, started } from './repo.ts'
 import { failedTests, flakyStatus, noteResults, PROVE_RUNS, provenFixed, readResults, RESULTS_ENV, resultsFile, type TestResult } from './results.ts'
-import { LOCATED, newRunId, type RunRecord, testKey } from './store.ts'
+import { LOCATED, newRunId, RUN_ENV, type RunRecord, testKey } from './store.ts'
 import { findTests, testMatcher } from './tests.ts'
 import { verifyFiles } from './verify.ts'
 
@@ -29,6 +29,8 @@ const USAGE = `用法：
                                  --repeat N 连跑 N 次、没过就停：造出时好时坏的测试的失败，或修好后连跑 10 次证明
   testpace full                  跑整组：附加检查、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
+  testpace running               这个工作区有没有 testpace 的命令在跑：有就说明跑的是什么、谁起的，退出码 3；没有退出码 0。
+                                 带着那一轮的 TESTPACE_RUN 来问的（那一轮起的命令，比如整组先跑的附加检查）不算在跑
   testpace report [--days N]     计时诊断，默认最近 28 天
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
   testpace install               这台机器配一次：在全局 git 配置里配上合并门（agent 移动默认分支时，要求落地的代码有整组通过记录），
@@ -42,7 +44,7 @@ const USAGE = `用法：
 
 /**
  * 退出码：0 通过；1 失败或没得到通过记录；2 用法或配置问题；
- * 3 这个工作区已有测试在跑，或别处在跑同一份代码的整组；4 在默认分支上，跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
+ * 3 这个工作区已有测试在跑（running：有 testpace 的命令在跑），或别处在跑同一份代码的整组；4 在默认分支上，跑了的都通过，但选测靠不住，应当跑整组；130 被中断。
  * gate 拒绝时是 GATE_REJECT（见 gate.ts）。
  */
 const EXIT = { ok: 0, fail: 1, usage: 2, busy: 3, fullNeeded: 4, interrupted: 130 } as const
@@ -134,7 +136,7 @@ async function full(): Promise<number> {
     for (const step of steps) {
       excerptFrom = sizeOf(log)
       appendFileSync(log, `===== testpace ${step.header}\n`)
-      const part = await execute(step.command, step.args, ctx.root, log, onStart, { [RESULTS_ENV]: resultsAt.path })
+      const part = await execute(step.command, step.args, ctx.root, log, onStart, { [RESULTS_ENV]: resultsAt.path, [RUN_ENV]: id })
       execution = execution ? { ...part, durationMs: execution.durationMs + part.durationMs } : part
       if (part.interrupted || part.exitCode !== 0) {
         failed = step
@@ -206,6 +208,23 @@ async function full(): Promise<number> {
     console.log(`附加检查的命令找不到（登记它的插件停用了或没装好）。重新装好它；不再用的话取消登记：git config --global --fixed-value --unset-all ${CHECK_KEY} '${check}'`)
   }
   return EXIT.fail
+}
+
+/**
+ * 这个工作区有没有 testpace 的命令在跑（只看这个工作区，别的工作区在跑的不管）。给要复制或接着用工作区的工具问，
+ * 比如 testcraft 建副本前：跑到一半的状态（锁文件、临时文件）会一起带进副本。
+ * 在跑的正是问的这一轮（环境变量 RUN_ENV 里的运行 id 和登记的一样）时不算：那是这一轮自己起的命令在问。
+ */
+function running(): number {
+  const ctx = context()
+  if (!ctx) return EXIT.usage
+  const marker = ctx.store.running().find(m => m.worktree === ctx.root)
+  if (!marker || marker.id === process.env[RUN_ENV]) {
+    console.log('这个工作区没有测试在跑。')
+    return EXIT.ok
+  }
+  console.log(`${runningText(marker)}。`)
+  return EXIT.busy
 }
 
 async function focused(args: string[]): Promise<number> {
@@ -597,6 +616,8 @@ async function dispatch(command: string | undefined, rest: string[]): Promise<nu
       return full()
     case 'status':
       return status()
+    case 'running':
+      return running()
     case 'report':
       return report(rest)
     case 'verify':
