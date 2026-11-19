@@ -1,6 +1,6 @@
 // 结果记录：放在仓库共用的 .git/testpace/ 下，不进版本库，也不影响工作区内容哈希。
 //   runs.jsonl   每次运行一行，只追加
-//   running/     每个工作区正在跑的命令一份，结束时删掉；等着用整组结果的会话另记一份
+//   running/     每个工作区正在跑的命令（或借用工作区的工具，见 testpace hold）一份，结束时删掉；等着用整组结果的会话另记一份
 //   logs/        每次运行的完整输出
 //   flaky/       时好时坏的测试的名单，一个测试一份（所有工作区共用）
 //   rounds/      每个工作区里各测试连着几轮没过
@@ -87,7 +87,8 @@ export function testKey(test: Pick<TestId, 'file' | 'name'>): string {
   return `${test.file}\0${test.name}`
 }
 
-export interface RunningMarker {
+/** testpace 跑项目命令时占着工作区的登记。 */
+export interface RunMarker {
   id: string
   kind: CommandKey
   /** testpace 进程。 */
@@ -101,6 +102,20 @@ export interface RunningMarker {
   session?: string
   log: string
 }
+
+/** 别的工具借用工作区时的登记（testpace hold），比如 testcraft 建副本：占着时不跑测试。 */
+export interface HoldMarker {
+  id: string
+  kind: 'hold'
+  /** 谁、为什么占着，比如"testcraft 建副本"。 */
+  by: string
+  /** 借用工作区的那个进程：它不在了，占用就作废。 */
+  pid: number
+  worktree: string
+  startedAt: number
+}
+
+export type RunningMarker = RunMarker | HoldMarker
 
 export interface SessionState {
   startedAt: number
@@ -216,7 +231,7 @@ export class Store {
   }
 
   /** 更新自己占着的登记（比如记下测试的进程组）。整份换掉，别人读不到写了一半的。 */
-  update(worktree: string, id: string, change: Partial<RunningMarker>): void {
+  update(worktree: string, id: string, change: Partial<RunMarker>): void {
     const path = this.markerPath(worktree)
     const marker = readMarker(path)
     if (marker?.id !== id) return
@@ -243,7 +258,7 @@ export class Store {
   }
 
   /** 记下这个会话在等这个工作区正在跑的那次结果（只追加一行，不改登记）。 */
-  waitOn(marker: RunningMarker, session: string): void {
+  waitOn(marker: RunMarker, session: string): void {
     if (marker.session === session) return
     appendFileSync(this.waitingPath(marker.worktree), `${marker.id} ${session}\n`)
   }
@@ -380,9 +395,9 @@ function readMarker(path: string): RunningMarker | undefined {
   }
 }
 
-/** testpace 进程或测试的进程组还有一个在。 */
+/** 登记的进程（testpace、借用工作区的进程）或测试的进程组还有一个在。 */
 function markerAlive(marker: RunningMarker): boolean {
-  return processAlive(marker.pid) || (marker.group !== undefined && processAlive(-marker.group))
+  return processAlive(marker.pid) || (marker.kind !== 'hold' && marker.group !== undefined && processAlive(-marker.group))
 }
 
 /** 进程（pid 为负时是进程组）还在。 */

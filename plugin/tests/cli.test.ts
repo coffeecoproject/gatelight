@@ -236,7 +236,7 @@ describe('结果的可信度', () => {
   })
 })
 
-describe('testpace running：这个工作区有没有测试在跑', () => {
+describe('testpace hold / release：借用这个工作区（比如 testcraft 建副本），查和占是同一步', () => {
   /** 在 repo 里起一次停在那里的 files（等 go 文件出现才跑），等它登记好测试的进程组，返回登记的运行 id。 */
   const slowFiles = async (repo: string): Promise<{ id: string; go: () => void; done: Promise<unknown>; kill: () => void }> => {
     const go = join(tempDir('testpace-go-'), 'go')
@@ -252,51 +252,98 @@ describe('testpace running：这个工作区有没有测试在跑', () => {
     for (let i = 0; i < 100 && marker()?.group === undefined; i++) await new Promise(r => setTimeout(r, 50))
     return { id: marker()!.id, go: () => writeFileSync(go, ''), done, kill: () => child.kill('SIGKILL') }
   }
-
-  test('没有测试在跑：说没有，退出码 0', () => {
-    const r = testpace(sampleRepo(), 'running')
+  const files = (repo: string) => testpace(repo, 'files', 'tests/format.test.mjs')
+  /** 用这个测试进程借用：占上时返回这次的 id。 */
+  const holdHere = (repo: string): string => {
+    const r = testpace(repo, 'hold', String(process.pid), 'testcraft', '建副本')
     assert.equal(r.code, 0, r.out)
-    assert.equal(r.out, '这个工作区没有测试在跑。\n')
+    assert.match(r.out, /^\S+\n$/, '只输出这次的 id')
+    return r.out.trim()
+  }
+
+  test('占着时 files、focused、full 都被挡，说明是谁占着、等它放开；status 也看得到；放开后照常跑', () => {
+    const repo = sampleRepo()
+    const id = holdHere(repo)
+    const said = new RegExp(`^这个工作区正被 testcraft 建副本 占着（开始于 [^，]+，进程 ${process.pid}），占着时不跑测试，等它放开再跑。\n$`, 'm')
+    for (const r of [files(repo), testpace(repo, 'focused'), testpace(repo, 'full')]) {
+      assert.equal(r.code, 3, r.out)
+      assert.match(r.out, said)
+    }
+    assert.equal(runs(repo).length, 0, '被挡的没有记录')
+    assert.match(testpace(repo, 'status').out, new RegExp(`这个工作区正被 testcraft 建副本 占着（开始于 [^，]+，进程 ${process.pid}），已 `))
+    assert.equal(testpace(repo, 'release', id).code, 0)
+    assert.equal(files(repo).code, 0)
   })
 
-  test('这个工作区有测试在跑：说明跑的是什么、什么时候哪个进程起的，退出码 3；跑完就没有了', { timeout: 60_000 }, async () => {
+  test('借用的进程被杀了，占用跟着作废：下一次命令照常跑', async () => {
+    const repo = sampleRepo()
+    const borrower = spawn('sleep', ['60'])
+    const r = testpace(repo, 'hold', String(borrower.pid), 'testcraft 建副本')
+    assert.equal(r.code, 0, r.out)
+    assert.equal(files(repo).code, 3)
+    const gone = new Promise(resolve => borrower.on('close', resolve))
+    borrower.kill('SIGKILL')
+    await gone
+    const after = files(repo)
+    assert.equal(after.code, 0, after.out)
+  })
+
+  test('有测试在跑：不占，说明在跑什么，退出码 3；跑完就占得上', { timeout: 60_000 }, async () => {
     const repo = sampleRepo()
     const slow = await slowFiles(repo)
-    const r = testpace(repo, 'running')
+    const r = testpace(repo, 'hold', String(process.pid), 'testcraft 建副本')
     assert.equal(r.code, 3, r.out)
     assert.match(r.out, /^这个工作区正在跑 files （开始于 .+，进程 \d+）。\n$/)
     slow.go()
     assert.equal(await slow.done, 0)
-    assert.equal(testpace(repo, 'running').code, 0)
+    testpace(repo, 'release', holdHere(repo))
   })
 
-  test('别的工作区在跑的不算', { timeout: 60_000 }, async () => {
+  test('已经被借用着：再借不占，说明是谁占着', () => {
+    const repo = sampleRepo()
+    const id = holdHere(repo)
+    const r = testpace(repo, 'hold', String(process.pid), '别的工具')
+    assert.equal(r.code, 3, r.out)
+    assert.match(r.out, /^这个工作区正被 testcraft 建副本 占着/)
+    testpace(repo, 'release', id)
+  })
+
+  test('别的工作区在跑的不挡', { timeout: 60_000 }, async () => {
     const repo = sampleRepo()
     const other = join(tempDir('testpace-wt-'), 'wt')
     sh(repo, `git worktree add -q --detach '${other}'`)
     const slow = await slowFiles(repo)
-    const r = testpace(other, 'running')
+    const r = testpace(other, 'hold', String(process.pid), 'testcraft 建副本')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /^这个工作区没有测试在跑/)
+    testpace(other, 'release', r.out.trim())
     slow.go()
     await slow.done
   })
 
-  test('带着在跑那一轮的 TESTPACE_RUN 来问（整组的附加检查）不算在跑，别的运行 id 照样算', { timeout: 60_000 }, async () => {
+  test('带着在跑那一轮的 TESTPACE_RUN 借用（整组的附加检查）：不另占、什么也不输出；别的运行 id 照样被挡', { timeout: 60_000 }, async () => {
     const repo = sampleRepo()
     const slow = await slowFiles(repo)
-    const own = run(repo, ['running'], { ...ENV, TESTPACE_RUN: slow.id })
+    const own = run(repo, ['hold', String(process.pid), 'testcraft 建副本'], { ...ENV, TESTPACE_RUN: slow.id })
     assert.equal(own.code, 0, own.out)
-    assert.match(own.out, /^这个工作区没有测试在跑/)
-    assert.equal(run(repo, ['running'], { ...ENV, TESTPACE_RUN: `${slow.id}-别的` }).code, 3)
+    assert.equal(own.out, '')
+    assert.equal(run(repo, ['hold', String(process.pid), 'testcraft 建副本'], { ...ENV, TESTPACE_RUN: `${slow.id}-别的` }).code, 3)
+    slow.go()
+    assert.equal(await slow.done, 0, '在跑的那一轮没被换掉')
+  })
+
+  test('release 只放借用的：给在跑的命令的 id 不放开它', { timeout: 60_000 }, async () => {
+    const repo = sampleRepo()
+    const slow = await slowFiles(repo)
+    assert.equal(testpace(repo, 'release', slow.id).code, 0)
+    assert.equal(files(repo).code, 3)
     slow.go()
     await slow.done
   })
 
-  // files 命令先打出看到的运行 id、问一次 running，再跑测试
-  const probe = 'echo "运行 id：[$TESTPACE_RUN]"; testpace running; node scripts/test-files.mjs'
+  // files 命令先打出看到的运行 id、借用一次，再跑测试
+  const probe = 'echo "运行 id：[$TESTPACE_RUN]"; testpace hold $$ 测试里; node scripts/test-files.mjs'
 
-  test('files 跑的测试里问 running 算在跑；外面带着 TESTPACE_RUN 来跑 files，里面也看不到它', () => {
+  test('files 跑的测试里借用被挡；外面带着 TESTPACE_RUN 来跑 files，里面也看不到它', () => {
     const repo = sampleRepo()
     setConfigWith(repo, { files: probe })
     const r = run(repo, ['files', 'tests/format.test.mjs'], { ...ENV, TESTPACE_RUN: '外面的运行 id' })
@@ -305,7 +352,7 @@ describe('testpace running：这个工作区有没有测试在跑', () => {
     assert.match(log, /运行 id：\[\]\n这个工作区正在跑 files （开始于/)
   })
 
-  test('整组跑测试的那一段里问 running 算在跑', () => {
+  test('整组跑测试的那一段里借用被挡', () => {
     const repo = sampleRepo()
     setConfigWith(repo, { files: probe })
     const r = testpace(repo, 'full')
@@ -314,17 +361,36 @@ describe('testpace running：这个工作区有没有测试在跑', () => {
     assert.match(log, /===== testpace 全部测试（2 个文件）：[^\n]*\n运行 id：\[\]\n这个工作区正在跑整组（开始于/)
   })
 
-  test('testpace 被强杀、测试进程组还在跑：照样算在跑，说清楚怎么停', { timeout: 60_000 }, async () => {
+  test('testpace 被强杀、测试进程组还在跑：照样不占，说清楚怎么停', { timeout: 60_000 }, async () => {
     const repo = sampleRepo()
     const slow = await slowFiles(repo)
     slow.kill()
     await slow.done
-    const r = testpace(repo, 'running')
+    const hold = () => testpace(repo, 'hold', String(process.pid), 'testcraft 建副本')
+    const r = hold()
     assert.equal(r.code, 3, r.out)
     assert.match(r.out, /起它的 testpace 已经退出，测试进程组 (\d+) 还在跑，不要了用 kill -- -\1 停掉/)
     slow.go()
-    for (let i = 0; i < 100 && testpace(repo, 'running').code === 3; i++) await new Promise(r => setTimeout(r, 100))
-    assert.equal(testpace(repo, 'running').code, 0, '测试进程组结束后就没有在跑的了')
+    let after = hold()
+    for (let i = 0; i < 100 && after.code === 3; i++) {
+      await new Promise(r => setTimeout(r, 100))
+      after = hold()
+    }
+    assert.equal(after.code, 0, '测试进程组结束后就占得上')
+    testpace(repo, 'release', after.out.trim())
+  })
+
+  test('参数不对：说用法，退出码 2', () => {
+    const repo = sampleRepo()
+    assert.equal(testpace(repo, 'hold').code, 2)
+    assert.equal(testpace(repo, 'hold', 'abc', '说明').code, 2)
+    assert.equal(testpace(repo, 'hold', String(process.pid)).code, 2)
+    const gone = spawnSync('sh', ['-c', 'echo $$']).stdout.toString().trim()
+    const dead = testpace(repo, 'hold', gone, 'testcraft 建副本')
+    assert.equal(dead.code, 2, dead.out)
+    assert.match(dead.out, new RegExp(`进程 ${gone} 不在`))
+    assert.equal(files(repo).code, 0, '没占上')
+    assert.equal(testpace(repo, 'release').code, 2)
   })
 })
 
@@ -596,12 +662,15 @@ describe('附加检查', () => {
     assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /后一条\n/)
   })
 
-  test('附加检查拿得到这一轮的运行 id（TESTPACE_RUN），在里面问 testpace running 不算在跑', () => {
+  test('附加检查拿得到这一轮的运行 id（TESTPACE_RUN），在里面借用工作区不另占；整组接着跑完测试、通过', () => {
     const repo = sampleRepo()
-    const r = run(repo, ['full'], withChecks('echo "运行 $TESTPACE_RUN" && testpace running'))
+    const r = run(repo, ['full'], withChecks('echo "运行 $TESTPACE_RUN" && testpace hold $$ testcraft 建副本 && echo 借到了'))
     assert.equal(r.code, 0, r.out)
     const record = runs(repo).at(-1)!
-    assert.match(readFileSync(record.log as string, 'utf8'), new RegExp(`运行 ${record.id}\\n这个工作区没有测试在跑。`))
+    assert.equal(record.result, 'pass')
+    assert.equal(record.tests, 2)
+    assert.match(readFileSync(record.log as string, 'utf8'), new RegExp(`运行 ${record.id}\\n借到了\\n`))
+    assert.equal(readdirSync(join(repo, '.git', 'testpace', 'running')).filter(name => name.endsWith('.json')).length, 0, '整组的登记照常放开')
   })
 
   test('登记的命令找不到：说明怎么取消登记', () => {

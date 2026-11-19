@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url'
 import { COMMAND_KILL_AFTER_MS, spawnGroup } from './process-group.ts'
 
 /**
- * 整组起附加检查时，在这个环境变量里给这一轮的运行 id（登记的 RunningMarker.id），只给附加检查。
- * testpace running 见到它和这个工作区的登记一样就不算在跑：附加检查在测试之前跑，那时工作区里还没有测试在跑。
- * 别的项目命令（fast、files、full 和整组跑测试的那一段）跑的就是测试，在里面问要算在跑，不给。
+ * 整组起附加检查时，在这个环境变量里给这一轮的运行 id（登记的 RunMarker.id），只给附加检查。
+ * testpace hold 见到它和这个工作区的登记一样就不另占：附加检查在测试之前跑，那时工作区里还没有测试在跑，工作区已经是这一轮的。
+ * 别的项目命令（fast、files、full 和整组跑测试的那一段）跑的就是测试，在里面借用工作区要被挡，不给。
  */
 export const RUN_ENV = 'TESTPACE_RUN'
 
