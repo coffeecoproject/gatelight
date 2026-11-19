@@ -7,7 +7,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { before, describe, test } from 'node:test'
-import { BIN, ENV, tempDir, type Result } from './helpers.ts'
+import { BIN, ENV, reported, tempDir, type Result } from './helpers.ts'
 
 const PLAYWRIGHT = dirname(createRequire(import.meta.url).resolve('@playwright/test/package.json'))
 
@@ -114,6 +114,17 @@ describe('testpace run playwright', () => {
     const r = run('e2e/tests/skipped.spec.mjs', 'e2e/tests/ok.spec.mjs')
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /这些给的文件或行上的测试这次全被跳过，什么都没验证：e2e\/tests\/skipped\.spec\.mjs\n/)
+  })
+
+  test('交回每个测试的结果：名字带外层分组，多个 project 时带上 project 名，重试之后才过的标出来', () => {
+    write('tests/retry.spec.mjs', "import { expect, test } from '@playwright/test'\ntest.describe.configure({ retries: 1 })\ntest('第二次才过', ({}, info) => { expect(info.retry).toBe(1) })\n")
+    const r = reported(dir, ['run', 'playwright', '--cwd', 'e2e', 'e2e/tests/retry.spec.mjs', 'e2e/tests/nested.spec.mjs'])
+    assert.equal(r.code, 0, r.out)
+    assert.deepEqual(r.results, ['passed 外层 > 对', 'passed 重试后 第二次才过'])
+    write('projects.config.mjs', "export default { testDir: './tests', projects: [{ name: '甲' }, { name: '乙' }] }\n")
+    const projects = reported(dir, ['run', 'playwright', '--cwd', 'e2e', '--playwright-arg=--config=projects.config.mjs', 'e2e/tests/nested.spec.mjs'])
+    assert.equal(projects.code, 0, projects.out)
+    assert.deepEqual(projects.results, ['passed [乙] 外层 > 对', 'passed [甲] 外层 > 对'])
   })
 
   test('--playwright-arg 交给 Playwright', () => {

@@ -89,7 +89,12 @@ function collect(vitest) {
       for (let parent = test.parent; parent?.type === 'suite'; parent = parent.parent) {
         if (parent.location) ancestors.push(parent.location.line)
       }
-      lines.push(`${JSON.stringify({ file: module.moduleId, line: test.location?.line, ancestors, status: state })}\n`)
+      // 重试后才过的记 retried（diagnostic 只在跑过的测试上有）
+      const retried = state === 'passed' && test.diagnostic()?.flaky === true
+      // 同一个文件跑在几个 project 里时各算一个测试：名字前面带上 project 名（和 Playwright 一样）
+      const project = test.project.name
+      const name = `${project ? `[${project}] ` : ''}${test.fullName}`
+      lines.push(`${JSON.stringify({ file: module.moduleId, line: test.location?.line, ancestors, name, status: state, ...(retried ? { retried } : {}) })}\n`)
     }
   }
   return lines.join('')

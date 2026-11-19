@@ -165,6 +165,15 @@ describe('报告的统计', () => {
     assert.deepEqual(repeatedFiles(runs), [['b.test.ts', 3], ['a.test.ts', 2]])
   })
 
+  test('testpace files --repeat 连跑的不算反复跑', () => {
+    const runs = [
+      run({ kind: 'files', files: ['a.test.ts'] }),
+      run({ kind: 'files', files: ['a.test.ts'], repeat: { index: 1, of: 2 } }),
+      run({ kind: 'files', files: ['a.test.ts'], repeat: { index: 2, of: 2 } }),
+    ]
+    assert.deepEqual(repeatedFiles(runs), [])
+  })
+
   test('平均每次落地的测试耗时和整组次数，落地从第一次运行算起', () => {
     const t = 1_000_000_000_000
     const runs = [

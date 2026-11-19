@@ -8,7 +8,7 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { before, describe, test } from 'node:test'
-import { BIN, ENV, tempDir, type Result } from './helpers.ts'
+import { BIN, ENV, reported, tempDir, type Result } from './helpers.ts'
 
 const VITEST = dirname(createRequire(import.meta.url).resolve('vitest/package.json'))
 
@@ -110,6 +110,19 @@ describe('testpace run vitest', () => {
     assert.equal(r.code, 1, r.out)
     assert.match(r.out, /Startup Error[\s\S]*配置写错了/)
     assert.doesNotMatch(r.out, /没跑到/)
+  })
+
+  test('交回每个测试的结果：名字带外层各级分组，重试之后才过的标出来', () => {
+    write('retry.test.ts', "import { expect, test } from 'vitest'\nlet n = 0\ntest('第二次才过', { retry: 1 }, () => {\n  n += 1\n  expect(n).toBe(2)\n})\n")
+    const r = reported(dir, ['run', 'vitest', '--cwd', 'app', 'app/retry.test.ts', 'app/nested.test.ts'], { ...ENV, TMPDIR: tmp })
+    assert.equal(r.code, 0, r.out)
+    assert.deepEqual(r.results, ['passed 外层 > 内层 > 对', 'passed 重试后 第二次才过'])
+
+    // 同一个文件跑在几个 project 里：名字前面带 project 名，各算一个
+    write('projects.config.mjs', "export default { test: { projects: [{ test: { name: '甲', include: ['nested.test.ts'] } }, { test: { name: '乙', include: ['nested.test.ts'] } }] } }\n")
+    const projects = reported(dir, ['run', 'vitest', '--cwd', 'app', '--vitest-arg=--config=projects.config.mjs', 'app/nested.test.ts'], { ...ENV, TMPDIR: tmp })
+    assert.equal(projects.code, 0, projects.out)
+    assert.deepEqual(projects.results, ['passed [乙] 外层 > 内层 > 对', 'passed [甲] 外层 > 内层 > 对'])
   })
 
   test('--vitest-arg 交给 Vitest', () => {

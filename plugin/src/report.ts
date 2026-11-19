@@ -58,7 +58,8 @@ export function byRunner(runs: RunRecord[]): Array<{ runner: string; count: numb
 export function repeatedFiles(runs: RunRecord[]): Array<[string, number]> {
   const counts = new Map<string, number>()
   for (const run of runs) {
-    if (run.kind !== 'files') continue
+    // 连跑（--repeat）是有意的，不算反复跑
+    if (run.kind !== 'files' || run.repeat) continue
     // 文件:行号 算那个文件；一次里给了同一文件的几行，算跑了一次
     for (const file of new Set((run.files ?? []).map(testFile))) counts.set(file, (counts.get(file) ?? 0) + 1)
   }
