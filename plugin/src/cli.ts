@@ -5,7 +5,7 @@ import { relative, resolve } from 'node:path'
 import { AGENTS, currentAgent } from './agent.ts'
 import { CHECK_KEY, extraChecks } from './checks.ts'
 import { COMMAND_KEYS, commandExists, CONFIG_FILE, configExists, loadConfig } from './config.ts'
-import { type Execution, execute } from './execute.ts'
+import { type Execution, execute, RUN_ENV } from './execute.ts'
 import { entryPath, entryState, installEntry } from './entry.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT, outsideNote } from './focused.ts'
 import { duration, short, when } from './format.ts'
@@ -18,7 +18,7 @@ import { type Framework, runFramework } from './run/runner.ts'
 import { vitest } from './run/vitest.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runningText, runRecorded, started } from './repo.ts'
 import { failedTests, flakyStatus, noteResults, PROVE_RUNS, provenFixed, readResults, RESULTS_ENV, resultsFile, type TestResult } from './results.ts'
-import { LOCATED, newRunId, RUN_ENV, type RunRecord, testKey } from './store.ts'
+import { LOCATED, newRunId, type RunRecord, testKey } from './store.ts'
 import { findTests, testMatcher } from './tests.ts'
 import { verifyFiles } from './verify.ts'
 
@@ -30,7 +30,7 @@ const USAGE = `用法：
   testpace full                  跑整组：附加检查、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace running               这个工作区有没有 testpace 的命令在跑：有就说明跑的是什么、谁起的，退出码 3；没有退出码 0。
-                                 带着那一轮的 TESTPACE_RUN 来问的（那一轮起的命令，比如整组先跑的附加检查）不算在跑
+                                 整组先跑的附加检查带着这一轮的 TESTPACE_RUN，在里面问不算在跑；别的项目命令和测试里问照样算
   testpace report [--days N]     计时诊断，默认最近 28 天
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
   testpace install               这台机器配一次：在全局 git 配置里配上合并门（agent 移动默认分支时，要求落地的代码有整组通过记录），
@@ -119,7 +119,8 @@ async function full(): Promise<number> {
   // 最后把 tests 规则找到的全部测试文件交给 files。都过了才算整组通过
   const checks = extraChecks(ctx.root)
   const steps = [
-    ...checks.map(check => ({ title: `附加检查 ${check}`, header: `附加检查：${check}`, command: check, args: [] as string[], check })),
+    // 只有附加检查拿到这一轮的运行 id（见 RUN_ENV）：它们在测试之前跑，在里面问 testpace running 不算在跑
+    ...checks.map(check => ({ title: `附加检查 ${check}`, header: `附加检查：${check}`, command: check, args: [] as string[], check, env: { [RUN_ENV]: id } })),
     { title: '整组的检查（full）', header: `整组的检查（full）：${config.full}`, command: config.full, args: [] as string[] },
     { title: `全部测试（${tests.length} 个文件）`, header: `全部测试（${tests.length} 个文件）：${config.files}`, command: config.files, args: tests },
   ]
@@ -136,7 +137,7 @@ async function full(): Promise<number> {
     for (const step of steps) {
       excerptFrom = sizeOf(log)
       appendFileSync(log, `===== testpace ${step.header}\n`)
-      const part = await execute(step.command, step.args, ctx.root, log, onStart, { [RESULTS_ENV]: resultsAt.path, [RUN_ENV]: id })
+      const part = await execute(step.command, step.args, ctx.root, log, onStart, { [RESULTS_ENV]: resultsAt.path, ...('env' in step ? step.env : {}) })
       execution = execution ? { ...part, durationMs: execution.durationMs + part.durationMs } : part
       if (part.interrupted || part.exitCode !== 0) {
         failed = step
@@ -213,7 +214,7 @@ async function full(): Promise<number> {
 /**
  * 这个工作区有没有 testpace 的命令在跑（只看这个工作区，别的工作区在跑的不管）。给要复制或接着用工作区的工具问，
  * 比如 testcraft 建副本前：跑到一半的状态（锁文件、临时文件）会一起带进副本。
- * 在跑的正是问的这一轮（环境变量 RUN_ENV 里的运行 id 和登记的一样）时不算：那是这一轮自己起的命令在问。
+ * 在跑的正是问的这一轮（环境变量 RUN_ENV 里的运行 id 和登记的一样）时不算：只有整组的附加检查拿得到它，那时还没有测试在跑。
  */
 function running(): number {
   const ctx = context()

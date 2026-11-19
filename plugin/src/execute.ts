@@ -7,11 +7,20 @@ import { fileURLToPath } from 'node:url'
 import { COMMAND_KILL_AFTER_MS, spawnGroup } from './process-group.ts'
 
 /**
+ * 整组起附加检查时，在这个环境变量里给这一轮的运行 id（登记的 RunningMarker.id），只给附加检查。
+ * testpace running 见到它和这个工作区的登记一样就不算在跑：附加检查在测试之前跑，那时工作区里还没有测试在跑。
+ * 别的项目命令（fast、files、full 和整组跑测试的那一段）跑的就是测试，在里面问要算在跑，不给。
+ */
+export const RUN_ENV = 'TESTPACE_RUN'
+
+/**
  * 跑项目命令的环境：testpace 自己的命令目录放在 PATH 最前面。项目命令和脚本里调的 testpace（比如 files 里的
  * testpace run）就是正在跑的这一版，Claude Code、Codex、合并门的钩子里都一样，不靠 PATH 上碰巧有哪一版。
+ * 从外面继承来的 RUN_ENV 去掉（比如附加检查里又调了 testpace files）：它只认起它的那一轮，附加检查由 execute 的 env 按这一轮重新给。
  */
+const { [RUN_ENV]: _inheritedRun, ...inherited } = process.env
 export const PROJECT_ENV: NodeJS.ProcessEnv = {
-  ...process.env,
+  ...inherited,
   PATH: [fileURLToPath(new URL('../bin', import.meta.url)), process.env.PATH].filter(Boolean).join(delimiter),
 }
 

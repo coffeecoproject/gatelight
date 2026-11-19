@@ -87,13 +87,6 @@ export function testKey(test: Pick<TestId, 'file' | 'name'>): string {
   return `${test.file}\0${test.name}`
 }
 
-/**
- * 起项目命令（fast、files、full 和整组的附加检查）时，在这个环境变量里给这一轮的运行 id（登记的 RunningMarker.id）。
- * testpace running 见到它和这个工作区的登记一样，就知道问的是这一轮自己起的命令，不算占用
- * （比如整组先跑的附加检查：那时工作区里还没有测试在跑）。
- */
-export const RUN_ENV = 'TESTPACE_RUN'
-
 export interface RunningMarker {
   id: string
   kind: CommandKey

@@ -130,6 +130,12 @@ describe('testpace run node-test', () => {
     assert.deepEqual(r.results, ['failed 算错', 'passed 外层 > 内层 > 对', 'passed 看不到', 'skipped 整组先不跑'])
   })
 
+  test('跑测试的进程看不到整组附加检查的运行 id（TESTPACE_RUN）：测试不是附加检查', () => {
+    writeFileSync(join(dir, 'run-id.test.mjs'), "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\ntest('看不到运行 id', () => assert.equal(process.env.TESTPACE_RUN, undefined))\n")
+    const r = testpace(dir, ['run', 'node-test', 'run-id.test.mjs'], { ...ENV, TMPDIR: tmp, TESTPACE_RUN: '附加检查那一轮' })
+    assert.equal(r.code, 0, r.out)
+  })
+
   test('跑完不留临时文件', () => {
     assert.deepEqual(readdirSync(tmp), [])
   })

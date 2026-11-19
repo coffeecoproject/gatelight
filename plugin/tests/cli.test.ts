@@ -282,7 +282,7 @@ describe('testpace running：这个工作区有没有测试在跑', () => {
     await slow.done
   })
 
-  test('带着在跑那一轮的 TESTPACE_RUN 来问（那一轮自己起的命令）不算在跑，别的运行 id 照样算', { timeout: 60_000 }, async () => {
+  test('带着在跑那一轮的 TESTPACE_RUN 来问（整组的附加检查）不算在跑，别的运行 id 照样算', { timeout: 60_000 }, async () => {
     const repo = sampleRepo()
     const slow = await slowFiles(repo)
     const own = run(repo, ['running'], { ...ENV, TESTPACE_RUN: slow.id })
@@ -291,6 +291,27 @@ describe('testpace running：这个工作区有没有测试在跑', () => {
     assert.equal(run(repo, ['running'], { ...ENV, TESTPACE_RUN: `${slow.id}-别的` }).code, 3)
     slow.go()
     await slow.done
+  })
+
+  // files 命令先打出看到的运行 id、问一次 running，再跑测试
+  const probe = 'echo "运行 id：[$TESTPACE_RUN]"; testpace running; node scripts/test-files.mjs'
+
+  test('files 跑的测试里问 running 算在跑；外面带着 TESTPACE_RUN 来跑 files，里面也看不到它', () => {
+    const repo = sampleRepo()
+    setConfigWith(repo, { files: probe })
+    const r = run(repo, ['files', 'tests/format.test.mjs'], { ...ENV, TESTPACE_RUN: '外面的运行 id' })
+    assert.equal(r.code, 0, r.out)
+    const log = readFileSync(runs(repo).at(-1)!.log as string, 'utf8')
+    assert.match(log, /运行 id：\[\]\n这个工作区正在跑 files （开始于/)
+  })
+
+  test('整组跑测试的那一段里问 running 算在跑', () => {
+    const repo = sampleRepo()
+    setConfigWith(repo, { files: probe })
+    const r = testpace(repo, 'full')
+    assert.equal(r.code, 0, r.out)
+    const log = readFileSync(runs(repo).at(-1)!.log as string, 'utf8')
+    assert.match(log, /===== testpace 全部测试（2 个文件）：[^\n]*\n运行 id：\[\]\n这个工作区正在跑整组（开始于/)
   })
 
   test('testpace 被强杀、测试进程组还在跑：照样算在跑，说清楚怎么停', { timeout: 60_000 }, async () => {

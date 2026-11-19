@@ -11,7 +11,7 @@ import { duration, when } from './format.ts'
 import { changedPaths, commonDir, currentBranch, defaultBranch, fileAt, headCommit, refTip, repoRoot, workTreeId } from './git.ts'
 import { matcher } from './glob.ts'
 import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, type TestResult, wholeFiles } from './results.ts'
-import { newRunId, processAlive, RUN_ENV, type RunningMarker, type RunRecord, Store } from './store.ts'
+import { newRunId, processAlive, type RunningMarker, type RunRecord, Store } from './store.ts'
 import { VERSION } from './version.ts'
 
 export interface Repo {
@@ -123,7 +123,7 @@ export async function runClaimed(
   const busy = repo.store.claim({ id, kind, pid: process.pid, worktree: repo.root, tree, startedAt, log })
   if (busy) return { busy }
   try {
-    const execution = await execute(command, args, repo.root, log, group => repo.store.update(repo.root, id, { group }), { ...env, [RUN_ENV]: id })
+    const execution = await execute(command, args, repo.root, log, group => repo.store.update(repo.root, id, { group }), env)
     return { id, startedAt, log, execution }
   } finally {
     repo.store.release(repo.root, id)

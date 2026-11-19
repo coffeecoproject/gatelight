@@ -5,6 +5,7 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync } from 'nod
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
+import { RUN_ENV } from '../execute.ts'
 import { FRAMEWORK_KILL_AFTER_MS, type GroupRun, spawnGroup } from '../process-group.ts'
 import { RESULTS_ENV } from '../results.ts'
 import { parseTargets, readRanLines, type Target, tally } from './targets.ts'
@@ -143,8 +144,9 @@ function parseOptions(argv: string[], argOption: string): Options | string {
  * 它起的跑测试的子进程也一起收到，不靠框架转告（Vitest 收到信号只管自己退出，跑测试的子进程要等手上的测试跑完才走）。
  */
 function spawnFramework({ program, args, env }: Command, cwd: string): Promise<GroupRun> {
-  // 交结果的位置只给这一层：测试自己再起的 testpace run（比如测 testpace 的测试）不往里写
-  const { [RESULTS_ENV]: _, ...inherited } = process.env
+  // 交结果的位置只给这一层：测试自己再起的 testpace run（比如测 testpace 的测试）不往里写。
+  // 整组附加检查的运行 id 也不给测试：附加检查直接跑项目的测试命令时（比如 testcraft check 在副本里跑），测试不是附加检查
+  const { [RESULTS_ENV]: _, [RUN_ENV]: _run, ...inherited } = process.env
   return spawnGroup(program, args, {
     cwd,
     env: { ...inherited, ...env },
