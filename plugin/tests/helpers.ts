@@ -32,6 +32,8 @@ const DROPPED = new Set([
   'NODE_TEST_CONTEXT',
   'CLAUDE_PLUGIN_DATA',
   'CODEX_HOME',
+  // 外层 testpace 给的交结果的文件也不带：测试里起的 testpace run 不把结果交给跑这些测试的那次
+  'TESTPACE_RESULTS',
   ...Object.values(AGENTS).flatMap(agent => [...agent.markers, agent.session, ...(agent.sandbox ? [agent.sandbox] : [])]),
 ])
 export const ENV: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !DROPPED.has(key)))
@@ -62,6 +64,22 @@ export function setConfig(repo: string, change: Record<string, unknown>): void {
 }
 
 const dirs: string[] = []
+
+/**
+ * 当成由 testpace 的 files、focused、full 起的 testpace run：给它交结果的位置（见 results.ts），跑完读出交回的结果，
+ * 每个写成 "结果 名字"（重试后才过的结果后加" 重试后"），排好序。
+ */
+export function reported(cwd: string, args: string[], env: NodeJS.ProcessEnv = ENV): { code: number | null; out: string; results: string[] } {
+  const file = join(tempDir('testpace-results-'), 'results.jsonl')
+  const r = spawnSync(BIN, args, { cwd, env: { ...env, TESTPACE_RESULTS: file }, encoding: 'utf8' })
+  const results = existsSync(file)
+    ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(line => {
+        const { name, status, retried } = JSON.parse(line) as { name: string; status: string; retried?: boolean }
+        return `${status}${retried ? ' 重试后' : ''} ${name}`
+      })
+    : []
+  return { code: r.status, out: r.stdout + r.stderr, results: results.sort() }
+}
 
 /** 测试结束时删掉的临时目录。 */
 export function tempDir(prefix: string): string {

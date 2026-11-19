@@ -1,11 +1,12 @@
 // testpace run 各框架共用的跑法：解析选项和测试文件、起框架、跑完逐个文件核对、说明、退出码。
 // 各框架只管怎么起（命令和参数，报告写到哪），各一个文件（node-test.ts、vitest.ts、playwright.ts）；报告都写成 targets.ts 的 Ran。
 
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { FRAMEWORK_KILL_AFTER_MS, type GroupRun, spawnGroup } from '../process-group.ts'
+import { RESULTS_ENV } from '../results.ts'
 import { parseTargets, readRanLines, type Target, tally } from './targets.ts'
 
 export interface Framework {
@@ -87,6 +88,9 @@ export async function runFramework(framework: Framework, argv: string[]): Promis
       console.error('[testpace] 框架退出了，却没写出跑了哪些测试，什么都没验证到')
       return 1
     }
+    // 由 testpace 的 files、focused、full 起的：每个测试的结果交给它，认时好时坏和几轮没过（见 results.ts）
+    const results = process.env[RESULTS_ENV]
+    if (results) appendFileSync(results, ran.map(test => `${JSON.stringify(test)}\n`).join(''))
     // 框架没过也照样核对：没跑到测试的文件和行一并说出来
     const { notRun, allSkipped, others, failed } = tally(targets, ran)
     if (others.length > 0) console.log(`[testpace] 框架还跑了这些没给的文件（名字片段匹配到的，或给的测试依赖的准备项目）：${others.map(file => relative(process.cwd(), file)).join('、')}`)
@@ -139,9 +143,11 @@ function parseOptions(argv: string[], argOption: string): Options | string {
  * 它起的跑测试的子进程也一起收到，不靠框架转告（Vitest 收到信号只管自己退出，跑测试的子进程要等手上的测试跑完才走）。
  */
 function spawnFramework({ program, args, env }: Command, cwd: string): Promise<GroupRun> {
+  // 交结果的位置只给这一层：测试自己再起的 testpace run（比如测 testpace 的测试）不往里写
+  const { [RESULTS_ENV]: _, ...inherited } = process.env
   return spawnGroup(program, args, {
     cwd,
-    env: env ? { ...process.env, ...env } : process.env,
+    env: { ...inherited, ...env },
     stdio: ['ignore', 'inherit', 'inherit'],
     stopSignal: 'SIGINT',
     killAfterMs: FRAMEWORK_KILL_AFTER_MS,

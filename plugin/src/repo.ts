@@ -8,8 +8,9 @@ import { type Coverage, findCoverage } from './coverage.ts'
 import { failureExcerpt } from './excerpt.ts'
 import { type Execution, execute } from './execute.ts'
 import { duration, when } from './format.ts'
-import { changedPaths, commonDir, currentBranch, defaultBranch, fileAt, headCommit, refTip, repoRoot } from './git.ts'
+import { changedPaths, commonDir, currentBranch, defaultBranch, fileAt, headCommit, refTip, repoRoot, workTreeId } from './git.ts'
 import { matcher } from './glob.ts'
+import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, type TestResult, wholeFiles } from './results.ts'
 import { newRunId, processAlive, type RunningMarker, type RunRecord, Store } from './store.ts'
 import { VERSION } from './version.ts'
 
@@ -67,6 +68,10 @@ export interface Recorded {
   /** 这次运行的记录；被中断（execution.interrupted）的不写进记录。 */
   record: RunRecord
   execution: Execution
+  /** 命令里的 testpace run 交回的每个测试的结果；没经 testpace run 跑的为空。 */
+  results: TestResult[]
+  /** 看这些结果要说给 agent 的话：时好时坏、几轮没过（见 results.ts）。 */
+  notes: string[]
 }
 
 /** 本地和远程（origin）默认分支现在指向的提交，按引用名。找不到默认分支时为空。 */
@@ -105,6 +110,7 @@ export async function runClaimed(
   command: string,
   args: string[],
   tree: string,
+  env: Record<string, string> = {},
 ): Promise<{ id: string; startedAt: number; log: string; execution: Execution } | { busy: RunningMarker }> {
   const startedAt = Date.now()
   const id = newRunId(startedAt)
@@ -112,7 +118,7 @@ export async function runClaimed(
   const busy = repo.store.claim({ id, kind, pid: process.pid, worktree: repo.root, tree, startedAt, log })
   if (busy) return { busy }
   try {
-    const execution = await execute(command, args, repo.root, log, group => repo.store.update(repo.root, id, { group }))
+    const execution = await execute(command, args, repo.root, log, group => repo.store.update(repo.root, id, { group }), env)
     return { id, startedAt, log, execution }
   } finally {
     repo.store.release(repo.root, id)
@@ -120,8 +126,8 @@ export async function runClaimed(
 }
 
 /**
- * 跑 fast 或 files 并记一条记录（见 runClaimed）。
- * 这两种不检查跑的过程中代码改没改：它们只用于开发中的反馈和计时，通过记录只认 full。
+ * 跑 fast 或 files 并记一条记录（见 runClaimed），收回每个测试的结果、看有没有时好时坏和几轮没过的（见 results.ts）。
+ * 跑完重算一次代码（treeAtEnd）：认时好时坏要"同一份代码"，跑的过程中代码改过的不算。通过记录只认 full。
  */
 export async function runRecorded(
   repo: Repo,
@@ -129,28 +135,41 @@ export async function runRecorded(
   command: string,
   args: string[],
   tree: string,
+  options: { repeat?: RunRecord['repeat']; passedEarlier?: Map<string, string> } = {},
 ): Promise<Recorded | { busy: RunningMarker }> {
-  const run = await runClaimed(repo, kind, command, args, tree)
-  if ('busy' in run) return run
-  const { id, startedAt, log, execution } = run
-  const record: RunRecord = {
-    id,
-    kind,
-    worktree: repo.root,
-    branch: currentBranch(repo.root),
-    head: headCommit(repo.root),
-    tree,
-    treeAtEnd: tree,
-    startedAt,
-    durationMs: execution.durationMs,
-    exitCode: execution.exitCode,
-    result: execution.exitCode === 0 ? 'pass' : 'fail',
-    ...(kind === 'files' ? { files: args } : {}),
-    ...runner(),
-    log,
+  const file = resultsFile()
+  try {
+    const run = await runClaimed(repo, kind, command, args, tree, { [RESULTS_ENV]: file.path })
+    if ('busy' in run) return run
+    const { id, startedAt, log, execution } = run
+    const results = execution.interrupted ? [] : readResults(file.path, repo.root)
+    const failed = failedTests(results)
+    const record: RunRecord = {
+      id,
+      kind,
+      worktree: repo.root,
+      branch: currentBranch(repo.root),
+      head: headCommit(repo.root),
+      tree,
+      treeAtEnd: execution.interrupted ? tree : workTreeId(repo.root),
+      startedAt,
+      durationMs: execution.durationMs,
+      exitCode: execution.exitCode,
+      result: execution.exitCode === 0 ? 'pass' : 'fail',
+      ...(kind === 'files' ? { files: args } : {}),
+      ...(results.length > 0 ? { failed } : {}),
+      ...(options.repeat ? { repeat: options.repeat } : {}),
+      ...runner(),
+      log,
+    }
+    if (execution.interrupted) return { record, execution, results, notes: [] }
+    const before = repo.store.readRuns()
+    repo.store.appendRun(record)
+    const notes = noteResults(repo, { record, results, before, whole: wholeFiles(args), ...(options.passedEarlier ? { passedEarlier: options.passedEarlier } : {}) })
+    return { record, execution, results, notes }
+  } finally {
+    file.dispose()
   }
-  if (!execution.interrupted) repo.store.appendRun(record)
-  return { record, execution }
 }
 
 /** 命令为什么算失败：退出码、信号，或没能启动。 */

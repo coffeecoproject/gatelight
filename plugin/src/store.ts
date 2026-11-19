@@ -2,6 +2,8 @@
 //   runs.jsonl   每次运行一行，只追加
 //   running/     每个工作区正在跑的命令一份，结束时删掉；等着用整组结果的会话另记一份
 //   logs/        每次运行的完整输出
+//   flaky/       时好时坏的测试的名单，一个测试一份（所有工作区共用）
+//   rounds/      每个工作区里各测试连着几轮没过
 
 import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -47,7 +49,42 @@ export interface RunRecord {
   checks?: string[]
   /** 整组：tests 规则找到、交给 files 跑的测试文件数。 */
   tests?: number
+  /** 没过的测试（经 testpace run 跑、交回了每个测试结果的才有）。 */
+  failed?: TestId[]
+  /** testpace files --repeat 连跑的第几次（从 1 起）、共几次。 */
+  repeat?: { index: number; of: number }
   log: string
+}
+
+/** 一个测试：文件（相对仓库根目录）和带外层分组的名字认它；行号用来显示和重跑。 */
+export interface TestId {
+  file: string
+  line?: number
+  name: string
+}
+
+/** 时好时坏名单上的一个测试。 */
+export interface FlakyTest extends TestId {
+  /** 怎么认出来的：同一份代码上先没过后过了（或连跑时前面过了后面没过），还是框架重试后才过。 */
+  how: 'reran' | 'retried'
+  foundAt: number
+  tree: string
+  worktree: string
+  /** 没过那次的日志。重试后才过的就是通过那次的日志。 */
+  failLog: string
+  passLog: string
+  /** 认出它的 agent 会话。 */
+  session?: string
+}
+
+/** 一个测试在一个工作区里连着几轮没过：每轮的代码、日志、时间。 */
+export interface Rounds extends TestId {
+  rounds: Array<{ tree: string; log: string; at: number }>
+}
+
+/** 名单、计数里认同一个测试用的键。 */
+export function testKey(test: Pick<TestId, 'file' | 'name'>): string {
+  return `${test.file}\0${test.name}`
 }
 
 export interface RunningMarker {
@@ -75,7 +112,7 @@ export interface SessionState {
   rhythm?: boolean
   /** 这个会话在各工作区最近一次看到整组结果的时间（跑了 testpace status，或在前台等到了 testpace full）。 */
   read?: Record<string, number>
-  /** 停止门拦过的：running:<运行 id>（还在跑时拦过）、unread:<运行 id>（跑完没看结果时拦过）。每种只拦一次。 */
+  /** 停止门拦过的：running:<运行 id>（还在跑时拦过）、unread:<运行 id>（跑完没看结果时拦过）、flaky:<testKey>（认出的时好时坏测试）。每种只拦一次。 */
   blocked?: string[]
 }
 
@@ -263,6 +300,51 @@ export class Store {
     const dir = join(this.dir, 'sessions')
     mkdirSync(dir, { recursive: true })
     writeWhole(join(dir, `${id.replace(/[^\w.-]/g, '_')}.json`), JSON.stringify(state))
+  }
+
+  private get flakyDir(): string {
+    return join(this.dir, 'flaky')
+  }
+
+  private flakyPath(test: Pick<TestId, 'file' | 'name'>): string {
+    return join(this.flakyDir, `${createHash('sha1').update(testKey(test)).digest('hex').slice(0, 16)}.json`)
+  }
+
+  /** 时好时坏的名单，先认出的在前。一个测试一份文件：几个工作区同时跑完时各写各的，不会互相覆盖。 */
+  flaky(): FlakyTest[] {
+    if (!existsSync(this.flakyDir)) return []
+    const list: FlakyTest[] = []
+    for (const name of readdirSync(this.flakyDir).filter(name => name.endsWith('.json'))) {
+      try {
+        list.push(JSON.parse(readFileSync(join(this.flakyDir, name), 'utf8')) as FlakyTest)
+      } catch {
+        // 写坏了的跳过
+      }
+    }
+    return list.sort((a, b) => a.foundAt - b.foundAt)
+  }
+
+  addFlaky(test: FlakyTest): void {
+    mkdirSync(this.flakyDir, { recursive: true })
+    writeWhole(this.flakyPath(test), JSON.stringify(test))
+  }
+
+  removeFlaky(test: Pick<TestId, 'file' | 'name'>): void {
+    rmSync(this.flakyPath(test), { force: true })
+  }
+
+  /** 这个工作区里连着没过的测试，按 testKey。同一个工作区一次只跑一轮，读写不会撞上。 */
+  rounds(worktree: string): Record<string, Rounds> {
+    try {
+      return JSON.parse(readFileSync(join(this.dir, 'rounds', `${worktreeKey(worktree)}.json`), 'utf8')) as Record<string, Rounds>
+    } catch {
+      return {}
+    }
+  }
+
+  saveRounds(worktree: string, rounds: Record<string, Rounds>): void {
+    mkdirSync(join(this.dir, 'rounds'), { recursive: true })
+    writeWhole(join(this.dir, 'rounds', `${worktreeKey(worktree)}.json`), JSON.stringify(rounds))
   }
 
   /** 各工作区正在跑的命令。进程都不在了的登记不算，留给下一次 claim 清掉。 */

@@ -17,13 +17,16 @@ import { playwright } from './run/playwright.ts'
 import { type Framework, runFramework } from './run/runner.ts'
 import { vitest } from './run/vitest.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runRecorded, started } from './repo.ts'
-import { LOCATED, newRunId } from './store.ts'
+import { failedTests, flakyStatus, noteResults, PROVE_RUNS, provenFixed, readResults, RESULTS_ENV, resultsFile, type TestResult } from './results.ts'
+import { LOCATED, newRunId, type RunRecord, testKey } from './store.ts'
 import { findTests, testMatcher } from './tests.ts'
 import { verifyFiles } from './verify.ts'
 
 const USAGE = `用法：
   testpace focused [--base REF]  改完先跑：fast，再跑 layermap 选出的相关测试。默认对比和默认分支的分叉点；在默认分支上选测靠不住时建议跑整组
-  testpace files PATH[:行号]...  只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试
+  testpace files [--repeat N] PATH[:行号]...
+                                 只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试。
+                                 --repeat N 连跑 N 次、没过就停：造出时好时坏的测试的失败，或修好后连跑 10 次证明
   testpace full                  跑整组：附加检查、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace report [--days N]     计时诊断，默认最近 28 天
@@ -119,17 +122,19 @@ async function full(): Promise<number> {
     { title: `全部测试（${tests.length} 个文件）`, header: `全部测试（${tests.length} 个文件）：${config.files}`, command: config.files, args: tests },
   ]
   const onStart = (group: number) => ctx.store.update(ctx.root, id, { group })
+  const resultsAt = resultsFile()
   const sizeOf = (path: string) => (existsSync(path) ? statSync(path).size : 0)
   let failed: (typeof steps)[number] | undefined
   // 失败节选从没通过的那一段的输出开始
   let excerptFrom = 0
   let execution: Execution | undefined
   let waiting: string[]
+  let results: TestResult[]
   try {
     for (const step of steps) {
       excerptFrom = sizeOf(log)
       appendFileSync(log, `===== testpace ${step.header}\n`)
-      const part = await execute(step.command, step.args, ctx.root, log, onStart)
+      const part = await execute(step.command, step.args, ctx.root, log, onStart, { [RESULTS_ENV]: resultsAt.path })
       execution = execution ? { ...part, durationMs: execution.durationMs + part.durationMs } : part
       if (part.interrupted || part.exitCode !== 0) {
         failed = step
@@ -138,6 +143,8 @@ async function full(): Promise<number> {
     }
   } finally {
     waiting = ctx.store.release(ctx.root, id)
+    results = readResults(resultsAt.path, ctx.root)
+    resultsAt.dispose()
   }
   if (!execution) throw new Error('整组没有运行')
 
@@ -148,7 +155,8 @@ async function full(): Promise<number> {
 
   const treeAtEnd = workTreeId(ctx.root)
   const result = execution.exitCode === 0 ? 'pass' : 'fail'
-  ctx.store.appendRun({
+  const before = ctx.store.readRuns()
+  const record: RunRecord = {
     id,
     kind: 'full',
     worktree: ctx.root,
@@ -164,20 +172,24 @@ async function full(): Promise<number> {
     ...(waiting.length ? { waiting } : {}),
     ...(checks.length ? { checks } : {}),
     tests: tests.length,
+    ...(results.length > 0 ? { failed: failedTests(results) } : {}),
     ...runner(),
     log,
-  })
+  }
+  ctx.store.appendRun(record)
+  const notes = noteResults(ctx, { record, results, before, whole: tests })
+  const say = (text: string): void => console.log([text, ...notes].join('\n'))
 
   const took = duration(execution.durationMs)
   if (result === 'pass' && tree === treeAtEnd) {
     const extra = checks.length ? `\n附加检查通过：${checks.join('、')}` : ''
-    console.log(`整组通过 · ${tests.length} 个测试文件 · 用时 ${took} · 代码 ${short(tree)}${extra}\n日志：${log}`)
+    say(`整组通过 · ${tests.length} 个测试文件 · 用时 ${took} · 代码 ${short(tree)}${extra}\n日志：${log}`)
     return EXIT.ok
   }
   if (result === 'pass') {
     const changed = changedPaths(ctx.root, tree, treeAtEnd)
     const more = changed.length > 5 ? ` 等 ${changed.length} 个` : ''
-    console.log(
+    say(
       [
         `整组通过，但跑的过程中代码改过，这次不算通过记录。变了的文件：${changed.slice(0, 5).join('、')}${more}`,
         '是整组自己生成的文件，就加进 .gitignore 或让它写到仓库外；是别处改的，代码不再改动时重跑 testpace full。',
@@ -189,7 +201,7 @@ async function full(): Promise<number> {
   const check = failed && 'check' in failed ? failed.check : undefined
   const what = failed?.title ?? '整组'
   const gap = /[A-Za-z0-9]$/.test(what) ? ' ' : ''
-  console.log(failureText(`整组失败：${what}${gap}没通过${failed === steps.at(-1) ? '' : '，后面的没有跑'}`, log, execution, excerptFrom))
+  say(failureText(`整组失败：${what}${gap}没通过${failed === steps.at(-1) ? '' : '，后面的没有跑'}`, log, execution, excerptFrom))
   if (check && execution.exitCode === 127) {
     console.log(`附加检查的命令找不到（登记它的插件停用了或没装好）。重新装好它；不再用的话取消登记：git config --global --fixed-value --unset-all ${CHECK_KEY} '${check}'`)
   }
@@ -220,10 +232,10 @@ async function focused(args: string[]): Promise<number> {
   }
   if (fast.execution.interrupted) return EXIT.interrupted
   if (fast.record.result === 'fail') {
-    console.log(failureText('fast 失败', fast.record.log, fast.execution))
+    console.log([failureText('fast 失败', fast.record.log, fast.execution), ...fast.notes].join('\n'))
     return EXIT.fail
   }
-  lines.push(`fast 通过 · 用时 ${duration(fast.execution.durationMs)}`)
+  lines.push(`fast 通过 · 用时 ${duration(fast.execution.durationMs)}`, ...fast.notes)
 
   // 对比和默认分支的分叉点：分支上已经提交的改动也算这次的改动。
   const branch = defaultBranch(ctx.root)
@@ -252,10 +264,10 @@ async function focused(args: string[]): Promise<number> {
     }
     if (related.execution.interrupted) return EXIT.interrupted
     if (related.record.result === 'fail') {
-      console.log([...lines, failureText('相关测试失败', related.record.log, related.execution)].join('\n'))
+      console.log([...lines, failureText('相关测试失败', related.record.log, related.execution), ...related.notes].join('\n'))
       return EXIT.fail
     }
-    lines.push(`相关测试通过 · 用时 ${duration(related.execution.durationMs)}`)
+    lines.push(`相关测试通过 · 用时 ${duration(related.execution.durationMs)}`, ...related.notes)
   }
   if (reasons.length > 0 && onBranch) {
     lines.push(`这次选测不完全可靠：${reasons.join('；')}。在分支上不用现在跑整组，合回 ${branch} 时的整组会覆盖。`)
@@ -268,7 +280,19 @@ async function focused(args: string[]): Promise<number> {
   return code
 }
 
-async function files(paths: string[]): Promise<number> {
+async function files(argv: string[]): Promise<number> {
+  // --repeat N：连跑 N 次，没过就停。造出时好时坏的测试的失败，或证明修好了（见 results.ts 的 PROVE_RUNS）
+  let times = 1
+  let paths = argv
+  const at = argv.indexOf('--repeat')
+  if (at >= 0) {
+    times = Number(argv[at + 1])
+    paths = [...argv.slice(0, at), ...argv.slice(at + 2)]
+    if (!Number.isInteger(times) || times < 1) {
+      console.error('--repeat 要跟一个正整数')
+      return EXIT.usage
+    }
+  }
   if (paths.length === 0) {
     console.error(USAGE)
     return EXIT.usage
@@ -286,19 +310,52 @@ async function files(paths: string[]): Promise<number> {
     const location = LOCATED.exec(path)?.[0] ?? ''
     return relative(ctx.root, resolve(path.slice(0, path.length - location.length))) + location
   })
-  const run = await runRecorded(ctx, 'files', config.files, targets, tree)
-  if ('busy' in run) {
-    console.log(busyText(run.busy, tree))
-    return EXIT.busy
-  }
   // 文件:行号 只跑那一行的测试
   const what = targets.some(target => LOCATED.test(target)) ? `${targets.length} 处测试` : `${targets.length} 个测试文件`
-  if (run.execution.interrupted) return EXIT.interrupted
-  if (run.record.result === 'fail') {
-    console.log(failureText(`${what}失败`, run.record.log, run.execution))
-    return EXIT.fail
+  const notes: string[] = []
+  const passes: TestResult[][] = []
+  // 连跑时前面通过的测试和那次的日志：后面没过就是时好时坏。只认同一份代码上的，代码一变就清掉
+  const passedEarlier = new Map<string, string>()
+  // 每次从上一次跑完时的代码开始；中途代码变过，这次连跑就不算证明修好了
+  let current = tree
+  let changed = false
+  let took = 0
+  for (let index = 1; index <= times; index += 1) {
+    const repeat = times > 1 ? { repeat: { index, of: times }, passedEarlier } : {}
+    const run = await runRecorded(ctx, 'files', config.files, targets, current, repeat)
+    if ('busy' in run) {
+      console.log([busyText(run.busy, current), ...notes].join('\n'))
+      return EXIT.busy
+    }
+    if (run.execution.interrupted) {
+      if (notes.length > 0) console.log(notes.join('\n'))
+      return EXIT.interrupted
+    }
+    notes.push(...run.notes)
+    const stayed = run.record.treeAtEnd === current
+    if (!stayed) {
+      changed = true
+      current = run.record.treeAtEnd
+      passedEarlier.clear()
+    }
+    took += run.execution.durationMs
+    if (run.record.result === 'fail') {
+      const which = times > 1 ? `连跑第 ${index} 次（共 ${times} 次）` : ''
+      console.log([failureText(`${what}${which}失败`, run.record.log, run.execution), ...notes].join('\n'))
+      return EXIT.fail
+    }
+    passes.push(run.results)
+    if (stayed) {
+      for (const test of run.results) if (test.status === 'passed' && !passedEarlier.has(testKey(test))) passedEarlier.set(testKey(test), run.record.log)
+    }
   }
-  console.log(`${what}通过 · 用时 ${duration(run.execution.durationMs)}`)
+  // 证明修好了要代码一直没改
+  if (!changed) notes.push(...provenFixed(ctx, passes))
+  else if (times >= PROVE_RUNS && ctx.store.flaky().length > 0) {
+    notes.push('连跑的过程中代码或工作区变了（比如测试生成了没被 .gitignore 忽略的文件），这次不算证明时好时坏的测试修好了，名单没动。')
+  }
+  const how = times > 1 ? `连跑 ${times} 次都通过 · 共用时 ${duration(took)}` : `通过 · 用时 ${duration(took)}`
+  console.log([`${what}${how}`, ...notes].join('\n'))
   return EXIT.ok
 }
 
@@ -330,6 +387,7 @@ function status(): number {
     }
   }
 
+  lines.push(...flakyStatus(ctx.store.flaky()))
   lines.push(`配置（${CONFIG_FILE}）：${problems.length ? problems.join('；') : '正常'}`)
   if (config) {
     for (const key of COMMAND_KEYS) {

@@ -13,6 +13,7 @@ import { entryPath, entryState } from './entry.ts'
 import { ensureGate, gateProblem } from './gate.ts'
 import { git } from './git.ts'
 import { defaultTips, openRepo, type Repo } from './repo.ts'
+import { flakyBrief } from './results.ts'
 import { noteSessionRepos, sessionRepos } from './sessions.ts'
 import { invocations, runsCommand } from './shell.ts'
 import { stopCheck } from './stop.ts'
@@ -75,12 +76,13 @@ function agentNotes(agent: AgentKind): string[] {
   return notes
 }
 
-/** 给 agent 的节奏说明；testpace.json 有问题、合并门没在把关时加上原因，再加上这个 agent 自己的前提。 */
+/** 给 agent 的节奏说明；testpace.json 有问题、合并门没在把关时加上原因，有时好时坏的测试时列出来，再加上这个 agent 自己的前提。 */
 function told(repo: Repo, agent: AgentKind, label?: string): string {
   const { problems } = loadConfig(repo.root)
   const broken = problems.length ? `${CONFIG_FILE} 有问题：${problems.join('；')}。` : undefined
   const gate = gateProblem(repo.root)
-  return [label ? rhythm(label) : RHYTHM, ...(broken ? [broken] : []), ...(gate ? [gate] : []), ...agentNotes(agent)].join('\n')
+  const flaky = flakyBrief(repo.store.flaky())
+  return [label ? rhythm(label) : RHYTHM, ...(broken ? [broken] : []), ...(gate ? [gate] : []), ...(flaky ? [flaky] : []), ...agentNotes(agent)].join('\n')
 }
 
 /** 直接跑配置里的 full 不会留下记录，合并门不认；它也只是整组的一部分。 */

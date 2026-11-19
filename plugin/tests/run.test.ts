@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { delimiter, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { before, describe, test } from 'node:test'
-import { BIN, ENV, sampleRepo, setConfig, tempDir, testpace, type Result } from './helpers.ts'
+import { BIN, ENV, reported, sampleRepo, setConfig, tempDir, testpace, type Result } from './helpers.ts'
 
 const PASSING = "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\ntest('一加一', () => assert.equal(1 + 1, 2))\n"
 
@@ -121,6 +121,13 @@ describe('testpace run node-test', () => {
     const r = run('--cwd', 'nowhere', 'ok.test.mjs')
     assert.equal(r.code, 2)
     assert.match(r.out, /--cwd 给的目录不存在：nowhere/)
+  })
+
+  test('交回每个测试的结果：名字带外层各级分组，整组被跳过的记这一组；跑测试的进程看不到交结果的位置', () => {
+    writeFileSync(join(dir, 'leak.test.mjs'), "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\ntest('看不到', () => assert.equal(process.env.TESTPACE_RESULTS, undefined))\n")
+    const r = reported(dir, ['run', 'node-test', 'nested.test.mjs', 'leak.test.mjs', 'failing.test.mjs'], { ...ENV, TMPDIR: tmp })
+    assert.equal(r.code, 1, r.out)
+    assert.deepEqual(r.results, ['failed 算错', 'passed 外层 > 内层 > 对', 'passed 看不到', 'skipped 整组先不跑'])
   })
 
   test('跑完不留临时文件', () => {

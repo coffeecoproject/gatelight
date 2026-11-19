@@ -1,0 +1,242 @@
+// 每个测试的结果：testpace 跑项目命令时在环境变量 RESULTS_ENV 里给一个文件，命令里的 testpace run 把每个测试的结果追加进去
+// （见 run/runner.ts）。跑完由这里读出来：记下没过的测试，认出时好时坏的测试（记进名单、点名），数同一个测试连着几轮没过。
+// 项目没经 testpace run 跑的测试交不回结果，这些都不做。
+
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
+import { currentAgent } from './agent.ts'
+import { when } from './format.ts'
+import type { Repo } from './repo.ts'
+import type { Ran } from './run/targets.ts'
+import { type FlakyTest, LOCATED, type RunRecord, type TestId, testKey } from './store.ts'
+
+export const RESULTS_ENV = 'TESTPACE_RESULTS'
+
+/** 连跑这么多次都过（代码没改），才算证明时好时坏的测试修好了，从名单上去掉。 */
+export const PROVE_RUNS = 10
+
+/** 同一个测试连着这么多轮（每轮改了代码）没过，就让 agent 停下来找用户。 */
+export const STOP_ROUNDS = 3
+
+/** 一个测试的结果，文件相对仓库根目录。 */
+export interface TestResult extends TestId {
+  status: Ran['status']
+  retried?: boolean
+}
+
+/** 给一次运行准备交结果的文件。用完调 dispose。 */
+export function resultsFile(): { path: string; dispose: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'testpace-results-'))
+  return { path: join(dir, 'results.jsonl'), dispose: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+/** 读交回的结果，路径换成相对仓库根目录；仓库外的文件不算。没交回任何结果时为空。 */
+export function readResults(path: string, root: string): TestResult[] {
+  let text: string
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch {
+    return []
+  }
+  const base = realpathSync(root)
+  const results: TestResult[] = []
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    let ran: Ran
+    try {
+      ran = JSON.parse(line) as Ran
+    } catch {
+      continue // 写到一半的（进程被杀）
+    }
+    const file = relative(base, ran.file)
+    if (file.startsWith('..')) continue
+    results.push({ file, ...(ran.line === undefined ? {} : { line: ran.line }), name: ran.name, status: ran.status, ...(ran.retried ? { retried: true } : {}) })
+  }
+  return results
+}
+
+/**
+ * 这次运行里认得清的结果：一个测试只留一条。同一个文件里同名的测试、Playwright 的 repeatEach 拷贝会共用一个名字，
+ * 一次运行里同一个名字既有过的又有没过的，分不清是哪个，不算（不记没过，不比时好时坏，不数轮数）。
+ * 名字带 project 的（Vitest、Playwright 有多个 project 时）各算一个。
+ */
+function distinct(results: TestResult[]): TestResult[] {
+  const byKey = new Map<string, TestResult>()
+  const mixed = new Set<string>()
+  for (const test of results) {
+    const key = testKey(test)
+    const seen = byKey.get(key)
+    if (!seen) byKey.set(key, test)
+    else if (seen.status !== test.status && (seen.status === 'failed' || test.status === 'failed')) mixed.add(key)
+    else if (test.status === 'failed' || (test.status === 'passed' && seen.status === 'skipped')) byKey.set(key, test)
+  }
+  return [...byKey.values()].filter(test => !mixed.has(testKey(test)))
+}
+
+/** 没过的测试（见 distinct）。 */
+export function failedTests(results: TestResult[]): TestId[] {
+  return distinct(results)
+    .filter(test => test.status === 'failed')
+    .map(test => ({ file: test.file, ...(test.line === undefined ? {} : { line: test.line }), name: test.name }))
+}
+
+/** 说一个测试：文件:行号 「名字」。 */
+export function describeTest(test: TestId): string {
+  return `${test.line === undefined ? test.file : `${test.file}:${test.line}`} 「${test.name}」`
+}
+
+/** 给的参数里整个文件给的那些（不带行号）。 */
+export function wholeFiles(args: string[]): string[] {
+  return args.filter(arg => !LOCATED.test(arg))
+}
+
+export interface ResultsInput {
+  /** 这次运行的记录，已经写进 runs.jsonl。 */
+  record: RunRecord
+  results: TestResult[]
+  /** 这次运行之前的记录。 */
+  before: RunRecord[]
+  /** 整个文件跑的测试文件（相对仓库根目录）。 */
+  whole: string[]
+  /** 连跑时前面几次通过的测试，按 testKey，值是那次的日志。 */
+  passedEarlier?: Map<string, string>
+}
+
+/**
+ * 看这次运行的结果：
+ * - 时好时坏：同一份代码上以前没过、这次过了；连跑时前面过了、这次没过；框架重试后才过。记进名单，点名。
+ *   "同一份代码"要两次都是跑的过程中代码没改过的（tree 和 treeAtEnd 一样）。
+ * - 名单上的测试不在了：在认出它的工作区里（或那个工作区已经删了）整个跑了它的文件、全部通过，
+ *   文件里却没有这个名字（删掉或改了名），从名单上去掉。别的工作区的代码可能还没有这个测试，不算。
+ * - 几轮没过：改了代码再跑还没过算一轮，过了清零；到 STOP_ROUNDS 轮让 agent 停下来找用户。
+ * 返回要说给 agent 的话。
+ */
+export function noteResults(repo: Repo, input: ResultsInput): string[] {
+  const { record } = input
+  if (input.results.length === 0) return []
+  const results = distinct(input.results)
+  const notes: string[] = []
+  const listed = new Map(repo.store.flaky().map(test => [testKey(test), test]))
+  const session = currentAgent()?.session
+
+  // 认出的新的时好时坏测试，和说它的话。名单上已有的、这次已经认出的不再算
+  const found: Array<{ test: FlakyTest; note: string }> = []
+  const flag = (test: TestResult, how: FlakyTest['how'], failLog: string, passLog: string, note: string): void => {
+    const key = testKey(test)
+    if (listed.has(key) || found.some(other => testKey(other.test) === key)) return
+    const flaky: FlakyTest = {
+      file: test.file,
+      ...(test.line === undefined ? {} : { line: test.line }),
+      name: test.name,
+      how,
+      foundAt: record.startedAt,
+      tree: record.tree,
+      worktree: record.worktree,
+      failLog,
+      passLog,
+      ...(session ? { session } : {}),
+    }
+    found.push({ test: flaky, note: `时好时坏：${describeTest(test)} ${note}` })
+  }
+  // 同一份代码上的、跑的过程中代码没改过的，近的在前。这次跑的过程中代码改过就不比
+  const stable = record.treeAtEnd === record.tree
+  const sameCode = input.before.filter(run => run.tree === record.tree && run.treeAtEnd === run.tree).sort((a, b) => b.startedAt - a.startedAt)
+  for (const test of stable ? results : []) {
+    if (test.status === 'passed' && test.retried) {
+      flag(test, 'retried', record.log, record.log, '框架重试之后才过。')
+    } else if (test.status === 'passed') {
+      const failedRun = sameCode.find(run => run.failed?.some(other => testKey(other) === testKey(test)))
+      if (failedRun) flag(test, 'reran', failedRun.log, record.log, `这次过了，同一份代码 ${when(failedRun.startedAt)} 却没过（那次的日志：${failedRun.log}）。`)
+    } else if (test.status === 'failed') {
+      const passLog = input.passedEarlier?.get(testKey(test))
+      if (passLog) flag(test, 'reran', record.log, passLog, `这次没过，代码没改，连跑时前面却过了（过的那次的日志：${passLog}）。`)
+    }
+  }
+  for (const { test } of found) repo.store.addFlaky(test)
+  if (found.length > 0) {
+    notes.push(
+      ...found.map(({ note }) => note),
+      `不要靠重跑过关：按 testcraft 写测试技能里"测试时好时坏"一节找原因修；和手上的活无关的，告诉用户是哪个测试、在哪次没过、日志在哪。修好后用 testpace files --repeat ${PROVE_RUNS} <文件:行号> 连跑证明，都过了才从时好时坏名单上去掉（名单用 testpace status 看）。`,
+    )
+  }
+
+  // 名单上的测试不在了。整组被跳过的（node:test 只报组名）里面的测试不算不在
+  if (record.result === 'pass') {
+    const ranFiles = new Set(input.results.map(test => test.file))
+    const names = new Set(input.results.map(testKey))
+    const skippedGroups = input.results.filter(test => test.status === 'skipped')
+    const inSkipped = (test: FlakyTest): boolean => skippedGroups.some(group => group.file === test.file && test.name.startsWith(`${group.name} > `))
+    for (const test of listed.values()) {
+      if (test.worktree !== record.worktree && existsSync(test.worktree)) continue
+      if (!input.whole.includes(test.file) || !ranFiles.has(test.file) || names.has(testKey(test)) || inSkipped(test)) continue
+      repo.store.removeFlaky(test)
+      notes.push(`${describeTest(test)} 不在了（删掉或改了名），从时好时坏名单上去掉。`)
+    }
+  }
+
+  // 几轮没过
+  const rounds = repo.store.rounds(record.worktree)
+  let changed = false
+  const stuck: string[] = []
+  for (const test of results) {
+    const key = testKey(test)
+    if (test.status === 'passed') {
+      if (rounds[key]) {
+        delete rounds[key]
+        changed = true
+      }
+      continue
+    }
+    if (test.status !== 'failed') continue
+    const entry = rounds[key] ?? { file: test.file, name: test.name, rounds: [] }
+    if (test.line !== undefined) entry.line = test.line
+    if (entry.rounds.at(-1)?.tree !== record.tree) {
+      entry.rounds.push({ tree: record.tree, log: record.log, at: record.startedAt })
+      rounds[key] = entry
+      changed = true
+    }
+    if (entry.rounds.length >= STOP_ROUNDS) {
+      const logs = entry.rounds.slice(-STOP_ROUNDS).map(round => round.log)
+      stuck.push(`${describeTest(entry)} 已经连着 ${entry.rounds.length} 轮改了代码还没过（最近 ${STOP_ROUNDS} 轮的日志：${logs.join('、')}）。`)
+    }
+  }
+  if (changed) repo.store.saveRounds(record.worktree, rounds)
+  if (stuck.length > 0) {
+    notes.push(...stuck, '停下来：把失败原因和这几轮各改了什么告诉用户，等用户决定。不要接着改，也不要改测试凑通过。')
+  }
+  return notes
+}
+
+/** 连跑全都过了（代码没改）：每次都过了的名单上的测试，从名单上去掉。 */
+export function provenFixed(repo: Repo, runs: TestResult[][]): string[] {
+  if (runs.length < PROVE_RUNS) return []
+  const notes: string[] = []
+  for (const test of repo.store.flaky()) {
+    const key = testKey(test)
+    if (!runs.every(results => results.some(result => testKey(result) === key && result.status === 'passed' && !result.retried))) continue
+    repo.store.removeFlaky(test)
+    notes.push(`${describeTest(test)} 连跑 ${runs.length} 次都过了，从时好时坏名单上去掉。`)
+  }
+  return notes
+}
+
+/** 时好时坏名单的说明：会话开始时告诉 agent。名单空时没有。 */
+export function flakyBrief(list: FlakyTest[]): string | undefined {
+  if (list.length === 0) return undefined
+  const shown = list.slice(0, 5).map(describeTest).join('、')
+  const more = list.length > 5 ? ` 等 ${list.length} 个` : ''
+  return `时好时坏的测试（同一份代码时过时不过，testpace status 看详情）：${shown}${more}。它们没过时不要靠重跑过关，按 testcraft 写测试技能里"测试时好时坏"一节处理。`
+}
+
+/** testpace status 里的时好时坏名单。 */
+export function flakyStatus(list: FlakyTest[]): string[] {
+  if (list.length === 0) return ['时好时坏的测试：没有']
+  return [
+    `时好时坏的测试（${list.length} 个；修好后用 testpace files --repeat ${PROVE_RUNS} <文件:行号> 连跑证明，都过了才去掉）：`,
+    ...list.flatMap(test => [
+      `  ${describeTest(test)}：${when(test.foundAt)} ${test.how === 'retried' ? '框架重试之后才过' : '同一份代码先后一次没过、一次过了'}`,
+      test.how === 'retried' ? `    日志：${test.passLog}` : `    没过那次的日志：${test.failLog}\n    过了那次的日志：${test.passLog}`,
+    ]),
+  ]
+}

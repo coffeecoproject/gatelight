@@ -25,8 +25,18 @@ export interface Execution {
   durationMs: number
 }
 
-/** onStart 在子进程起来、中断处理挂好之后调用，拿到子进程组的 id：登记在跑的是哪个进程组。 */
-export async function execute(command: string, args: string[], cwd: string, logPath: string, onStart?: (group: number) => void): Promise<Execution> {
+/**
+ * onStart 在子进程起来、中断处理挂好之后调用，拿到子进程组的 id：登记在跑的是哪个进程组。
+ * env 是另加给项目命令的环境变量（比如交每个测试结果的位置，见 results.ts）。
+ */
+export async function execute(
+  command: string,
+  args: string[],
+  cwd: string,
+  logPath: string,
+  onStart?: (group: number) => void,
+  env: Record<string, string> = {},
+): Promise<Execution> {
   const started = Date.now()
   const log = openSync(logPath, 'a')
   // 额外参数（测试文件路径）用 "$@" 传，不拼进命令字符串，避免路径里的特殊字符被 shell 解释。
@@ -34,7 +44,7 @@ export async function execute(command: string, args: string[], cwd: string, logP
   try {
     const { exitCode, signal, interrupted } = await spawnGroup('/bin/sh', ['-c', script, 'sh', ...args], {
       cwd,
-      env: PROJECT_ENV,
+      env: { ...PROJECT_ENV, ...env },
       stdio: ['ignore', log, log],
       stopSignal: 'SIGTERM',
       killAfterMs: COMMAND_KILL_AFTER_MS,

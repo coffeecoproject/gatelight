@@ -1,4 +1,5 @@
 // 停止门：agent 要结束这一轮时，这个会话起的整组还在跑、或跑完还没看结果，就拦一次。
+// 这个会话认出了时好时坏的测试、还在名单上的，每个也拦一次。
 // 每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里，不靠 agent 给的 stop_hook_active：
 // 有的 agent 不给或总是 false，靠它会反复拦。
 // 谁起的整组看记录里的会话号（testpace full 从命令环境里 agent 的会话号记下，见 agent.ts）；
@@ -11,6 +12,8 @@ import { CONFIG_FILE, configExists } from './config.ts'
 import { duration, short, when } from './format.ts'
 import { hasFile, refTip } from './git.ts'
 import { contractAt, coverageOf, defaultTips, openRepo } from './repo.ts'
+import { describeTest } from './results.ts'
+import { testKey } from './store.ts'
 
 export interface StopInput {
   sessionId: string
@@ -52,6 +55,15 @@ export function stopCheck(input: StopInput): StopResult {
     const outcome = last.result === 'pass' ? '通过' : '失败'
     const verb = last.session === input.sessionId ? '跑' : '等'
     result.block = `这个会话${input.named ? `在 ${repo.root} ` : ''}${verb}的整组已经结束（${outcome}），还没看结果。先跑 testpace status 看结果，再收尾。`
+  }
+
+  // 这个会话认出的时好时坏测试，还在名单上的：每个拦一次，免得一句带过
+  if (!result.block) {
+    const found = repo.store.flaky().filter(test => test.session === input.sessionId && !blocked.includes(`flaky:${testKey(test)}`))
+    if (found.length > 0) {
+      blocked.push(...found.map(test => `flaky:${testKey(test)}`))
+      result.block = `这个会话${input.named ? `在 ${repo.root} ` : ''}认出了时好时坏的测试，还在名单上：${found.map(describeTest).join('、')}。不能靠重跑过关：按 testcraft 写测试技能里"测试时好时坏"一节找原因修；和手上的活无关的，告诉用户是哪个测试、在哪次没过、日志在哪（testpace status 列着）。说清楚了再收尾。`
+    }
   }
 
   // 没经过合并门的落地：默认分支在这个会话里有了新提交，却没有整组通过记录
