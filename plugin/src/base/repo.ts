@@ -1,17 +1,15 @@
-// 命令行和 hook 共用的部分：找到仓库、读约定、判断通过记录、跑命令并记录。
+// 命令行和 hook 共用的部分：找到仓库、判断通过记录、占住工作区跑命令。
 
 import { readFileSync } from 'node:fs'
 import { currentAgent } from './agent.ts'
-import type { CommandKey, Config, LoadedConfig } from './config.ts'
-import { CONFIG_FILE, readConfig } from './config.ts'
+import { CONTRACT_FILE } from './contract.ts'
 import { type Coverage, findCoverage } from './coverage.ts'
 import { failureExcerpt } from './excerpt.ts'
 import { type Execution, execute } from './execute.ts'
 import { duration, when } from './format.ts'
-import { changedPaths, commonDir, currentBranch, defaultBranch, fileAt, headCommit, refTip, repoRoot, workTreeId } from './git.ts'
+import { changedPaths, commonDir, defaultBranch, refTip, repoRoot } from './git.ts'
 import { matcher } from './glob.ts'
-import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, type TestResult, wholeFiles } from './results.ts'
-import { newRunId, processAlive, type RunningMarker, type RunRecord, Store } from './store.ts'
+import { isHold, newRunId, processAlive, type RunningMarker, type RunRecord, Store } from './store.ts'
 import { VERSION } from './version.ts'
 
 export interface Repo {
@@ -25,27 +23,17 @@ export function openRepo(cwd: string): Repo | undefined {
 }
 
 /**
- * 一个提交自己带的约定（提交里的 testpace.json）；提交里没有这个文件返回 undefined。
- * 合并门、停止门判断落到默认分支的代码时用它，不看工作区里的文件：工作区里没提交的改动、
- * 别的分支检出的旧文件都不该影响判断。写坏了的，problems 里是原因；没有 config 时按没有 ignore 算
- * （要内容完全一致的通过记录）。
- */
-export function contractAt(repo: Repo, rev: string): LoadedConfig | undefined {
-  const text = fileAt(repo.root, rev, CONFIG_FILE)
-  return text === undefined ? undefined : readConfig(text)
-}
-
-/**
  * 约定里 ignore 的路径。testpace.json 自己不算：通过记录只在约定相同的代码之间沿用，
  * 改了约定（包括改 ignore）要在改完的代码上重跑整组。
  */
-export function ignoredBy(config: Config): (path: string) => boolean {
-  const ignored = matcher(config.ignore)
-  return path => path !== CONFIG_FILE && ignored(path)
+export function ignoredBy(ignore: string[]): (path: string) => boolean {
+  const ignored = matcher(ignore)
+  return path => path !== CONTRACT_FILE && ignored(path)
 }
 
-export function coverageOf(repo: Repo, config: Config, tree: string, runs: RunRecord[] = repo.store.readRuns()): Coverage {
-  return findCoverage(tree, runs, ignoredBy(config), (from, to) => changedPaths(repo.root, from, to))
+/** 这份内容有没有整组通过记录。ignore 是约定里不影响结果的路径（Contract.ignore）。 */
+export function coverageOf(repo: Repo, ignore: string[], tree: string, runs: RunRecord[] = repo.store.readRuns()): Coverage {
+  return findCoverage(tree, runs, ignoredBy(ignore), (from, to) => changedPaths(repo.root, from, to))
 }
 
 export function describeCoverage(coverage: Coverage): string {
@@ -64,16 +52,6 @@ export function runner(): Pick<RunRecord, 'agent' | 'version'> {
   return { ...(agent ? { agent: agent.kind } : {}), version: VERSION }
 }
 
-export interface Recorded {
-  /** 这次运行的记录；被中断（execution.interrupted）的不写进记录。 */
-  record: RunRecord
-  execution: Execution
-  /** 命令里的 testpace run 交回的每个测试的结果；没经 testpace run 跑的为空。 */
-  results: TestResult[]
-  /** 看这些结果要说给 agent 的话：时好时坏、几轮没过（见 results.ts）。 */
-  notes: string[]
-}
-
 /** 本地和远程（origin）默认分支现在指向的提交，按引用名。找不到默认分支时为空。 */
 export function defaultTips(repo: Repo): Record<string, string> {
   const branch = defaultBranch(repo.root)
@@ -90,7 +68,7 @@ export function defaultTips(repo: Repo): Record<string, string> {
  * 借用工作区的登记只认那一个进程，列得出来就是它还在。
  */
 export function started(marker: RunningMarker): string {
-  const owner = marker.kind === 'hold' || processAlive(marker.pid)
+  const owner = isHold(marker) || processAlive(marker.pid)
     ? `进程 ${marker.pid}`
     : `起它的 testpace 已经退出，测试进程组 ${marker.group} 还在跑，不要了用 kill -- -${marker.group} 停掉`
   return `开始于 ${when(marker.startedAt)}，${owner}`
@@ -98,14 +76,14 @@ export function started(marker: RunningMarker): string {
 
 /** 这个工作区在跑的是哪种命令（或被谁借用着）、什么时候哪个进程起的。 */
 export function runningText(marker: RunningMarker): string {
-  if (marker.kind === 'hold') return `这个工作区正被 ${marker.by} 占着（${started(marker)}）`
+  if (isHold(marker)) return `这个工作区正被 ${marker.by} 占着（${started(marker)}）`
   const what = marker.kind === 'full' ? '整组' : ` ${marker.kind} `
   return `这个工作区正在跑${what}（${started(marker)}）`
 }
 
 /** 因为这个工作区已经在跑测试而不跑时的说明。 */
 export function busyText(marker: RunningMarker, tree: string): string {
-  if (marker.kind === 'hold') return `${runningText(marker)}，占着时不跑测试，等它放开再跑。`
+  if (isHold(marker)) return `${runningText(marker)}，占着时不跑测试，等它放开再跑。`
   const stale = marker.kind === 'full' && marker.tree !== tree ? '那次整组开始后代码改过，它跑完的结果不算当前代码的记录。' : ''
   return `${runningText(marker)}，同一个工作区一次只跑一轮测试，等它结束再跑。${stale}`
 }
@@ -116,7 +94,7 @@ export function busyText(marker: RunningMarker, tree: string): string {
  */
 export async function runClaimed(
   repo: Repo,
-  kind: Exclude<CommandKey, 'full'>,
+  kind: string,
   command: string,
   args: string[],
   tree: string,
@@ -132,53 +110,6 @@ export async function runClaimed(
     return { id, startedAt, log, execution }
   } finally {
     repo.store.release(repo.root, id)
-  }
-}
-
-/**
- * 跑 fast 或 files 并记一条记录（见 runClaimed），收回每个测试的结果、看有没有时好时坏和几轮没过的（见 results.ts）。
- * 跑完重算一次代码（treeAtEnd）：认时好时坏要"同一份代码"，跑的过程中代码改过的不算。通过记录只认 full。
- */
-export async function runRecorded(
-  repo: Repo,
-  kind: Exclude<CommandKey, 'full'>,
-  command: string,
-  args: string[],
-  tree: string,
-  options: { repeat?: RunRecord['repeat']; passedEarlier?: Map<string, string> } = {},
-): Promise<Recorded | { busy: RunningMarker }> {
-  const file = resultsFile()
-  try {
-    const run = await runClaimed(repo, kind, command, args, tree, { [RESULTS_ENV]: file.path })
-    if ('busy' in run) return run
-    const { id, startedAt, log, execution } = run
-    const results = execution.interrupted ? [] : readResults(file.path, repo.root)
-    const failed = failedTests(results)
-    const record: RunRecord = {
-      id,
-      kind,
-      worktree: repo.root,
-      branch: currentBranch(repo.root),
-      head: headCommit(repo.root),
-      tree,
-      treeAtEnd: execution.interrupted ? tree : workTreeId(repo.root),
-      startedAt,
-      durationMs: execution.durationMs,
-      exitCode: execution.exitCode,
-      result: execution.exitCode === 0 ? 'pass' : 'fail',
-      ...(kind === 'files' ? { files: args } : {}),
-      ...(results.length > 0 ? { failed } : {}),
-      ...(options.repeat ? { repeat: options.repeat } : {}),
-      ...runner(),
-      log,
-    }
-    if (execution.interrupted) return { record, execution, results, notes: [] }
-    const before = repo.store.readRuns()
-    repo.store.appendRun(record)
-    const notes = noteResults(repo, { record, results, before, whole: wholeFiles(args), ...(options.passedEarlier ? { passedEarlier: options.passedEarlier } : {}) })
-    return { record, execution, results, notes }
-  } finally {
-    file.dispose()
   }
 }
 

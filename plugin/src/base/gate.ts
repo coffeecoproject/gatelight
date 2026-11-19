@@ -8,10 +8,10 @@
 // 默认分支现在的代码或要落地的代码里有它就管，ignore 取要落地的那份。
 
 import { AGENT_MARKERS } from './agent.ts'
-import { CONFIG_FILE } from './config.ts'
+import { contractAt, CONTRACT_FILE } from './contract.ts'
 import { short } from './format.ts'
-import { commitOf, configuredHooks, configValue, defaultBranch, git, hasFile, hasRemote, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
-import { contractAt, coverageOf, openRepo } from './repo.ts'
+import { commitOf, configuredHooks, configValue, defaultBranch, findDefaultBranch, git, hasFile, hasRemote, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
+import { coverageOf, openRepo } from './repo.ts'
 import { compareVersions, VERSION } from './version.ts'
 
 /** 合并门在 git 配置里的钩子：hook.testpace.event、hook.testpace.command。 */
@@ -101,10 +101,16 @@ function hookProblem(state: HookState): string | undefined {
 
 /** 合并门没在把关时给 agent 的说明；在把关返回 undefined。 */
 export function gateProblem(root: string): string | undefined {
-  if (!defaultBranch(root)) {
-    return '找不到默认分支（没有 origin/HEAD，本地也没有 main、master），合并门没有生效。设好 origin/HEAD（git remote set-head origin --auto）后才会检查。'
-  }
+  const found = findDefaultBranch(root)
+  if ('problem' in found) return `找不到默认分支（${found.problem}），合并门没有生效。设好 origin/HEAD（git remote set-head origin --auto）后才会检查。`
   return hookProblem(hookState(root))
+}
+
+/** origin/HEAD 指着不存在的分支时给用户的说明：合并门照常把关，守的是按 main、master 认出的那个。没有这回事返回 undefined。 */
+export function danglingNote(root: string): string | undefined {
+  const found = findDefaultBranch(root)
+  if ('problem' in found || !found.dangling) return undefined
+  return `origin/HEAD 指着不存在的分支 ${found.dangling}（远程可能改了默认分支的名字），默认分支按 ${found.branch} 算。用 git remote set-head origin --auto 更新。`
 }
 
 /**
@@ -165,25 +171,25 @@ export function checkRefUpdates(cwd: string, input: string): string | undefined 
     // 删除分支（新值全是 0）、符号引用不管
     if (ref !== `refs/heads/${branch}` || /^0+$/.test(next) || next.startsWith('ref:')) continue
     // 接入了约定的仓库才管：默认分支现在的代码或要落地的代码里有 testpace.json
-    const incoming = contractAt(repo, next)
-    if (!incoming && !hasFile(root, `refs/heads/${branch}`, CONFIG_FILE)) continue
-    const config = incoming?.config ?? { tests: [], ignore: [] }
+    const incoming = contractAt(root, next)
+    if (!incoming && !hasFile(root, `refs/heads/${branch}`, CONTRACT_FILE)) continue
+    const ignore = incoming?.ignore ?? []
     const current = commitOf(root, `refs/heads/${branch}`)
     // 退回默认分支以前的提交，或同步远程默认分支已有的提交：没有新内容落地
     if (current && isAncestor(root, next, current)) continue
     if (onRemoteBranch(root, branch, next) || fetched.some(tip => isAncestor(root, next, tip))) continue
     const tree = treeOf(root, next)
     if (!tree) throw new Error(`读不到提交 ${next} 的内容`)
-    if (coverageOf(repo, config, tree).kind !== 'none') continue
+    if (coverageOf(repo, ignore, tree).kind !== 'none') continue
     const worktree = workTreeId(root)
     const notes = !incoming
       ? // 要落地的提交接在默认分支现在的提交后面：是这些提交删掉了它；不然是接入之前分出去的分支，本来就没有
         current && isAncestor(root, current, next)
-        ? [`要落地的提交删掉了 ${CONFIG_FILE}，拿不到整组通过记录。要退出接入，由用户自己在终端里提交；不是要退出，就把它恢复回来。`]
-        : [`要落地的代码里没有 ${CONFIG_FILE}（${branch} 上有），拿不到整组通过记录：这个分支是接入之前分出去的。把 ${branch} 合进这个分支再测。`]
-      : !incoming.config?.full
-        ? [`要落地的代码里的 ${CONFIG_FILE} 有问题：${incoming.problems.join('；')}。testpace full 跑不了，拿不到整组通过记录：先修好它，在改好的代码上跑整组。`]
-        : worktree !== tree && coverageOf(repo, config, worktree).kind !== 'none'
+        ? [`要落地的提交删掉了 ${CONTRACT_FILE}，拿不到整组通过记录。要退出接入，由用户自己在终端里提交；不是要退出，就把它恢复回来。`]
+        : [`要落地的代码里没有 ${CONTRACT_FILE}（${branch} 上有），拿不到整组通过记录：这个分支是接入之前分出去的。把 ${branch} 合进这个分支再测。`]
+      : incoming.problems.length > 0
+        ? [`要落地的代码里的 ${CONTRACT_FILE} 有问题：${incoming.problems.join('；')}。testpace full 跑不了，拿不到整组通过记录：先修好它，在改好的代码上跑整组。`]
+        : worktree !== tree && coverageOf(repo, ignore, worktree).kind !== 'none'
         ? ['工作区的整组通过了，但要落地的内容和工作区不一样：还有没提交的改动或未跟踪的文件。把它们一起提交，或者删掉、加进 .gitignore 后重跑整组。']
         : [
             '先在要落地的这份代码上跑 testpace full，通过后再落地；几个分支一起合用 testpace:merge 技能，在合并分支上测过再快进。',

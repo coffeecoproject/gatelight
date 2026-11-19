@@ -1,17 +1,18 @@
-// 读项目根目录的 testpace.json（项目约定）。
+// testpace.json 里归"跑测试"的部分：三条命令（fast、files、full）和找测试文件的规则（tests）。
+// 文件本身、ignore 和未知字段由底座读（base/contract.ts）；这里校验自己的字段，交给底座合到一起。
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PROJECT_ENV } from './execute.ts'
+import { type Contract, CONTRACT_FILE, loadContract, parseContract } from '../base/contract.ts'
+import { PROJECT_ENV } from '../base/execute.ts'
 
-export const CONFIG_FILE = 'testpace.json'
 export const COMMAND_KEYS = ['fast', 'files', 'full'] as const
 export type CommandKey = (typeof COMMAND_KEYS)[number]
+/** testpace.json 里归这个模块的字段。 */
+export const FIELDS = [...COMMAND_KEYS, 'tests'] as const
 
 /** 接入说明（插件里的 setup 技能）。没有 testpace.json 时指给 agent 看，Codex 这类没有技能的环境也能直接读。 */
-export const SETUP_GUIDE = fileURLToPath(new URL('../skills/setup/SKILL.md', import.meta.url))
+export const SETUP_GUIDE = fileURLToPath(new URL('../../skills/setup/SKILL.md', import.meta.url))
 
 export interface Config {
   fast?: string
@@ -29,43 +30,15 @@ export interface LoadedConfig {
   problems: string[]
 }
 
-/** 工作区接入了 testpace：根目录有 testpace.json。写坏了也算接入，问题由命令和会话说明讲出来。 */
-export function configExists(root: string): boolean {
-  return existsSync(join(root, CONFIG_FILE))
-}
-
-/** 工作区里的约定。 */
-export function loadConfig(root: string): LoadedConfig {
-  if (!configExists(root)) return { problems: [`仓库根目录没有 ${CONFIG_FILE}，接入说明见 ${SETUP_GUIDE}`] }
-  return readConfig(readFileSync(join(root, CONFIG_FILE), 'utf8'))
-}
-
-/** 从 testpace.json 的内容读约定（工作区里的文件，或某个提交里的那份）。 */
-export function readConfig(text: string): LoadedConfig {
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (error) {
-    return { problems: [`${CONFIG_FILE} 不是合法的 JSON：${(error as Error).message}`] }
-  }
-  return parseConfig(raw)
-}
-
-export function parseConfig(raw: unknown): LoadedConfig {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return { problems: [`${CONFIG_FILE} 应该是一个对象`] }
-  }
+/** 读这个模块的字段：写对的读出来，写得不对的说明问题。 */
+function readFields(record: Record<string, unknown>): { fields: Omit<Config, 'ignore'>; problems: string[] } {
   const problems: string[] = []
-  const config: Config = { tests: [], ignore: [] }
-  const record = raw as Record<string, unknown>
-  for (const key of Object.keys(record)) {
-    if (!(COMMAND_KEYS as readonly string[]).includes(key) && key !== 'tests' && key !== 'ignore') problems.push(`未知字段 "${key}"`)
-  }
+  const fields: Omit<Config, 'ignore'> = { tests: [] }
   for (const key of COMMAND_KEYS) {
     const value = record[key]
     if (value === undefined) problems.push(`缺少 "${key}" 命令`)
     else if (typeof value !== 'string' || value.trim() === '') problems.push(`"${key}" 应该是非空字符串`)
-    else config[key] = value
+    else fields[key] = value
   }
   const tests = record.tests
   if (tests === undefined) problems.push('缺少 "tests"：找测试文件的路径规则，比如 ["**/*.test.ts"]')
@@ -74,17 +47,31 @@ export function parseConfig(raw: unknown): LoadedConfig {
   } else if (tests.every(item => (item as string).startsWith('!'))) {
     problems.push('"tests" 里至少要有一条不以 ! 开头的规则')
   } else {
-    config.tests = tests as string[]
+    fields.tests = tests as string[]
   }
-  const ignore = record.ignore
-  if (ignore !== undefined) {
-    if (!Array.isArray(ignore) || ignore.some(item => typeof item !== 'string' || item === '')) {
-      problems.push('"ignore" 应该是路径规则的字符串数组')
-    } else {
-      config.ignore = ignore as string[]
-    }
-  }
-  return { config, problems }
+  return { fields, problems }
+}
+
+/** 交给底座的校验（Module.contractProblems）。 */
+export function contractProblems(raw: Record<string, unknown>): string[] {
+  return readFields(raw).problems
+}
+
+/** 从底座读出的约定里取这个模块的配置。问题是整个文件的（底座的字段、各模块的字段合在一起）。 */
+export function configOf(contract: Contract): LoadedConfig {
+  if (!contract.raw) return { problems: contract.problems }
+  return { config: { ...readFields(contract.raw).fields, ignore: contract.ignore }, problems: contract.problems }
+}
+
+/** 工作区里的约定。 */
+export function loadConfig(root: string): LoadedConfig {
+  const contract = loadContract(root)
+  if (!contract) return { problems: [`仓库根目录没有 ${CONTRACT_FILE}，接入说明见 ${SETUP_GUIDE}`] }
+  return configOf(contract)
+}
+
+export function parseConfig(raw: unknown): LoadedConfig {
+  return configOf(parseContract(raw))
 }
 
 /** 命令的第一个词（跳过开头的 `FOO=bar` 环境变量赋值）。 */

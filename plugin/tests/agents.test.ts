@@ -6,12 +6,12 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { currentAgent } from '../src/agent.ts'
-import { HOOK_COMMAND } from '../src/gate.ts'
-import { handle } from '../src/hook.ts'
-import { byRunner } from '../src/report.ts'
-import type { RunRecord } from '../src/store.ts'
-import { compareVersions, VERSION } from '../src/version.ts'
+import { currentAgent } from '../src/base/agent.ts'
+import { HOOK_COMMAND } from '../src/base/gate.ts'
+import { handle } from '../src/base/hook.ts'
+import { byRunner } from '../src/pace/report.ts'
+import type { PaceRun } from '../src/pace/record.ts'
+import { compareVersions, VERSION } from '../src/base/version.ts'
 import { BIN_DIR, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
 
 const PLUGIN = fileURLToPath(new URL('..', import.meta.url))
@@ -60,7 +60,7 @@ describe('认 agent', () => {
   })
 
   test('报告按谁跑的分开：记了版本没有 agent 的是终端，版本也没有的是旧版本写的；只有一种时不分', () => {
-    const record = (agent: RunRecord['agent'], kind: RunRecord['kind'], durationMs: number, version = VERSION): RunRecord => ({
+    const record = (agent: PaceRun['agent'], kind: PaceRun['kind'], durationMs: number, version = VERSION): PaceRun => ({
       id: `${agent}-${durationMs}`, kind, worktree: '/r', tree: 't', treeAtEnd: 't', startedAt: 1, durationMs, exitCode: 0, result: 'pass', log: '/l',
       ...(agent ? { agent } : {}),
       ...(version ? { version } : {}),

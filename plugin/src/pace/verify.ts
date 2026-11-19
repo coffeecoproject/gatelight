@@ -1,8 +1,8 @@
 // 接入核对：由程序实际跑几次项目的 files 命令，看它守不守约定，不靠 agent 说"检查过了"。
 // 这几次运行不记进 runs.jsonl（不是开发中的测试，不该算进报告），但和别的测试一样占住工作区。
 
-import { failureCause, type Repo, runClaimed } from './repo.ts'
-import type { RunningMarker } from './store.ts'
+import { failureCause, type Repo, runClaimed } from '../base/repo.ts'
+import type { RunningMarker } from '../base/store.ts'
 
 /** 核对时交给 files 的不存在的路径。 */
 export const MISSING = 'testpace-verify-no-such-file.test.js'

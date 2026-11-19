@@ -3,8 +3,7 @@
 // layermap 按命名惯例认测试，和项目的 tests 规则不一定一致：规则排除的、规则外的练习脚本它也会给，
 // 规则里不按惯例命名的它认不出。哪些算测试以 tests 规则为准，和整组一致。
 
-import { execFileSync } from 'node:child_process'
-import { commandExists } from './config.ts'
+import { layermap, type LayermapFailure, tooOld } from '../base/layermap.ts'
 
 /**
  * layermap 的 rank：0 到 1 以下调用改动，1 是改动里的测试，2 直接导入改动，3 同模块或同目录，
@@ -47,20 +46,20 @@ export type Selection =
       untested: Untested | null
     }
 
-export function parseCheck(text: string): LayermapCheck {
-  const data = JSON.parse(text) as Partial<LayermapCheck>
-  if (!Array.isArray(data.files) || !Array.isArray(data.tests) || !Array.isArray(data.unmapped) || !Array.isArray(data.incomplete)) {
-    throw new Error('layermap check --json 的输出缺少 files、tests、unmapped 或 incomplete（layermap 版本太旧，要 0.1.41 以上？）')
-  }
-  return data as LayermapCheck
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/** 从 layermap check --json 的输出里读选测要的部分；缺字段（layermap 版本太旧）返回 undefined。 */
+export function parseCheck(value: unknown): LayermapCheck | undefined {
+  if (!isRecord(value)) return undefined
+  if (!Array.isArray(value.files) || !Array.isArray(value.tests) || !Array.isArray(value.unmapped) || !Array.isArray(value.incomplete)) return undefined
+  return value as unknown as LayermapCheck
 }
 
-export function parseUntested(text: string): Untested {
-  const untested = (JSON.parse(text) as { untested?: Partial<Untested> }).untested
-  if (!untested || !Array.isArray(untested.changed) || typeof untested.truncated !== 'boolean') {
-    throw new Error('layermap check --json 给了测试文件却没有输出 untested（layermap 版本太旧？）')
-  }
-  return { changed: untested.changed, truncated: untested.truncated }
+/** 给了测试文件时输出里的 untested；没有（layermap 版本太旧）返回 undefined。 */
+export function parseUntested(value: unknown): Untested | undefined {
+  const untested = isRecord(value) ? value.untested : undefined
+  if (!isRecord(untested) || !Array.isArray(untested.changed) || typeof untested.truncated !== 'boolean') return undefined
+  return { changed: untested.changed as string[], truncated: untested.truncated }
 }
 
 /**
@@ -139,8 +138,8 @@ export function fullReasons(selection: Selection): string[] {
 }
 
 /**
- * 调 layermap 拿这次改动（相对 base）的相关测试；选出了测试，再把它们交给 layermap，
- * 问哪些改动它们跑不到。
+ * 问 layermap 这次改动（相对 base）的相关测试；选出了测试，再把它们交给 layermap，问哪些改动它们跑不到。
+ * 调 layermap 走底座的那一处（base/layermap.ts）。拿不到事实（找不到命令、它出错、版本太旧）就是选不了，退回建议跑整组。
  */
 export function askLayermap(
   root: string,
@@ -149,29 +148,20 @@ export function askLayermap(
   suite: ReadonlySet<string>,
   inRules: (path: string) => boolean,
 ): Selection {
-  if (!commandExists(root, 'layermap')) return { kind: 'unavailable', reason: '找不到 layermap 命令，没法按改动选测试', missing: true }
-  try {
-    const selection = select(parseCheck(layermapCheck(root, base, [])), isIgnored, suite, inRules)
-    if (selection.kind === 'selected' && selection.tests.length > 0) {
-      selection.untested = parseUntested(layermapCheck(root, base, selection.tests))
-    }
-    return selection
-  } catch (error) {
-    return { kind: 'unavailable', reason: (error as Error).message }
+  const unavailable = (failure: LayermapFailure): Selection =>
+    failure.kind === 'missing' ? { kind: 'unavailable', reason: '找不到 layermap 命令，没法按改动选测试', missing: true } : { kind: 'unavailable', reason: failure.problem }
+  const args = ['check', '--json', '--base', base]
+  const first = layermap(root, args)
+  if (!first.ok) return unavailable(first)
+  const check = parseCheck(first.value)
+  if (!check) return unavailable(tooOld())
+  const selection = select(check, isIgnored, suite, inRules)
+  if (selection.kind === 'selected' && selection.tests.length > 0) {
+    const second = layermap(root, [...args, ...selection.tests])
+    if (!second.ok) return unavailable(second)
+    const untested = parseUntested(second.value)
+    if (!untested) return unavailable(tooOld())
+    selection.untested = untested
   }
-}
-
-function layermapCheck(root: string, base: string, tests: string[]): string {
-  try {
-    return execFileSync('layermap', ['check', '--json', '--base', base, ...tests], {
-      cwd: root,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 600_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-  } catch (error) {
-    const stderr = String((error as { stderr?: unknown }).stderr ?? '').trim().split('\n').at(-1)
-    throw new Error(`layermap 出错了${stderr ? `：${stderr}` : ''}`)
-  }
+  return selection
 }

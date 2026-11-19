@@ -6,9 +6,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { handle, RHYTHM, rhythm } from '../src/hook.ts'
-import { GATE_REJECT, HOOK_COMMAND } from '../src/gate.ts'
-import { Store } from '../src/store.ts'
+import { handle, sessionBrief } from '../src/base/hook.ts'
+import { GATE_REJECT, HOOK_COMMAND } from '../src/base/gate.ts'
+import { Store } from '../src/base/store.ts'
 import { agent, commit, ENV, gatedRepo, globalGitConfig, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
 
 /** PATH 上没有 testpace、但有测试用的 git（合并门要 git 2.54 以上，不一定是 /usr/bin 里那个）。 */
@@ -359,7 +359,38 @@ describe('合并门（git 钩子）', () => {
 
     const trunk = tempDir('testpace-trunk-')
     sh(trunk, `cp -R ${join(repo, 'src')} ${join(repo, 'testpace.json')} . && git init -q -b trunk && git add -A && git -c user.name=t -c user.email=t@t commit -qm i`)
-    assert.match(testpace(trunk, ['status'], env).out, /合并门：找不到默认分支（没有 origin\/HEAD，本地也没有 main、master），合并门没有生效。/)
+    assert.match(testpace(trunk, ['status'], env).out, /合并门：找不到默认分支（没有 origin\/HEAD，本地和 origin 上也没有 main、master），合并门没有生效。/)
+  })
+
+  test('origin/HEAD 指着不存在的分支时不信它：照样守 main，status 说明；指着的分支在 origin 上有才按它算', () => {
+    // 远程把默认分支从 master 改名成 main 之后，本地的 origin/HEAD 还指着 origin/master，本地的旧分支 master 也还在
+    const repo = gatedRepo()
+    sh(repo, 'git branch master && git update-ref refs/remotes/origin/main HEAD && git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master')
+    const before = head(repo)
+    change(repo)
+    const r = agent(repo, 'git commit -qam 改价格')
+    assert.notEqual(r.code, 0)
+    assert.match(r.out, /testpace 合并门：这次要把 main 更新到/)
+    assert.equal(head(repo), before)
+    assert.match(
+      testpace(repo, ['status']).out,
+      /合并门：已装上，agent 移动默认分支时检查\n  origin\/HEAD 指着不存在的分支 master（远程可能改了默认分支的名字），默认分支按 main 算。用 git remote set-head origin --auto 更新。/,
+    )
+
+    // origin 上真有 trunk、origin/HEAD 指着它：默认分支是 trunk，main 上的提交不归合并门管
+    const other = gatedRepo()
+    sh(other, 'git update-ref refs/remotes/origin/trunk HEAD && git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk')
+    assert.doesNotMatch(testpace(other, ['status']).out, /origin\/HEAD 指着/)
+    change(other)
+    assert.equal(agent(other, 'git commit -qam 改价格').code, 0)
+    sh(other, 'git checkout -qb trunk HEAD~1')
+    change(other, '// 另一处\n')
+    assert.match(agent(other, 'git commit -qam 改价格').out, /testpace 合并门：这次要把 trunk 更新到/)
+
+    // 哪儿都认不出来：说清原因，不当成在把关
+    const lost = gatedRepo()
+    sh(lost, 'git branch -m main work && git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone')
+    assert.match(testpace(lost, ['status']).out, /合并门：找不到默认分支（origin\/HEAD 指着不存在的分支 gone，本地和 origin 上也没有 main、master），合并门没有生效。/)
   })
 })
 
@@ -412,7 +443,7 @@ describe('软提示', () => {
   test('会话开始时注入节奏说明，没接入约定的仓库不注入', () => {
     const repo = gatedRepo()
     const output = handle({ hook_event_name: 'SessionStart', session_id: 's', cwd: repo }, Date.now(), 'claude') as Output
-    assert.deepEqual(output, { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: RHYTHM } })
+    assert.deepEqual(output, { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: sessionBrief() } })
     assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 's-none', cwd: tempDir('testpace-none-') }, Date.now(), 'claude'), undefined)
   })
 
@@ -425,13 +456,13 @@ describe('软提示', () => {
     assert.equal(handle({ hook_event_name: 'SessionStart', session_id: 'p', cwd: parent }, Date.now(), 'claude'), undefined)
     assert.equal(run(parent, 'ls'), undefined, '没碰到接入的仓库不说')
     const told = run(parent, `cd ${repo} && git status`)?.hookSpecificOutput?.additionalContext
-    assert.equal(told, rhythm(`${root} 这个仓库`))
+    assert.equal(told, sessionBrief(`${root} 这个仓库`))
     assert.equal(run(parent, `cd ${repo} && git status`), undefined, '同一会话只说一次')
     assert.equal(run(repo, 'git status'), undefined, '会话后来在仓库里也不再说')
     assert.match(String(run(repo, 'node scripts/full.mjs')?.hookSpecificOutput?.additionalContext), /^这是 testpace.json 里 full 的检查/)
     // 压缩、恢复后会话重新开始：碰过的仓库再说一次，之后的命令不再说
     const again = handle({ hook_event_name: 'SessionStart', session_id: 'p', cwd: parent }, Date.now(), 'claude') as Output
-    assert.equal(again?.hookSpecificOutput?.additionalContext, rhythm(`${root} 这个仓库`))
+    assert.equal(again?.hookSpecificOutput?.additionalContext, sessionBrief(`${root} 这个仓库`))
     assert.equal(run(parent, `cd ${repo} && git status`), undefined)
     // 换一个会话，补说和别的提示一起出
     const both = handle({ hook_event_name: 'PreToolUse', session_id: 'q', cwd: repo, tool_name: 'Bash', tool_input: { command: 'node scripts/full.mjs' } }, Date.now(), 'claude') as Output

@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { handle } from '../src/hook.ts'
+import { handle } from '../src/base/hook.ts'
 import { commit, ENV, runs, sampleRepo, setConfig, tempDir, testpace } from './helpers.ts'
 
 /**

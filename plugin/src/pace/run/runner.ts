@@ -5,8 +5,8 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync } from 'nod
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
-import { RUN_ENV } from '../execute.ts'
-import { FRAMEWORK_KILL_AFTER_MS, type GroupRun, spawnGroup } from '../process-group.ts'
+import { RUN_ENV } from '../../base/execute.ts'
+import { FRAMEWORK_KILL_AFTER_MS, type GroupRun, spawnGroup } from '../../base/process-group.ts'
 import { RESULTS_ENV } from '../results.ts'
 import { parseTargets, readRanLines, type Target, tally } from './targets.ts'
 

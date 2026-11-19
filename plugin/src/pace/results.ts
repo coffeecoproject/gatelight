@@ -5,11 +5,12 @@
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
-import { currentAgent } from './agent.ts'
-import { when } from './format.ts'
-import type { Repo } from './repo.ts'
+import { currentAgent } from '../base/agent.ts'
+import { when } from '../base/format.ts'
+import type { Repo } from '../base/repo.ts'
 import type { Ran } from './run/targets.ts'
-import { type FlakyTest, LOCATED, type RunRecord, type TestId, testKey } from './store.ts'
+import type { PaceRun } from './record.ts'
+import { addFlaky, type FlakyTest, flakyTests, LOCATED, readRounds, removeFlaky, saveRounds, type TestId, testKey } from './testlist.ts'
 
 export const RESULTS_ENV = 'TESTPACE_RESULTS'
 
@@ -93,10 +94,10 @@ export function wholeFiles(args: string[]): string[] {
 
 export interface ResultsInput {
   /** 这次运行的记录，已经写进 runs.jsonl。 */
-  record: RunRecord
+  record: PaceRun
   results: TestResult[]
   /** 这次运行之前的记录。 */
-  before: RunRecord[]
+  before: PaceRun[]
   /** 整个文件跑的测试文件（相对仓库根目录）。 */
   whole: string[]
   /** 连跑时前面几次通过的测试，按 testKey，值是那次的日志。 */
@@ -117,7 +118,7 @@ export function noteResults(repo: Repo, input: ResultsInput): string[] {
   if (input.results.length === 0) return []
   const results = distinct(input.results)
   const notes: string[] = []
-  const listed = new Map(repo.store.flaky().map(test => [testKey(test), test]))
+  const listed = new Map(flakyTests(repo.store).map(test => [testKey(test), test]))
   const session = currentAgent()?.session
 
   // 认出的新的时好时坏测试，和说它的话。名单上已有的、这次已经认出的不再算
@@ -153,7 +154,7 @@ export function noteResults(repo: Repo, input: ResultsInput): string[] {
       if (passLog) flag(test, 'reran', record.log, passLog, `这次没过，代码没改，连跑时前面却过了（过的那次的日志：${passLog}）。`)
     }
   }
-  for (const { test } of found) repo.store.addFlaky(test)
+  for (const { test } of found) addFlaky(repo.store, test)
   if (found.length > 0) {
     notes.push(
       ...found.map(({ note }) => note),
@@ -170,13 +171,13 @@ export function noteResults(repo: Repo, input: ResultsInput): string[] {
     for (const test of listed.values()) {
       if (test.worktree !== record.worktree && existsSync(test.worktree)) continue
       if (!input.whole.includes(test.file) || !ranFiles.has(test.file) || names.has(testKey(test)) || inSkipped(test)) continue
-      repo.store.removeFlaky(test)
+      removeFlaky(repo.store, test)
       notes.push(`${describeTest(test)} 不在了（删掉或改了名），从时好时坏名单上去掉。`)
     }
   }
 
   // 几轮没过
-  const rounds = repo.store.rounds(record.worktree)
+  const rounds = readRounds(repo.store, record.worktree)
   let changed = false
   const stuck: string[] = []
   for (const test of results) {
@@ -201,7 +202,7 @@ export function noteResults(repo: Repo, input: ResultsInput): string[] {
       stuck.push(`${describeTest(entry)} 已经连着 ${entry.rounds.length} 轮改了代码还没过（最近 ${STOP_ROUNDS} 轮的日志：${logs.join('、')}）。`)
     }
   }
-  if (changed) repo.store.saveRounds(record.worktree, rounds)
+  if (changed) saveRounds(repo.store, record.worktree, rounds)
   if (stuck.length > 0) {
     notes.push(...stuck, '停下来：把失败原因和这几轮各改了什么告诉用户，等用户决定。不要接着改，也不要改测试凑通过。')
   }
@@ -212,10 +213,10 @@ export function noteResults(repo: Repo, input: ResultsInput): string[] {
 export function provenFixed(repo: Repo, runs: TestResult[][]): string[] {
   if (runs.length < PROVE_RUNS) return []
   const notes: string[] = []
-  for (const test of repo.store.flaky()) {
+  for (const test of flakyTests(repo.store)) {
     const key = testKey(test)
     if (!runs.every(results => results.some(result => testKey(result) === key && result.status === 'passed' && !result.retried))) continue
-    repo.store.removeFlaky(test)
+    removeFlaky(repo.store, test)
     notes.push(`${describeTest(test)} 连跑 ${runs.length} 次都过了，从时好时坏名单上去掉。`)
   }
   return notes

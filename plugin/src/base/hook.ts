@@ -8,14 +8,14 @@
 import { basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AGENTS, type AgentKind } from './agent.ts'
-import { CONFIG_FILE, configExists, loadConfig } from './config.ts'
+import { CONTRACT_FILE, joined, loadContract } from './contract.ts'
 import { entryPath, entryState } from './entry.ts'
 import { ensureGate, gateProblem } from './gate.ts'
 import { git } from './git.ts'
+import { modules } from './module.ts'
 import { defaultTips, openRepo, type Repo } from './repo.ts'
-import { flakyBrief } from './results.ts'
 import { noteSessionRepos, sessionRepos } from './sessions.ts'
-import { invocations, runsCommand } from './shell.ts'
+import { invocations } from './shell.ts'
 import { stopCheck } from './stop.ts'
 import type { SessionState } from './store.ts'
 
@@ -28,19 +28,14 @@ interface HookInput {
   tool_response?: unknown
 }
 
-/** 测试节奏说明。会话从仓库外（比如上一级目录）开始时，说明里写上是哪个仓库。 */
-export function rhythm(repo = '这个仓库'): string {
-  return [
-    `${repo}用 testpace 管测试节奏（testpace.json）：`,
-    '1. 每个任务在自己的分支上做，最好是自己的 worktree，不和别的会话挤在同一个目录里。',
-    '2. 改完跑 testpace focused：fast 检查加上和改动相关的测试。在分支上不跑整组。',
-    '3. 有失败，用 testpace files <文件:行号> 只重跑失败的那几个测试（位置看失败输出）。',
-    '4. 整组在合回默认分支时跑：做完的几个分支一起合，合并后的代码跑一次 testpace full，通过了再落地（testpace:merge 技能）。整组要跑几分钟，能把命令放到后台的就放后台、接着做别的，不要干等；跑完用 testpace status 看结果。',
-    '落到默认分支的代码必须有整组通过记录：合并门在 git 移动默认分支时检查，没测过的提交、合并、cherry-pick、reset 都会被取消。直接跑项目自己的测试、检查命令不留记录。',
-  ].join('\n')
-}
+/** 落地的规矩：底座自己的一句，跟在各模块的会话说明后面。 */
+export const LANDING_RULE =
+  '落到默认分支的代码必须有整组通过记录：合并门在 git 移动默认分支时检查，没测过的提交、合并、cherry-pick、reset 都会被取消。直接跑项目自己的测试、检查命令不留记录。'
 
-export const RHYTHM = rhythm()
+/** 会话说明：各模块的规矩（module.ts 的 brief），加上落地的规矩。会话从仓库外（比如上一级目录）开始时，说明里写上是哪个仓库。 */
+export function sessionBrief(repo = '这个仓库'): string {
+  return [...modules().flatMap(module => module.brief?.(repo) ?? []), LANDING_RULE].join('\n')
+}
 
 /** 新仓库最多这么多个提交：还没接入时，会话开始就提出接入。老仓库要先改造，不在这里提。 */
 export const NEW_REPO_COMMITS = 20
@@ -60,7 +55,7 @@ export const NEW_REPO =
   '落地前跑全部检查和全部测试，这是约定，不用问用户；配完跑 testpace verify 核对。'
 
 /** 这个插件里的 testpace 命令：没有固定入口时，插件 bin 目录不在 PATH 上的 agent 只能用完整路径。 */
-const PLUGIN_BIN = fileURLToPath(new URL('../bin/testpace', import.meta.url))
+const PLUGIN_BIN = fileURLToPath(new URL('../../bin/testpace', import.meta.url))
 
 /** 各 agent 自己的前提（AGENTS 表里的沙箱、固定入口）。 */
 function agentNotes(agent: AgentKind): string[] {
@@ -76,22 +71,13 @@ function agentNotes(agent: AgentKind): string[] {
   return notes
 }
 
-/** 给 agent 的节奏说明；testpace.json 有问题、合并门没在把关时加上原因，有时好时坏的测试时列出来，再加上这个 agent 自己的前提。 */
+/** 给 agent 的会话说明；testpace.json 有问题、合并门没在把关时加上原因，再加各模块的提醒（比如时好时坏的测试）和这个 agent 自己的前提。 */
 function told(repo: Repo, agent: AgentKind, label?: string): string {
-  const { problems } = loadConfig(repo.root)
-  const broken = problems.length ? `${CONFIG_FILE} 有问题：${problems.join('；')}。` : undefined
+  const problems = loadContract(repo.root)?.problems ?? []
+  const broken = problems.length ? `${CONTRACT_FILE} 有问题：${problems.join('；')}。` : undefined
   const gate = gateProblem(repo.root)
-  const flaky = flakyBrief(repo.store.flaky())
-  return [label ? rhythm(label) : RHYTHM, ...(broken ? [broken] : []), ...(gate ? [gate] : []), ...(flaky ? [flaky] : []), ...agentNotes(agent)].join('\n')
-}
-
-/** 直接跑配置里的 full 不会留下记录，合并门不认；它也只是整组的一部分。 */
-function fullCommandHint(command: string, cwd: string): string | undefined {
-  const repo = openRepo(cwd)
-  const full = repo && loadConfig(repo.root).config?.full
-  const calls = invocations(command, cwd)
-  if (!full || calls.some(call => basename(call.argv[0] ?? '') === 'testpace') || !runsCommand(command, full, cwd)) return undefined
-  return '这是 testpace.json 里 full 的检查，只是整组的一部分（整组还要跑 tests 规则找到的全部测试）。直接跑不会留下通过记录，合并门不认；整组改用 testpace full，结果会按当前代码记录。'
+  const alerts = modules().flatMap(module => module.alerts?.(repo) ?? [])
+  return [sessionBrief(label), ...(broken ? [broken] : []), ...(gate ? [gate] : []), ...alerts, ...agentNotes(agent)].join('\n')
 }
 
 /** 这些目录所在的、接入了 testpace 的仓库（工作区根目录有 testpace.json），按根目录去重。 */
@@ -99,7 +85,7 @@ function contractRepos(dirs: Iterable<string>): Repo[] {
   const roots = new Map<string, Repo>()
   for (const dir of new Set(dirs)) {
     const repo = openRepo(dir)
-    if (repo && !roots.has(repo.root) && configExists(repo.root)) roots.set(repo.root, repo)
+    if (repo && !roots.has(repo.root) && joined(repo.root)) roots.set(repo.root, repo)
   }
   return [...roots.values()]
 }
@@ -132,7 +118,7 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
     const hereRepo = openRepo(cwd)
     const here = hereRepo?.root
     const repos = contractRepos([cwd, ...sessionRepos(sessionId)])
-    const fresh = hereRepo && !configExists(hereRepo.root) && isNewRepo(hereRepo.root) ? hereRepo : undefined
+    const fresh = hereRepo && !joined(hereRepo.root) && isNewRepo(hereRepo.root) ? hereRepo : undefined
     if (repos.length === 0 && !fresh) return undefined
     // 用得上合并门的会话里自动配上它，只告诉用户一声
     const notice = ensureGate((repos[0] ?? fresh)!.root)
@@ -157,8 +143,8 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
     // 第一次碰到接入的仓库就补说一次。
     const untold = untoldRepos(command, cwd, sessionId, now)
     for (const { repo, state } of untold) repo.store.saveSession(sessionId, { ...state, rhythm: true })
-    const hint = fullCommandHint(command, cwd)
-    const context = [...untold.map(({ repo }) => told(repo, agent, `${repo.root} 这个仓库`)), ...(hint ? [hint] : [])].join('\n\n')
+    const hints = modules().flatMap(module => module.beforeCommand?.(command, cwd) ?? [])
+    const context = [...untold.map(({ repo }) => told(repo, agent, `${repo.root} 这个仓库`)), ...hints].join('\n\n')
     if (context) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }
     return undefined
   }

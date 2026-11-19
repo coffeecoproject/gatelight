@@ -1,21 +1,23 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { commandWord, parseConfig } from '../src/config.ts'
-import { findCoverage } from '../src/coverage.ts'
-import { cleanLines, failureExcerpt } from '../src/excerpt.ts'
-import { duration } from '../src/format.ts'
-import { matcher } from '../src/glob.ts'
-import { failedThenPassed, fileRole, landingCost, renderReport, repeatedFiles, rerunsAfterFailure, weekly } from '../src/report.ts'
-import { KEEP_LOGS, type RunRecord, Store } from '../src/store.ts'
-import { firstTest } from '../src/verify.ts'
-import { spawnGroup } from '../src/process-group.ts'
+import '../src/modules.ts'
+import { commandWord, parseConfig } from '../src/pace/config.ts'
+import { findCoverage } from '../src/base/coverage.ts'
+import { cleanLines, failureExcerpt } from '../src/base/excerpt.ts'
+import { duration } from '../src/base/format.ts'
+import { matcher } from '../src/base/glob.ts'
+import { failedThenPassed, fileRole, fullSteps, landingCost, renderReport, repeatedFiles, rerunsAfterFailure, weekly } from '../src/pace/report.ts'
+import { KEEP_LOGS, Store } from '../src/base/store.ts'
+import type { PaceRun } from '../src/pace/record.ts'
+import { firstTest } from '../src/pace/verify.ts'
+import { spawnGroup } from '../src/base/process-group.ts'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 let seq = 0
-function run(partial: Partial<RunRecord>): RunRecord {
+function run(partial: Partial<PaceRun>): PaceRun {
   seq += 1
   return {
     id: `r${seq}`,
@@ -233,6 +235,31 @@ describe('报告的统计', () => {
     assert.match(text, /整组失败 1 次；失败后平均重跑 1\.0 轮才通过（1 次）/)
     assert.match(text, /先失败后通过：1 份代码整组先失败、后通过。可能是测试不稳定，也可能是环境问题（比如数据库没起来），看失败的日志分辨：\n  代码 A（.+）：失败用时 8秒，之后通过用时 1分00秒，失败日志 \/logs\/a-fail\.log/)
     assert.match(text, /fast 平均 30秒，超过 20 秒/)
+  })
+
+  test('整组的时间花在哪一段：每段跑到几次、平均、合计、占比；没记分段的整组不算', () => {
+    const now = 100 * 24 * 3600 * 1000
+    const check = (durationMs: number) => ({ kind: 'check' as const, check: 'testcraft check', durationMs })
+    const runs = [
+      // 附加检查没过：后面两段没有跑
+      run({ startedAt: now - 3000, result: 'fail', exitCode: 1, steps: [check(20_000)] }),
+      run({ startedAt: now - 2000, steps: [check(40_000), { kind: 'full', durationMs: 10_000 }, { kind: 'tests', durationMs: 120_000 }] }),
+      run({ startedAt: now - 1000, steps: [check(0), { kind: 'full', durationMs: 10_000 }, { kind: 'tests', durationMs: 100_000 }] }),
+      // 旧版本写的记录没有分段
+      run({ startedAt: now - 500 }),
+    ]
+    assert.deepEqual(fullSteps(runs), {
+      fulls: 3,
+      steps: [
+        { step: '附加检查 testcraft check', count: 3, totalMs: 60_000 },
+        { step: '整组的检查（full）', count: 2, totalMs: 20_000 },
+        { step: '全部测试', count: 2, totalMs: 220_000 },
+      ],
+    })
+    const text = renderReport({ repo: '/repo', days: 7, now, runs, landings: [] })
+    assert.match(text, /整组的时间花在哪（3 次整组；前一段没过，后面的不跑）：\n整组的哪一段\s+跑到\s+平均\s+合计\s+占比\n附加检查 testcraft check\s+3 次\s+20秒\s+1分00秒\s+20%\n整组的检查（full）\s+2 次\s+10秒\s+20秒\s+7%\n全部测试\s+2 次\s+1分50秒\s+3分40秒\s+73%/)
+    // 没有记分段的整组时不出这张表
+    assert.doesNotMatch(renderReport({ repo: '/repo', days: 7, now, runs: [run({ startedAt: now - 500 })], landings: [] }), /整组的时间花在哪/)
   })
 
   test('没有记录时说明一句', () => {
