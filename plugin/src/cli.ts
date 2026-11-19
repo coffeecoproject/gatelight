@@ -91,6 +91,7 @@ function status(): number {
       lines.push(`  tests: ${config.tests.join(', ')}  → 找到 ${found} 个测试文件，整组时全部交给 files${found ? '' : '  ← 一个都没找到'}`)
     }
     if (config.ignore.length) lines.push(`  ignore: ${config.ignore.join(', ')}`)
+    if (config.deferredIgnore?.length) lines.push(`  ignore 里新加的 ${config.deferredIgnore.join(', ')} 合并后才生效，这次改动仍按没有它判`)
   }
   // 合并门看提交里的 testpace.json，工作区里这份写坏了它也照常把关
   if (joined(ctx.root)) lines.push(`合并门：${gateProblem(ctx.root) ?? '已装上，agent 移动默认分支时检查'}`)

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "testpace": {
+      "command": "node",
+      "args": ["--disable-warning=ExperimentalWarning", "${CLAUDE_PLUGIN_ROOT}/src/mcp.ts"]
+    }
+  }
+}

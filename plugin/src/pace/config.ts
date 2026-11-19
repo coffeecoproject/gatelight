@@ -3,7 +3,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { type Contract, CONTRACT_FILE, loadContract, parseContract } from '../base/contract.ts'
+import { type Contract, CONTRACT_FILE, countedIgnore, loadContract, parseContract } from '../base/contract.ts'
 import { PROJECT_ENV } from '../base/execute.ts'
 
 export const COMMAND_KEYS = ['fast', 'files', 'full'] as const
@@ -21,7 +21,10 @@ export interface Config {
   full?: string
   /** 找测试文件的路径规则；以 ! 开头的是排除。整组跑的就是它们找到的全部文件。 */
   tests: string[]
+  /** 现在认的 ignore 规则（见 base/contract.ts 的 effectiveIgnore）。 */
   ignore: string[]
+  /** 写了但要合并后才生效的 ignore 规则（分支上新加的）。 */
+  deferredIgnore?: string[]
 }
 
 export interface LoadedConfig {
@@ -67,7 +70,11 @@ export function configOf(contract: Contract): LoadedConfig {
 export function loadConfig(root: string): LoadedConfig {
   const contract = loadContract(root)
   if (!contract) return { problems: [`仓库根目录没有 ${CONTRACT_FILE}，接入说明见 ${SETUP_GUIDE}`] }
-  return configOf(contract)
+  const loaded = configOf(contract)
+  if (!loaded.config) return loaded
+  // ignore 按默认分支上原来那份认：分支上新加的规则合并后才生效
+  const { rules, deferred } = countedIgnore(root, contract)
+  return { ...loaded, config: { ...loaded.config, ignore: rules, ...(deferred.length ? { deferredIgnore: deferred } : {}) } }
 }
 
 export function parseConfig(raw: unknown): LoadedConfig {

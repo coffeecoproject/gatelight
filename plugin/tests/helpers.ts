@@ -62,6 +62,10 @@ export function runs(repo: string): Array<Record<string, unknown>> {
   return readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line))
 }
 
+/**
+ * 改工作区里的 testpace.json，不提交。要当成"项目本来就这样配"的，改完在默认分支上提交（commit）：
+ * 留着不提交、或在分支上提交，是"这次改动改了约定"——改命令、缩小 tests 规则要用户同意后整组才跑，新加的 ignore 合并后才生效。
+ */
 export function setConfig(repo: string, change: Record<string, unknown>): void {
   const config = JSON.parse(readFileSync(join(repo, 'testpace.json'), 'utf8'))
   writeFileSync(join(repo, 'testpace.json'), JSON.stringify({ ...config, ...change }))

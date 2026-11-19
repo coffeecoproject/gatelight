@@ -8,7 +8,7 @@
 // 默认分支现在的代码或要落地的代码里有它就管，ignore 取要落地的那份。
 
 import { AGENT_MARKERS } from './agent.ts'
-import { contractAt, CONTRACT_FILE } from './contract.ts'
+import { contractAt, CONTRACT_FILE, effectiveIgnore } from './contract.ts'
 import { short } from './format.ts'
 import { commitOf, configuredHooks, configValue, defaultBranch, findDefaultBranch, git, hasFile, hasRemote, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
 import { coverageOf, openRepo } from './repo.ts'
@@ -173,7 +173,8 @@ export function checkRefUpdates(cwd: string, input: string): string | undefined 
     // 接入了约定的仓库才管：默认分支现在的代码或要落地的代码里有 testpace.json
     const incoming = contractAt(root, next)
     if (!incoming && !hasFile(root, `refs/heads/${branch}`, CONTRACT_FILE)) continue
-    const ignore = incoming?.ignore ?? []
+    // ignore 按默认分支上原来那份认：这次要落地的代码里新加的规则，落地以后才生效
+    const ignore = effectiveIgnore(incoming, contractAt(root, `refs/heads/${branch}`))
     const current = commitOf(root, `refs/heads/${branch}`)
     // 退回默认分支以前的提交，或同步远程默认分支已有的提交：没有新内容落地
     if (current && isAncestor(root, next, current)) continue

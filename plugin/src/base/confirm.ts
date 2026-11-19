@@ -10,12 +10,11 @@
 //
 // 记录在 .git/testpace/confirm/ 下（所有 worktree 共用）：pending.json 等用户过目的，confirmed.json 用户同意过的。
 
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import { commonDir, repoRoot } from './git.ts'
+import { hash, ModuleRecords } from './records.ts'
 import { type Repo } from './repo.ts'
-import { Store, writeWhole } from './store.ts'
+import { Store } from './store.ts'
 
 /** 确认工具的名字（src/mcp.ts）。 */
 export const CONFIRM_TOOL = 'confirm_with_user'
@@ -55,8 +54,6 @@ interface ConfirmRecord {
   at: number
 }
 
-const KEEP_MS = 90 * 24 * 3600 * 1000
-
 /** 文字比对用：每行去掉首尾空白，去掉空行，一样才算同一份。 */
 function plain(text: string): string {
   return text
@@ -66,40 +63,14 @@ function plain(text: string): string {
     .join('\n')
 }
 
-function hash(...parts: string[]): string {
-  const h = createHash('sha256')
-  for (const part of parts) {
-    h.update(part)
-    h.update('\u0000')
-  }
-  return h.digest('hex').slice(0, 32)
-}
-
 /** 一项的记号：模块、改之前、改成什么、给用户看的文字。 */
 function itemKey(module: string, item: ConfirmItem): string {
   return hash('item', module, item.before, item.after, plain(item.text))
 }
 
-/** 读一份记录。太久以前的不算（下次写回时也就清掉了）；文件坏了当成没有。 */
-function read<T extends { at: number }>(store: Store, name: string): Record<string, T> {
-  const file = join(store.dir, 'confirm', name)
-  if (!existsSync(file)) return {}
-  let data: unknown
-  try {
-    data = JSON.parse(readFileSync(file, 'utf8'))
-  } catch {
-    return {}
-  }
-  if (typeof data !== 'object' || data === null || Array.isArray(data)) return {}
-  const since = Date.now() - KEEP_MS
-  return Object.fromEntries(Object.entries(data as Record<string, T>).filter(([, record]) => typeof record?.at === 'number' && record.at >= since))
-}
-
-function write<T extends { at: number }>(store: Store, name: string, data: Record<string, T>): void {
-  const dir = join(store.dir, 'confirm')
-  mkdirSync(dir, { recursive: true })
-  writeWhole(join(dir, name), `${JSON.stringify(data, null, 1)}\n`)
-}
+/** 两份记录都用底座的模块记录存取（records.ts）：90 天前的不再算，文件坏了当成没有。 */
+const pendingOf = (store: Store): ModuleRecords<PendingRecord> => new ModuleRecords(store, 'confirm', 'pending')
+const confirmedOf = (store: Store): ModuleRecords<ConfirmRecord> => new ModuleRecords(store, 'confirm', 'confirmed')
 
 /** 弹窗里给用户看的文字：一项一段，带编号。 */
 function popupText(heading: string, items: ConfirmItem[]): string {
@@ -118,7 +89,7 @@ function popupText(heading: string, items: ConfirmItem[]): string {
  * 有没同意的条目时，模块的检查不能算通过。
  */
 export function askUser(repo: Repo, module: string, heading: string, items: ConfirmItem[]): Asked {
-  const confirmedAll = read<ConfirmRecord>(repo.store, 'confirmed.json')
+  const records = confirmedOf(repo.store)
   const seen = new Set<string>()
   const confirmed: ConfirmItem[] = []
   const pending: Array<{ key: string; item: ConfirmItem }> = []
@@ -126,16 +97,14 @@ export function askUser(repo: Repo, module: string, heading: string, items: Conf
     const key = itemKey(module, item)
     if (seen.has(key)) continue
     seen.add(key)
-    if (Object.hasOwn(confirmedAll, key)) confirmed.push(item)
+    if (records.get(key)) confirmed.push(item)
     else pending.push({ key, item })
   }
   if (pending.length === 0) return { confirmed, pending: [] }
   const text = popupText(heading, pending.map(({ item }) => item))
   // 编号按这一批没同意的条目算：条目变了就是另一个编号，旧编号的同意对它不算
   const id = hash('ask', module, text, ...pending.map(({ key }) => key))
-  const all = read<PendingRecord>(repo.store, 'pending.json')
-  all[id] = { module, text, items: pending.map(({ key, item }) => ({ key, text: item.text })), at: Date.now() }
-  write(repo.store, 'pending.json', all)
+  pendingOf(repo.store).put(id, { module, text, items: pending.map(({ key, item }) => ({ key, text: item.text })), at: Date.now() })
   return {
     confirmed,
     pending: pending.map(({ item }) => item),
@@ -171,9 +140,8 @@ export function confirm(repoPath: string, id: string, text: string): Confirmed {
   const missing = { ok: false, text: '没有这个编号要确认的内容：重跑要求确认的那条检查，照它输出的编号和文字填。' }
   if (!ID.test(id)) return missing
   const store = new Store(commonDir(root))
-  const all = read<PendingRecord>(store, 'pending.json')
-  // 编号是外面传来的：只取文件里这个键自己的记录
-  const pending = Object.hasOwn(all, id) ? all[id] : undefined
+  // 编号是外面传来的：模块记录只取文件里这个键自己的
+  const pending = pendingOf(store).get(id)
   if (!pending) return missing
   const whole =
     typeof pending.text === 'string' &&
@@ -184,9 +152,8 @@ export function confirm(repoPath: string, id: string, text: string): Confirmed {
   if (plain(text) !== plain(pending.text)) {
     return { ok: false, text: '传来的文字和检查给这个编号的不一致：照它输出的原样填，不要改写、增删。' }
   }
-  const confirmedAll = read<ConfirmRecord>(store, 'confirmed.json')
+  const records = confirmedOf(store)
   const at = Date.now()
-  for (const item of pending.items) confirmedAll[item.key] = { module: pending.module, text: item.text, at }
-  write(store, 'confirmed.json', confirmedAll)
+  for (const item of pending.items) records.put(item.key, { module: pending.module, text: item.text, at })
   return { ok: true, text: `已记下：用户确认并同意了这 ${pending.items.length} 项。再跑一次要求确认的那条检查。` }
 }

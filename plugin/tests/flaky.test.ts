@@ -31,6 +31,7 @@ test('时过时不过', () => {
 function flipRepo(failOn: string): { repo: string; env: NodeJS.ProcessEnv } {
   const repo = sampleRepo()
   setConfig(repo, { files: 'testpace run node-test' })
+  commit(repo, '配置')
   writeFileSync(join(repo, 'tests', 'flip.test.mjs'), FLIP)
   const counter = join(tempDir('testpace-flip-'), 'count')
   writeFileSync(counter, '0')
@@ -227,6 +228,7 @@ describe('几轮没过', () => {
   test('改了代码再跑还没过算一轮，到第三轮让 agent 停下来找用户；代码没改重跑不算一轮；过了清零', () => {
     const repo = sampleRepo()
     setConfig(repo, { files: 'testpace run node-test' })
+    commit(repo, '配置')
     const file = join(repo, 'tests', 'stuck.test.mjs')
     const round = (text: string) => {
       writeFileSync(file, text)

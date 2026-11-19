@@ -197,25 +197,42 @@ describe('合并门（git 钩子）', () => {
     assert.equal(head(repo), before)
   })
 
-  test('只改了提交里的 ignore 路径的提交放行；分支上给 ignore 加了路径并测过，之后只改那些路径也放行', () => {
+  test('只改了 ignore 路径的提交放行；分支上给 ignore 新加的路径落地以后才生效，落地前只改那些路径照样要测', () => {
     const repo = gatedRepo()
     assert.equal(testpace(repo, ['full']).code, 0)
     mkdirSync(join(repo, 'docs'), { recursive: true })
     writeFileSync(join(repo, 'docs', 'note.md'), '说明\n')
     assert.equal(agent(repo, 'git add -A && git commit -qm docs').code, 0, '示例约定里 ignore 是 docs/**')
-    // main 上的约定还没有 notes/**：按要落地的那份约定判断
+    // main 上的约定还没有 notes/**：分支上新加的这条，这次改动自己用不上（改动改不了评判它的检查）
+    const main = head(repo)
     sh(repo, 'git checkout -qb feature')
     setConfig(repo, { ignore: ['docs/**', 'notes/**'] })
     mkdirSync(join(repo, 'notes'))
     writeFileSync(join(repo, 'notes', 'a.md'), '一\n')
     assert.equal(testpace(repo, ['full']).code, 0)
+    assert.match(testpace(repo, ['status']).out, /\n  ignore: docs\/\*\*\n  ignore 里新加的 notes\/\*\* 合并后才生效，这次改动仍按没有它判\n/)
     commit(repo, '加 notes，记进 ignore')
     writeFileSync(join(repo, 'notes', 'a.md'), '一\n二\n')
     commit(repo, '只改 notes')
     sh(repo, 'git checkout -q main')
-    const r = agent(repo, 'git merge -q --ff-only feature')
-    assert.equal(r.code, 0, r.out)
+    const early = agent(repo, 'git merge -q --ff-only feature')
+    assert.notEqual(early.code, 0, '新加的 ignore 还没落地，只改 notes 的提交没有通过记录')
+    assert.match(early.out, /没有整组通过记录/)
+    assert.equal(head(repo), main)
+    // 工作区里的整组也不认它：不会说"有通过记录，不重跑"
+    sh(repo, 'git checkout -q feature')
+    assert.match(testpace(repo, ['full']).out, /^整组通过/)
+    sh(repo, 'git checkout -q main')
+    const landed = agent(repo, 'git merge -q --ff-only feature')
+    assert.equal(landed.code, 0, landed.out)
     assert.equal(head(repo), head(repo, 'feature'))
+    // 落地以后这条规则生效：只改 notes 的提交放行
+    writeFileSync(join(repo, 'notes', 'a.md'), '一\n二\n三\n')
+    assert.equal(agent(repo, 'git add -A && git commit -qm notes').code, 0, 'notes/** 已经在默认分支的约定里')
+    // 删掉的规则马上生效：这次提交去掉了 docs/**，同时改了 docs 下的文件，要测
+    setConfig(repo, { ignore: ['notes/**'] })
+    writeFileSync(join(repo, 'docs', 'note.md'), '说明改了\n')
+    assert.notEqual(agent(repo, 'git add -A && git commit -qm drop').code, 0, '去掉 docs/** 的提交里改了 docs，没有通过记录')
   })
 
   test('同步远程：远程跟踪分支和本地默认分支在同一次更新里一起动时放行；不经过远程跟踪分支的照样拦，说明同步的写法', () => {
@@ -550,7 +567,8 @@ describe('停止门', () => {
     post('PostToolUse', {}, { stdout: '整组通过' })
     assert.equal(stopAgain(repo, 'b'), undefined)
 
-    setConfig(repo, { full: 'false' })
+    // 让整组失败：加一个过不了的测试（不改命令：改命令要用户同意后整组才跑）
+    writeFileSync(join(repo, 'tests', 'broken.test.mjs'), "import { test } from 'node:test'\ntest('过不了', () => { throw new Error('坏的') })\n")
     assert.equal(fullIn(repo, 'b'), 1)
     assert.match(stopAgain(repo, 'b')?.reason ?? '', /^这个会话跑的整组已经结束（失败），还没看结果/)
     post('PostToolUseFailure', {})

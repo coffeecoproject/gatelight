@@ -1,4 +1,4 @@
-// 底座给检查模块的能力：分叉点、评判用的配置的两版、用户确认（和确认工具）、调 LayerMap。
+// 底座给检查模块的能力：分叉点、评判用的配置的两版、ignore 认哪些、用户确认（和确认工具）、模块的记录、调 LayerMap。
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -7,9 +7,11 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { askUser, confirm, CONFIRM_TOOL, type ConfirmItem } from '../src/base/confirm.ts'
+import { effectiveIgnore, parseContract } from '../src/base/contract.ts'
 import { forkPoint } from '../src/base/git.ts'
 import { judgingDir, judgingFile } from '../src/base/judging.ts'
 import { layermap, LAYERMAP_MINIMUM } from '../src/base/layermap.ts'
+import { ModuleRecords } from '../src/base/records.ts'
 import { openRepo, type Repo } from '../src/base/repo.ts'
 import { commit, ENV, sampleRepo, sh, tempDir } from './helpers.ts'
 
@@ -358,5 +360,73 @@ describe('调 LayerMap', () => {
     assert.deepEqual(ask(fake('console.error("Usage: layermap <command>"); process.exit(2)'), ['imports', '--json']), old)
     // 输出不是 JSON
     assert.deepEqual(ask(fake('console.log("3 files changed")'), ['check', '--json']), old)
+  })
+})
+
+describe('ignore 合并后才生效', () => {
+  const contractWith = (ignore: string[]) => parseContract({ ignore })
+
+  test('这份约定里有、默认分支上原来那份里也有的才认：新加的这次不算，删掉的马上生效', () => {
+    const landed = contractWith(['docs/**', 'notes/**'])
+    assert.deepEqual(effectiveIgnore(contractWith(['docs/**', 'notes/**']), landed), ['docs/**', 'notes/**'])
+    assert.deepEqual(effectiveIgnore(contractWith(['docs/**', 'src/**']), landed), ['docs/**'])
+    assert.deepEqual(effectiveIgnore(contractWith(['**']), landed), [])
+    assert.deepEqual(effectiveIgnore(contractWith([]), landed), [])
+    // 默认分支上还没有约定（首次接入）、要落地的代码里没有约定：一条也不认
+    assert.deepEqual(effectiveIgnore(contractWith(['docs/**']), undefined), [])
+    assert.deepEqual(effectiveIgnore(undefined, landed), [])
+  })
+})
+
+describe('模块的记录', () => {
+  interface Note {
+    text: string
+    at: number
+  }
+  const notesOf = (dir: string, name = 'notes'): ModuleRecords<Note> => {
+    const repo = openRepo(dir)
+    assert.ok(repo)
+    return new ModuleRecords<Note>(repo.store, 'craft', name)
+  }
+
+  test('按键存取，放在 .git/testpace/<模块>/ 下，所有 worktree 共用；键不认对象原型上的名字', () => {
+    const main = sampleRepo()
+    const notes = notesOf(main)
+    assert.equal(notes.get('a'), undefined)
+    notes.put('a', { text: '一', at: Date.now() })
+    notes.put('b', { text: '二', at: Date.now() })
+    assert.equal(notes.get('a')?.text, '一')
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(main, '.git', 'testpace', 'craft', 'notes.json'), 'utf8'))), ['a', 'b'])
+    for (const key of ['constructor', '__proto__', 'toString']) assert.equal(notes.get(key), undefined)
+    // 不同名字的记录互不相干
+    assert.equal(notesOf(main, 'other').get('a'), undefined)
+
+    const other = join(tempDir('testpace-wt-'), 'wt')
+    sh(main, `git worktree add -q --detach '${other}'`)
+    assert.equal(notesOf(other).get('b')?.text, '二')
+  })
+
+  test('按内容记的结论：写之前内容的标识变了就不记', () => {
+    const notes = notesOf(sampleRepo())
+    assert.equal(notes.saveChecked('k1', () => 'k1', { text: '通过', at: Date.now() }), true)
+    assert.equal(notes.get('k1')?.text, '通过')
+    // 跑的过程中内容改过：现在算出来的是 k9，按 k2 得出的结论不记，k9 下也不记
+    assert.equal(notes.saveChecked('k2', () => 'k9', { text: '通过', at: Date.now() }), false)
+    assert.equal(notes.get('k2'), undefined)
+    assert.equal(notes.get('k9'), undefined)
+  })
+
+  test('太久以前的记录读不到；文件写坏了当成没有', () => {
+    const repo = sampleRepo()
+    const notes = notesOf(repo)
+    const day = 24 * 3600 * 1000
+    notes.put('old', { text: '旧', at: Date.now() - 91 * day })
+    notes.put('recent', { text: '新', at: Date.now() - 89 * day })
+    assert.equal(notes.get('old'), undefined)
+    assert.equal(notes.get('recent')?.text, '新')
+    writeFileSync(join(repo, '.git', 'testpace', 'craft', 'notes.json'), 'not json')
+    assert.equal(notes.get('recent'), undefined)
+    notes.put('again', { text: '再来', at: Date.now() })
+    assert.equal(notes.get('again')?.text, '再来')
   })
 })
