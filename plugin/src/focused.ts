@@ -104,26 +104,34 @@ export function select(
  */
 export const LAYERMAP_HINT = '装上 layermap 插件并开新会话（或把 layermap 命令加进 PATH），focused 就会只跑和改动相关的测试。'
 
+/** 列出前几个，多的说一共几个：a、b、c 等 5 个。 */
+export function someOf(items: string[], unit: string, shown = 3): string {
+  const more = items.length > shown ? ` 等 ${items.length} ${unit}` : ''
+  return `${items.slice(0, shown).join('、')}${more}`
+}
+
+/** layermap 认为相关、但不在 tests 规则里的测试：点出是哪几个，让 agent 判断是不是规则漏了。没有时为 undefined。 */
+export function outsideNote(selection: Selection): string | undefined {
+  if (selection.kind !== 'selected' || selection.outside.length === 0) return undefined
+  return `不在 tests 规则里、没选的：${someOf(selection.outside, '个')}。是测试的话整组永远跑不到它，该补进 tests 规则；练习脚本、有意排除的不用管。`
+}
+
 /** 选测靠不住、应当跑整组的原因；空数组表示选测可以信。 */
 export function fullReasons(selection: Selection): string[] {
   if (selection.kind === 'unavailable') return [selection.reason]
   if (selection.nothingToTest) return []
   const reasons: string[] = []
   if (selection.unmapped.length > 0) {
-    const files = selection.unmapped.slice(0, 3).map(file => `${file.path}（${file.kind}）`).join('、')
-    const more = selection.unmapped.length > 3 ? ` 等 ${selection.unmapped.length} 个` : ''
-    reasons.push(`改了 ${files}${more}，地图跟不到它们影响哪些测试`)
+    reasons.push(`改了 ${someOf(selection.unmapped.map(file => `${file.path}（${file.kind}）`), '个')}，地图跟不到它们影响哪些测试`)
   }
   if (selection.incomplete.length > 0) reasons.push(`layermap 这次检查没做完，可能漏选测试：${selection.incomplete.join('；')}`)
   if (selection.tests.length === 0) {
-    const outside = selection.outside.length ? `（它找到的 ${selection.outside.length} 个都不在 tests 规则里）` : ''
+    const outside = selection.outside.length ? `（它找到的 ${selection.outside.length} 个都不在 tests 规则里，见上）` : ''
     reasons.push(`layermap 没找到和这次改动相关的测试${outside}`)
   }
   const untested = selection.untested
   if (untested && untested.changed.length > 0) {
-    const names = untested.changed.slice(0, 3).join('、')
-    const more = untested.changed.length > 3 ? ` 等 ${untested.changed.length} 处` : ''
-    reasons.push(`选出的测试跑不到 ${names}${more}`)
+    reasons.push(`选出的测试跑不到 ${someOf(untested.changed, '处')}`)
   }
   // 选测时已经没做完的，确认时多半也一样，不重复说
   if (untested?.truncated && selection.incomplete.length === 0) reasons.push('确认选出的测试跑不跑得到改动时，layermap 追踪到上限就停了')

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { fullReasons, type LayermapCheck, parseCheck, parseUntested, select, type Untested } from '../src/focused.ts'
+import { fullReasons, type LayermapCheck, outsideNote, parseCheck, parseUntested, select, type Untested } from '../src/focused.ts'
 import { matcher } from '../src/glob.ts'
 import { commit, ENV, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
 
@@ -190,7 +190,8 @@ describe('选测', () => {
       inRules,
     )
     assert.equal(selection.kind === 'selected' && selection.nothingToTest, false)
-    assert.deepEqual(fullReasons(selection), ['layermap 没找到和这次改动相关的测试（它找到的 1 个都不在 tests 规则里）'])
+    assert.deepEqual(fullReasons(selection), ['layermap 没找到和这次改动相关的测试（它找到的 1 个都不在 tests 规则里，见上）'])
+    assert.equal(outsideNote(selection), '不在 tests 规则里、没选的：messages/send.test.ts。是测试的话整组永远跑不到它，该补进 tests 规则；练习脚本、有意排除的不用管。')
   })
 
   test('layermap 的输出缺字段时说明可能是版本太旧', () => {
@@ -373,19 +374,20 @@ describe('testpace focused', () => {
     }))
     const r = testpace(repo, ['focused'], layermap.env)
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /相关测试 1 个（对比 [0-9a-f]{10}；另有 1 个不在 tests 规则里，整组不跑，没选）：\n {2}tests\/format\.test\.mjs\n/)
+    assert.match(r.out, /相关测试 1 个（对比 [0-9a-f]{10}）：\n {2}tests\/format\.test\.mjs\n/)
+    assert.match(r.out, /\n不在 tests 规则里、没选的：scratch\/try\.test\.mjs。是测试的话整组永远跑不到它，该补进 tests 规则/)
     assert.deepEqual(runs(repo).at(-1)!.files, ['tests/format.test.mjs'])
     assert.deepEqual(layermap.calls()[1]!.slice(4), ['tests/format.test.mjs'], '交回 layermap 核对的也只有规则里的')
   })
 
-  test('只改了规则外的测试时说明不用跑测试', () => {
+  test('只改了规则外的测试时说明不用跑测试，点出是哪个（规则可能漏了它）', () => {
     const repo = sampleRepo()
     const r = testpace(repo, ['focused'], fakeLayermap(check({
       files: [{ path: 'scratch/try.test.mjs', status: 'ADDED' }],
       tests: [{ path: 'scratch/try.test.mjs', rank: 1, why: 'changed in this diff' }],
     })).env)
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /改动里没有整组要跑的东西（只有 ignore 里的路径、tests 规则外或删掉的测试），不用跑测试。\n$/)
+    assert.match(r.out, /改动里没有整组要跑的东西（只有 ignore 里的路径、tests 规则外或删掉的测试），不用跑测试。\n不在 tests 规则里、没选的：scratch\/try\.test\.mjs。.+\n$/)
     assert.deepEqual(runs(repo).map(run => run.kind), ['fast'])
   })
 
