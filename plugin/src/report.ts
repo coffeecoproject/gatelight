@@ -199,6 +199,35 @@ export interface ReportInput {
   landings: Landing[]
 }
 
+export interface StepStats {
+  /** 哪一段：附加检查写登记的命令。 */
+  step: string
+  /** 跑到这一段的整组次数（前面一段没过的，后面的没有跑）。 */
+  count: number
+  totalMs: number
+}
+
+/**
+ * 整组的时间花在哪一段：每条附加检查、整组的检查（full）、全部测试，各跑了几次、共多久。按第一次出现的顺序。
+ * 只算记了分段的整组（旧版本写的记录没有分段）；fulls 是这样的整组有几次。
+ */
+export function fullSteps(runs: RunRecord[]): { fulls: number; steps: StepStats[] } {
+  const stats = new Map<string, StepStats>()
+  let fulls = 0
+  for (const run of runs) {
+    if (run.kind !== 'full' || !run.steps) continue
+    fulls += 1
+    for (const step of run.steps) {
+      const name = step.kind === 'check' ? `附加检查 ${step.check}` : step.kind === 'full' ? '整组的检查（full）' : '全部测试'
+      const s = stats.get(name) ?? { step: name, count: 0, totalMs: 0 }
+      s.count += 1
+      s.totalMs += step.durationMs
+      stats.set(name, s)
+    }
+  }
+  return { fulls, steps: [...stats.values()] }
+}
+
 function table(rows: string[][]): string[] {
   const widths = rows[0]!.map((_, col) => Math.max(...rows.map(row => displayWidth(row[col]!))))
   return rows.map(row => row.map((cell, col) => cell + ' '.repeat(widths[col]! - displayWidth(cell))).join('  ').trimEnd())
@@ -232,6 +261,16 @@ export function renderReport(input: ReportInput): string {
       const byAgent = [['谁跑的', '次数', '整组', '合计']]
       for (const row of runners) byAgent.push([row.runner, String(row.count), String(row.fulls), duration(row.totalMs)])
       lines.push('', ...table(byAgent))
+    }
+
+    const parts = fullSteps(runs)
+    if (parts.fulls > 0) {
+      const all = parts.steps.reduce((sum, step) => sum + step.totalMs, 0)
+      const rows = [['整组的哪一段', '跑到', '平均', '合计', '占比']]
+      for (const step of parts.steps) {
+        rows.push([step.step, `${step.count} 次`, duration(step.totalMs / step.count), duration(step.totalMs), all > 0 ? `${Math.round((step.totalMs / all) * 100)}%` : '-'])
+      }
+      lines.push('', `整组的时间花在哪（${parts.fulls} 次整组；前一段没过，后面的不跑）：`, ...table(rows))
     }
 
     const notes: string[] = []

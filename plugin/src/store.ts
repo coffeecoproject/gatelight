@@ -47,6 +47,8 @@ export interface RunRecord {
   waiting?: string[]
   /** 整组之前先跑的附加检查（本机登记的）。 */
   checks?: string[]
+  /** 整组各段的耗时，按跑的顺序；一段没过，后面的没有跑，就没有。旧版本写的记录没有。 */
+  steps?: RunStep[]
   /** 整组：tests 规则找到、交给 files 跑的测试文件数。 */
   tests?: number
   /** 没过的测试（经 testpace run 跑、交回了每个测试结果的才有）。 */
@@ -54,6 +56,13 @@ export interface RunRecord {
   /** testpace files --repeat 连跑的第几次（从 1 起）、共几次。 */
   repeat?: { index: number; of: number }
   log: string
+}
+
+/** 整组的一段：一条附加检查（check 是登记的命令）、整组的检查（full）、全部测试（tests）。 */
+export interface RunStep {
+  kind: 'check' | 'full' | 'tests'
+  check?: string
+  durationMs: number
 }
 
 /** 一个测试：文件（相对仓库根目录）和带外层分组的名字认它；行号用来显示和重跑。 */

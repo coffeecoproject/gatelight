@@ -10,7 +10,7 @@
 import { AGENT_MARKERS } from './agent.ts'
 import { CONFIG_FILE } from './config.ts'
 import { short } from './format.ts'
-import { commitOf, configuredHooks, configValue, defaultBranch, git, hasFile, hasRemote, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
+import { commitOf, configuredHooks, configValue, defaultBranch, findDefaultBranch, git, hasFile, hasRemote, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
 import { contractAt, coverageOf, openRepo } from './repo.ts'
 import { compareVersions, VERSION } from './version.ts'
 
@@ -101,10 +101,16 @@ function hookProblem(state: HookState): string | undefined {
 
 /** 合并门没在把关时给 agent 的说明；在把关返回 undefined。 */
 export function gateProblem(root: string): string | undefined {
-  if (!defaultBranch(root)) {
-    return '找不到默认分支（没有 origin/HEAD，本地也没有 main、master），合并门没有生效。设好 origin/HEAD（git remote set-head origin --auto）后才会检查。'
-  }
+  const found = findDefaultBranch(root)
+  if ('problem' in found) return `找不到默认分支（${found.problem}），合并门没有生效。设好 origin/HEAD（git remote set-head origin --auto）后才会检查。`
   return hookProblem(hookState(root))
+}
+
+/** origin/HEAD 指着不存在的分支时给用户的说明：合并门照常把关，守的是按 main、master 认出的那个。没有这回事返回 undefined。 */
+export function danglingNote(root: string): string | undefined {
+  const found = findDefaultBranch(root)
+  if ('problem' in found || !found.dangling) return undefined
+  return `origin/HEAD 指着不存在的分支 ${found.dangling}（远程可能改了默认分支的名字），默认分支按 ${found.branch} 算。用 git remote set-head origin --auto 更新。`
 }
 
 /**

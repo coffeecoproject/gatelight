@@ -631,6 +631,10 @@ describe('附加检查', () => {
     const record = runs(repo).at(-1)!
     assert.equal(record.result, 'pass')
     assert.deepEqual(record.checks, ['echo 第一条', 'echo 第二条'])
+    // 每段各记一条用时，按跑的顺序，加起来就是整组的用时
+    const steps = record.steps as Array<{ kind: string; check?: string; durationMs: number }>
+    assert.deepEqual(steps.map(({ kind, check }) => [kind, check]), [['check', 'echo 第一条'], ['check', 'echo 第二条'], ['full', undefined], ['tests', undefined]])
+    assert.equal(steps.reduce((sum, step) => sum + step.durationMs, 0), record.durationMs)
     const text = readFileSync(record.log as string, 'utf8')
     assert.match(text, /===== testpace 附加检查：echo 第二条\n第二条/)
     assert.ok(text.indexOf('第二条') < text.indexOf('===== testpace 整组的检查（full）：'), text)
@@ -647,6 +651,8 @@ describe('附加检查', () => {
     assert.match(r.out, /输出节选 ---\n(.*\n)*放水了/)
     const record = runs(repo).at(-1)!
     assert.equal(record.result, 'fail')
+    // 只有跑到的那一段有用时
+    assert.deepEqual((record.steps as Array<{ kind: string }>).map(step => step.kind), ['check'])
     assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /===== testpace (整组的检查|全部测试)|# pass/)
     assert.match(run(repo, ['status'], env).out, /没有整组通过记录/)
   })

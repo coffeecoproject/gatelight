@@ -359,7 +359,38 @@ describe('合并门（git 钩子）', () => {
 
     const trunk = tempDir('testpace-trunk-')
     sh(trunk, `cp -R ${join(repo, 'src')} ${join(repo, 'testpace.json')} . && git init -q -b trunk && git add -A && git -c user.name=t -c user.email=t@t commit -qm i`)
-    assert.match(testpace(trunk, ['status'], env).out, /合并门：找不到默认分支（没有 origin\/HEAD，本地也没有 main、master），合并门没有生效。/)
+    assert.match(testpace(trunk, ['status'], env).out, /合并门：找不到默认分支（没有 origin\/HEAD，本地和 origin 上也没有 main、master），合并门没有生效。/)
+  })
+
+  test('origin/HEAD 指着不存在的分支时不信它：照样守 main，status 说明；指着的分支在 origin 上有才按它算', () => {
+    // 远程把默认分支从 master 改名成 main 之后，本地的 origin/HEAD 还指着 origin/master，本地的旧分支 master 也还在
+    const repo = gatedRepo()
+    sh(repo, 'git branch master && git update-ref refs/remotes/origin/main HEAD && git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master')
+    const before = head(repo)
+    change(repo)
+    const r = agent(repo, 'git commit -qam 改价格')
+    assert.notEqual(r.code, 0)
+    assert.match(r.out, /testpace 合并门：这次要把 main 更新到/)
+    assert.equal(head(repo), before)
+    assert.match(
+      testpace(repo, ['status']).out,
+      /合并门：已装上，agent 移动默认分支时检查\n  origin\/HEAD 指着不存在的分支 master（远程可能改了默认分支的名字），默认分支按 main 算。用 git remote set-head origin --auto 更新。/,
+    )
+
+    // origin 上真有 trunk、origin/HEAD 指着它：默认分支是 trunk，main 上的提交不归合并门管
+    const other = gatedRepo()
+    sh(other, 'git update-ref refs/remotes/origin/trunk HEAD && git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk')
+    assert.doesNotMatch(testpace(other, ['status']).out, /origin\/HEAD 指着/)
+    change(other)
+    assert.equal(agent(other, 'git commit -qam 改价格').code, 0)
+    sh(other, 'git checkout -qb trunk HEAD~1')
+    change(other, '// 另一处\n')
+    assert.match(agent(other, 'git commit -qam 改价格').out, /testpace 合并门：这次要把 trunk 更新到/)
+
+    // 哪儿都认不出来：说清原因，不当成在把关
+    const lost = gatedRepo()
+    sh(lost, 'git branch -m main work && git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone')
+    assert.match(testpace(lost, ['status']).out, /合并门：找不到默认分支（origin\/HEAD 指着不存在的分支 gone，本地和 origin 上也没有 main、master），合并门没有生效。/)
   })
 })
 

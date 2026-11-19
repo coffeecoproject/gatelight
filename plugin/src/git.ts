@@ -103,14 +103,40 @@ export function headCommit(root: string): string | undefined {
   return gitOrUndefined(root, ['rev-parse', '--verify', '--quiet', 'HEAD'])
 }
 
-/** 默认分支：先看 origin/HEAD，再看本地有没有 main、master。 */
-export function defaultBranch(root: string): string | undefined {
-  const remoteHead = gitOrUndefined(root, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
-  if (remoteHead) return remoteHead.replace(/^origin\//, '')
+function refExists(root: string, ref: string): boolean {
+  return gitOrUndefined(root, ['rev-parse', '--verify', '--quiet', ref]) !== undefined
+}
+
+const ORIGIN = 'refs/remotes/origin/'
+
+export type DefaultBranch =
+  | {
+      branch: string
+      /** origin/HEAD 指着一个不存在的分支（远程改了默认分支的名字，本地还是旧的）：它指的是谁。这时默认分支是按 main、master 认的。 */
+      dangling?: string
+    }
+  | { branch?: undefined; problem: string }
+
+/**
+ * 默认分支，认不出时说明原因。只在这里认，合并门、停止门、选测试的对比、报告都用这一个结果。
+ * origin/HEAD 指的分支在 origin 上确实有才信它：指着不存在的分支时照没有 origin/HEAD 认，
+ * 不然合并门守的是一个不存在的分支，真正的默认分支没人管。
+ * 没有可信的 origin/HEAD 时看 main、master，本地有或 origin 上有都算。
+ */
+export function findDefaultBranch(root: string): DefaultBranch {
+  const head = gitOrUndefined(root, ['symbolic-ref', '--quiet', `${ORIGIN}HEAD`])
+  const target = head?.startsWith(ORIGIN) ? head.slice(ORIGIN.length) : head
+  if (target && head?.startsWith(ORIGIN) && refExists(root, head)) return { branch: target }
   for (const name of ['main', 'master']) {
-    if (gitOrUndefined(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])) return name
+    if (refExists(root, `refs/heads/${name}`) || refExists(root, `${ORIGIN}${name}`)) return { branch: name, ...(target ? { dangling: target } : {}) }
   }
-  return undefined
+  return {
+    problem: target ? `origin/HEAD 指着不存在的分支 ${target}，本地和 origin 上也没有 main、master` : '没有 origin/HEAD，本地和 origin 上也没有 main、master',
+  }
+}
+
+export function defaultBranch(root: string): string | undefined {
+  return findDefaultBranch(root).branch
 }
 
 export interface LandingFile {

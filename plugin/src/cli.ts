@@ -9,7 +9,7 @@ import { type Execution, execute, RUN_ENV } from './execute.ts'
 import { entryPath, entryState, installEntry } from './entry.ts'
 import { askLayermap, fullReasons, LAYERMAP_HINT, outsideNote } from './focused.ts'
 import { duration, short, when } from './format.ts'
-import { checkRefUpdates, GATE_REJECT, gateProblem, installGate } from './gate.ts'
+import { checkRefUpdates, danglingNote, GATE_REJECT, gateProblem, installGate } from './gate.ts'
 import { changedPaths, commitOf, currentBranch, defaultBranch, headCommit, landings, mergeBase, workTreeId } from './git.ts'
 import { renderReport } from './report.ts'
 import { nodeTest } from './run/node-test.ts'
@@ -18,7 +18,7 @@ import { type Framework, runFramework } from './run/runner.ts'
 import { vitest } from './run/vitest.ts'
 import { busyText, coverageOf, defaultTips, describeCoverage, failureText, ignoredBy, openRepo, type Repo, runner, runningText, runRecorded, started } from './repo.ts'
 import { failedTests, flakyStatus, noteResults, PROVE_RUNS, provenFixed, readResults, RESULTS_ENV, resultsFile, type TestResult } from './results.ts'
-import { LOCATED, newRunId, processAlive, type RunRecord, testKey } from './store.ts'
+import { LOCATED, newRunId, processAlive, type RunRecord, type RunStep, testKey } from './store.ts'
 import { findTests, testMatcher } from './tests.ts'
 import { verifyFiles } from './verify.ts'
 
@@ -122,10 +122,12 @@ async function full(): Promise<number> {
   const checks = extraChecks(ctx.root)
   const steps = [
     // 只有附加检查拿到这一轮的运行 id（见 RUN_ENV）：它们在测试之前跑，在里面借用工作区（testpace hold）不另占
-    ...checks.map(check => ({ title: `附加检查 ${check}`, header: `附加检查：${check}`, command: check, args: [] as string[], check, env: { [RUN_ENV]: id } })),
-    { title: '整组的检查（full）', header: `整组的检查（full）：${config.full}`, command: config.full, args: [] as string[] },
-    { title: `全部测试（${tests.length} 个文件）`, header: `全部测试（${tests.length} 个文件）：${config.files}`, command: config.files, args: tests },
+    ...checks.map(check => ({ kind: 'check' as const, title: `附加检查 ${check}`, header: `附加检查：${check}`, command: check, args: [] as string[], check, env: { [RUN_ENV]: id } })),
+    { kind: 'full' as const, title: '整组的检查（full）', header: `整组的检查（full）：${config.full}`, command: config.full, args: [] as string[] },
+    { kind: 'tests' as const, title: `全部测试（${tests.length} 个文件）`, header: `全部测试（${tests.length} 个文件）：${config.files}`, command: config.files, args: tests },
   ]
+  // 每段各用了多久：report 据此说整组的时间花在哪一段
+  const timings: RunStep[] = []
   const onStart = (group: number) => ctx.store.update(ctx.root, id, { group })
   const resultsAt = resultsFile()
   const sizeOf = (path: string) => (existsSync(path) ? statSync(path).size : 0)
@@ -141,6 +143,7 @@ async function full(): Promise<number> {
       appendFileSync(log, `===== testpace ${step.header}\n`)
       const part = await execute(step.command, step.args, ctx.root, log, onStart, { [RESULTS_ENV]: resultsAt.path, ...('env' in step ? step.env : {}) })
       execution = execution ? { ...part, durationMs: execution.durationMs + part.durationMs } : part
+      if (!part.interrupted) timings.push({ kind: step.kind, ...('check' in step ? { check: step.check } : {}), durationMs: part.durationMs })
       if (part.interrupted || part.exitCode !== 0) {
         failed = step
         break
@@ -176,6 +179,7 @@ async function full(): Promise<number> {
     ...session,
     ...(waiting.length ? { waiting } : {}),
     ...(checks.length ? { checks } : {}),
+    steps: timings,
     tests: tests.length,
     ...(results.length > 0 ? { failed: failedTests(results) } : {}),
     ...runner(),
@@ -462,6 +466,8 @@ function status(): number {
   }
   // 合并门看提交里的 testpace.json，工作区里这份写坏了它也照常把关
   if (configExists(ctx.root)) lines.push(`合并门：${gateProblem(ctx.root) ?? '已装上，agent 移动默认分支时检查'}`)
+  const dangling = configExists(ctx.root) ? danglingNote(ctx.root) : undefined
+  if (dangling) lines.push(`  ${dangling}`)
   lines.push(`固定命令入口（${entryPath()}）：${ENTRY_STATES[entryState()]}`)
   const checks = extraChecks(ctx.root)
   lines.push(`附加检查（全局 git 配置 testpace.check）：${checks.length ? `${checks.join('、')}，整组之前先跑` : '没有'}`)
