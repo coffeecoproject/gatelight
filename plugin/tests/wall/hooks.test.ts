@@ -164,6 +164,15 @@ describe('结束之前', () => {
     assert.match(stop(repo, 's1') as string, /modwall check/)
   })
 
+  test('没有这个会话在这里的起点（比如这个模块是会话中途才装上的）：不说是这个会话改的，从这时算起；之后再改照常拦', () => {
+    const repo = sampleRepo()
+    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee = 1\n')
+    // 这个会话没有过会话开始，也没在这里跑过命令：没有起点可比
+    assert.equal(stop(repo, 'late'), undefined)
+    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee2 = 1\n')
+    assert.match(stop(repo, 'late') as string, /modwall check/)
+  })
+
   test('改了配置也要重跑；压缩后再来一次会话开始，不覆盖会话开始时的样子', () => {
     const repo = sampleRepo()
     hook(repo, 'SessionStart', { session_id: 's2' })

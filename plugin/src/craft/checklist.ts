@@ -157,9 +157,12 @@ export function unanswered(hits: Hit[], records: Records): Hit[] {
   return hits.filter(hit => !answered.has(hit.item.id))
 }
 
+/** checklistFingerprint 的算法的名字：算法变了要改它，会话起点里以前记的样子就不算了（见 base/baseline.ts）。 */
+export const CHECKLIST_FORMAT = 'checklist-2'
+
 /** 停止门用：命中条目的那些文件和改动记录现在的样子。 */
 export function checklistFingerprint(s: Snapshot, hits: Hit[], records: Records): string {
-  return contentKey(s.root, s.base, [...hits.flatMap(hit => hit.paths), ...records.files], 'checklist-2', hits.map(hit => hit.item.id).join(','))
+  return contentKey(s.root, s.base, [...hits.flatMap(hit => hit.paths), ...records.files], CHECKLIST_FORMAT, hits.map(hit => hit.item.id).join(','))
 }
 
 /** 条目从分叉点到现在放宽了什么：去掉或改了触发条件、改了怎么查。只加触发条件、改标题和来由不算。 */
