@@ -6,6 +6,7 @@
 // 清单：这个会话改到了清单（.testcraft/checklist/）条目的触发条件，改动记录"## 清单"里还没写怎么查的，也拦一次。
 // 同一份改动只拦一次（记号里带着改动的样子）：改了以后还缺，再拦。
 // 复查中（testcraft review start 之后，见 review.ts）不催证明和放水检查，只提醒一次复查还开着：复查完再一起跑。
+// 这一次提醒按这次复查记，不带改动的样子：复查中接着再改测试不再拦，另开一次复查才再提醒。
 
 import { SessionBaselines } from '../base/baseline.ts'
 import { CONFIRM_TOOL } from '../base/confirm.ts'
@@ -14,7 +15,7 @@ import { open, type Snapshot } from './change.ts'
 import { baseChecklist, CHECKLIST_FORMAT, checklistFingerprint, hitsOf, unanswered } from './checklist.ts'
 import { joined } from './config.ts'
 import { readRecords } from './records.ts'
-import { missingChecks, reviewing } from './review.ts'
+import { missingChecks, reviewKey } from './review.ts'
 import { MODULE, openStore } from './store.ts'
 import { FINGERPRINT_FORMAT, testFingerprint } from './weaken.ts'
 
@@ -64,7 +65,8 @@ export function unfinished(repo: Repo, sessionId: string, seen: readonly string[
   const s = snapshotOf(repo)
   if (!s) return undefined
   const store = openStore(repo)
-  // 记号带着测试这一侧现在的样子：同一份改动只拦一次，改了以后还缺再拦。复查中的提醒另用一个记号：复查结束后还缺的照常拦
+  // 记号带着测试这一侧现在的样子：同一份改动只拦一次，改了以后还缺再拦。复查中的提醒另用一个记号，按这次复查记（哪次改动的、什么时候开的）：
+  // 复查中再改测试不再拦，复查结束后还缺的照常拦
   const fingerprint = testFingerprint(s)
   const checklist = checklistState(s)
   // 没有起点（见 base/baseline.ts）时现在就是起点：下面两处都当这个会话没改过
@@ -76,11 +78,11 @@ export function unfinished(repo: Repo, sessionId: string, seen: readonly string[
   const where = named ? `在 ${repo.root} ` : ''
   // 测试这一侧还缺的：这个会话改了测试（和起点比），却没有放水检查或证明的通过记录
   const todo = started.fingerprint === fingerprint ? [] : missingChecks(s, store)
-  const inReview = todo.length > 0 && reviewing(s, store)
-  const todoKey = `craft:${inReview ? 'review' : 'tests'}:${fingerprint}`
+  const review = todo.length > 0 ? store.reviews.get(reviewKey(s)) : undefined
+  const todoKey = review ? `craft:review:${reviewKey(s)}:${review.at}` : `craft:tests:${fingerprint}`
   if (todo.length && !seen.includes(todoKey)) {
     keys.push(todoKey)
-    if (inReview) {
+    if (review) {
       notes.push(
         `这个会话${where}改的测试正在请检查员复查（testcraft review start 开的），testcraft prove、testcraft weaken 先不用跑：复查中每改一次测试，之前的结果就对不上。检查员提的问题都改完后，跑 testcraft review done，再把这两条各跑一次；还在等检查员的，接着等。`,
       )
