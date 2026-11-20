@@ -1,10 +1,16 @@
-// testpace 自己的版本：取 Claude Code 的插件清单（Codex 的清单版本和它一起升，测试核对两边一致）。
+// 插件自己的名字和版本：取 Claude Code 的插件清单（Codex 的清单和它一起改，测试核对两边一致）。
 
 import { readFileSync } from 'node:fs'
 
-export const VERSION: string = (
-  JSON.parse(readFileSync(new URL('../../.claude-plugin/plugin.json', import.meta.url), 'utf8')) as { version: string }
-).version
+const manifest = JSON.parse(readFileSync(new URL('../../.claude-plugin/plugin.json', import.meta.url), 'utf8')) as { name: string; version: string }
+
+export const VERSION: string = manifest.version
+
+/**
+ * 插件的名字。说给 agent 的话里提到插件时用它；确认工具的全名里也有它（.mcp.json 里服务的名字，测试核对和它一样）。
+ * 三条命令（testpace、testcraft、modwall）不跟它走。
+ */
+export const PLUGIN_NAME: string = manifest.name
 
 /** 比较两个 x.y.z 版本号：a 新返回正数，旧返回负数，一样返回 0。 */
 export function compareVersions(a: string, b: string): number {

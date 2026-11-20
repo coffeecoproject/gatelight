@@ -15,6 +15,7 @@ import { commonDir, repoRoot } from './git.ts'
 import { hash, ModuleRecords } from './records.ts'
 import { type Repo } from './repo.ts'
 import { Store } from './store.ts'
+import { PLUGIN_NAME } from './version.ts'
 
 /** 确认工具的名字（src/mcp.ts）。 */
 export const CONFIRM_TOOL = 'confirm_with_user'
@@ -112,7 +113,7 @@ export function askUser(repo: Repo, module: string, heading: string, items: Conf
       id,
       text,
       lines: [
-        `这 ${pending.length} 项还没经用户确认。用户不会看命令输出，要调用 testpace 的 ${CONFIRM_TOOL} 工具，弹窗给用户看，用户同意了才算。`,
+        `这 ${pending.length} 项还没经用户确认。用户不会看命令输出，要调用 ${PLUGIN_NAME} 的 ${CONFIRM_TOOL} 工具，弹窗给用户看，用户同意了才算。`,
         '调用之前，先在对话里用白话告诉用户每一项原来是什么样、现在改成什么样、为什么；用户不同意的，改回去或者换个做法。',
         `repo：${repo.root}`,
         `id：${id}`,

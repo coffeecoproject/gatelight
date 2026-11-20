@@ -13,6 +13,7 @@ import { judgingDir, judgingFile } from '../src/base/judging.ts'
 import { layermap, LAYERMAP_MINIMUM } from '../src/base/layermap.ts'
 import { ModuleRecords } from '../src/base/records.ts'
 import { openRepo, type Repo } from '../src/base/repo.ts'
+import { PLUGIN_NAME } from '../src/base/version.ts'
 import { commit, ENV, sampleRepo, sh, tempDir } from './helpers.ts'
 
 const head = (repo: string): string => sh(repo, 'git rev-parse HEAD').trim()
@@ -144,7 +145,7 @@ describe('用户确认', () => {
     )
     // 说给 agent 的话里有调工具要填的三样
     assert.deepEqual(first.ask.lines.slice(2, 4), [`repo：${repo.root}`, `id：${first.ask.id}`])
-    assert.ok(first.ask.lines[0]?.includes(`testpace 的 ${CONFIRM_TOOL} 工具`))
+    assert.ok(first.ask.lines[0]?.includes(`${PLUGIN_NAME} 的 ${CONFIRM_TOOL} 工具`))
     assert.deepEqual(first.ask.lines.slice(5), ['-----', first.ask.text, '-----'])
 
     // 没调工具，再检查一次还是没同意，编号不变
@@ -287,7 +288,7 @@ describe('确认工具（MCP 服务）', () => {
       { method: 'notifications/initialized' },
       { id: 2, method: 'tools/list' },
     ])
-    assert.equal(initialized?.result.serverInfo.name, 'testpace')
+    assert.equal(initialized?.result.serverInfo.name, PLUGIN_NAME)
     assert.deepEqual(initialized?.result.capabilities, { tools: {} })
     const tools = listed?.result.tools as Array<Record<string, any>>
     assert.equal(tools.length, 1)

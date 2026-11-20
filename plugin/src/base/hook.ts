@@ -10,7 +10,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { fileURLToPath } from 'node:url'
 import { AGENTS, type AgentKind } from './agent.ts'
 import { CONTRACT_FILE, joined, loadContract } from './contract.ts'
-import { entryPath, entryState } from './entry.ts'
+import { entryPath, entryState, refreshEntry } from './entry.ts'
 import { ensureGate, gateProblem } from './gate.ts'
 import { git } from './git.ts'
 import { modules } from './module.ts'
@@ -63,7 +63,7 @@ function isNewRepo(root: string): boolean {
 
 /** 新仓库还没接入时给 agent 的话：照接入说明配好，默认落地前跑全部测试，不用问用户。 */
 export const NEW_REPO =
-  '这是个新仓库，还没接入 testpace（根目录没有 testpace.json）。建项目时一起接入：照 testpace:setup 技能配好 testpace.json 和三条命令，' +
+  '这是个新仓库，还没接入 testpace（根目录没有 testpace.json）。建项目时一起接入：照 gatelight:setup 技能配好 testpace.json 和三条命令，' +
   '落地前跑全部检查和全部测试，这是约定，不用问用户；配完跑 testpace verify 核对。'
 
 /** 这个插件里的 testpace 命令：没有固定入口时，插件 bin 目录不在 PATH 上的 agent 只能用完整路径。 */
@@ -154,6 +154,8 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
   const shell = input.tool_name?.toLowerCase() === 'bash'
 
   if (event === 'SessionStart') {
+    // 旧版本放的固定入口先换成这一版的：下面的会话说明、之后的命令和合并门的钩子都靠它找到 testpace
+    refreshEntry()
     // 会话所在目录的仓库，加上会话之前碰过的仓库（压缩、恢复后重新开始时上下文里的节奏说明可能没了）。
     const hereRepo = openRepo(cwd)
     const here = hereRepo?.root

@@ -9,7 +9,7 @@ testcraft 和 testpace 在同一个插件里：它用 `testpace.json` 的 `files
 
 ## 步骤
 
-1. **确认接入了 testpace**：仓库根目录有 `testpace.json`，`testpace verify` 能过。没有就先用 `testpace:setup` 接入。
+1. **确认接入了 testpace**：仓库根目录有 `testpace.json`，`testpace verify` 能过。没有就先用 `gatelight:setup` 接入。
 2. **建 `.testcraft/config.json`**。看一遍项目里的测试，常见命名之外的写进来：
    - `tests`：能单独跑、但名字不是 `*.test.*` / `*.spec.*` / `*_test.go` / `test_*.py` 的测试文件。
    - `helpers`：只给测试用的代码和数据，放在源码目录里、名字也不带 test 字样的（比如 `src/testing/**`、`**/*-test-support.ts` 已经默认认得）。

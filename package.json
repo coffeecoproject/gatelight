@@ -1,8 +1,8 @@
 {
-  "name": "testpace",
+  "name": "gatelight",
   "private": true,
   "type": "module",
-  "description": "Test pacing for coding agents (Claude Code plugin)",
+  "description": "Three gates for coding agents (Claude Code and Codex plugin)",
   "license": "MIT",
   "engines": { "node": ">=22.18" },
   "scripts": {

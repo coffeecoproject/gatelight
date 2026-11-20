@@ -1,11 +1,11 @@
 {
-  "name": "testpace",
+  "name": "gatelight",
   "interface": {
-    "displayName": "testpace"
+    "displayName": "gatelight"
   },
   "plugins": [
     {
-      "name": "testpace",
+      "name": "gatelight",
       "source": {
         "source": "local",
         "path": "./plugin"

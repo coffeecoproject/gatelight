@@ -10,7 +10,7 @@ modwall 让 agent 默认按模块开发，越界由程序拦。它不自己解�
 ## 先确认两件事
 
 1. **LayerMap 的版本够**：`layermap --version` 要 0.1.48 以上。没有这个命令或版本太旧，请用户装或升级 LayerMap 插件（开新会话后生效）。没有它，`modwall check` 只能查按路径判断的那部分，结果一律不通过。
-2. **接入了 testpace**：仓库根目录有 `testpace.json`，`testpace verify` 能过。没有就先用 `testpace:setup` 接入：会话说明、改文件前的检查、结束前的检查、合并前的把关都只管接入了 testpace 的仓库，没接的话只剩自己记得跑 `modwall check`。
+2. **接入了 testpace**：仓库根目录有 `testpace.json`，`testpace verify` 能过。没有就先用 `gatelight:setup` 接入：会话说明、改文件前的检查、结束前的检查、合并前的把关都只管接入了 testpace 的仓库，没接的话只剩自己记得跑 `modwall check`。
    - 看 `testpace.json` 的 `ignore` 有没有盖住 `.modwall/`（比如写了 `.modwall/`、`.*/**`）。盖住的话，改配置不会重跑整组，放宽规则就绕过了合并门：从 `ignore` 里去掉它。
 
 `modwall status` 会把这两件事都列出来。
@@ -31,7 +31,7 @@ modwall 让 agent 默认按模块开发，越界由程序拦。它不自己解�
    - 由装配层接线的接口（一个模块要用、另一个模块提供的函数），由使用它的模块声明类型、从自己的入口导出，装配层把提供方的实现接进来；不在共享层集中放这类接口。
    - 应用之间的接口契约副本（比如从后端接口生成给前端用的类型）是例外，放在各应用的共享层。
 
-   **用 Postgres 的项目，数据库一起改造**（规则见 testpace:modular 技能的「数据库」）：对象搬进所属模块的内部 schema（模块目录名转成小写加下划线），给别的模块用的视图、函数放进入口 schema（`<内部>_api`，不放表），没有业务含义的结构放进 `shared`，`public` 里只留扩展自带的对象；迁移放进各模块目录下的迁移子目录，文件名以 14 位时间戳开头，只留正向迁移（一个时间戳一个文件，回滚迁移不搬）；跨模块的外键改成只存 id，跨模块的读写改成走对方入口（写入走对方入口里的函数），叠在别的模块入口上的视图改成函数，迁移里不建 schema；函数都带 `SET search_path = <本模块的内部 schema>, pg_temp`，都是 `SECURITY DEFINER`（要 `COMMIT` 的过程拆开或放到应用代码里），迁移里不改 `search_path`、不切身份。库要 Postgres 14 以上。具体怎么搬（改名迁移，还是还没上线的项目把历史迁移合成每个模块一份起点）按项目定，先和用户商量。跑迁移的工具要把各模块和共享层的迁移目录收齐、按时间戳统一排序执行，执行某个模块的迁移时把 `search_path` 设成这个模块的内部 schema；迁移记录按文件名认，不按路径认（文件跟着目录挪了不会再跑一遍），迁移记录表放在 `shared`。
+   **用 Postgres 的项目，数据库一起改造**（规则见 gatelight:modular 技能的「数据库」）：对象搬进所属模块的内部 schema（模块目录名转成小写加下划线），给别的模块用的视图、函数放进入口 schema（`<内部>_api`，不放表），没有业务含义的结构放进 `shared`，`public` 里只留扩展自带的对象；迁移放进各模块目录下的迁移子目录，文件名以 14 位时间戳开头，只留正向迁移（一个时间戳一个文件，回滚迁移不搬）；跨模块的外键改成只存 id，跨模块的读写改成走对方入口（写入走对方入口里的函数），叠在别的模块入口上的视图改成函数，迁移里不建 schema；函数都带 `SET search_path = <本模块的内部 schema>, pg_temp`，都是 `SECURITY DEFINER`（要 `COMMIT` 的过程拆开或放到应用代码里），迁移里不改 `search_path`、不切身份。库要 Postgres 14 以上。具体怎么搬（改名迁移，还是还没上线的项目把历史迁移合成每个模块一份起点）按项目定，先和用户商量。跑迁移的工具要把各模块和共享层的迁移目录收齐、按时间戳统一排序执行，执行某个模块的迁移时把 `search_path` 设成这个模块的内部 schema；迁移记录按文件名认，不按路径认（文件跟着目录挪了不会再跑一遍），迁移记录表放在 `shared`。
    **按模块的数据库角色**（也归项目做，和用户商量着改）：
    - 跑迁移的工具用迁移账号登录，发现一个模块目录就建同名的角色（`NOLOGIN`）和它的两个 schema，`shared` 角色和 schema 也由它建，已有就跳过（角色是整个实例共用的）；跑某个模块的迁移时切成它的角色（`SET LOCAL ROLE`），共享层的迁移切成 `shared`，再把迁移文件的全文交给这个模块自己的执行函数：迁移工具给每个模块（和 `shared`）建一个 `<schema>.run_migration(script text)`，归这个模块的角色，`LANGUAGE plpgsql SECURITY DEFINER SET search_path = <schema>, pg_temp`，正文只有 `EXECUTE script`，`REVOKE ALL … FROM PUBLIC`。这样迁移里切身份由数据库拒绝。迁移里不能有 `COMMIT`、`COPY … FROM STDIN`、`CONCURRENTLY`、`VACUUM`。
    - 程序只用一组连接，用登录账号登录。登录账号、迁移账号能登录、不是超级用户、不拥有对象，不继承模块角色的权限（`NOINHERIT`；Postgres 16 起加进成员时写 `WITH INHERIT FALSE`），是各模块角色的成员。
@@ -99,7 +99,7 @@ modwall 让 agent 默认按模块开发，越界由程序拦。它不自己解�
 4. **整份配置让用户确认一次**：首次接入时 `modwall check` 会把整份配置列为放宽项。先用白话告诉用户：分了哪几个模块（有几个应用时按应用说，还有哪些代码是几个应用共用的）、共享层和装配层是哪些、哪些路径不管，再调用 `confirm_with_user` 工具（弹窗，用户同意才算；编号和文字照 `modwall check` 输出的填）。确认后 `modwall check` 应当通过。
 5. **库的检查进整组**（用 Postgres 的项目）：在项目整组（testpace 的 `full`）里，迁移跑完之后加一步 `modwall db check --psql "<执行 SQL 的命令>"`，用测试的临时库；它不通过时退出码非零，整组就不通过。怎么起库、怎么跑迁移仍归项目，modwall 只读系统目录。不接上的话库这一半没人查：`modwall status` 的"数据库"一行会提醒（它只看得到 `testpace.json` 的 `full` 里直接写的命令，写在脚本里的要自己核对）。
 6. **核对**：`modwall status` 应当显示 LayerMap 能用、testpace 接入了、没有越界、放宽项都同意过。
-7. 提交前先问用户；合回默认分支照 testpace 的节奏（`testpace:merge`）。
+7. 提交前先问用户；合回默认分支照 testpace 的节奏（`gatelight:merge`）。
 
 ## 完成时用白话告诉用户
 
