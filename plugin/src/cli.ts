@@ -27,11 +27,11 @@ const USAGE = `用法：
   testpace focused [--base REF]  改完先跑：fast，再跑 layermap 选出的相关测试。默认对比和默认分支的分叉点；在默认分支上选测靠不住时建议跑整组
   testpace files [--repeat N] PATH[:行号]...
                                  只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试。
-                                 --repeat N 连跑 N 次、没过就停：造出时好时坏的测试的失败，或修好后连跑 10 次证明
-  testpace full                  跑整组：接入了的检查（modwall check、testcraft check）、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，
+                                 --repeat N 连跑 N 次、没过就停：造出时好时坏的测试的失败，或修好后连跑 3 次证明
+  testpace full                  跑整组：接入了的检查（modwall check、testcraft checklist）、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，
                                  一段没过就停，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
-  testpace hold PID 说明         借用这个工作区（比如 testcraft 建副本）：占着时别的 testpace 命令不跑，说明是谁占着。
+  testpace hold PID 说明         借用这个工作区（比如要复制一份工作区的工具）：占着时别的 testpace 命令不跑，说明是谁占着。
                                  PID 是借用的那个进程，它不在了占用就作废。占上时输出这次的 id，退出码 0；有在跑的、占着的，说明是谁，退出码 3。
                                  整组里要建副本的检查带着这一轮的 TESTPACE_RUN，工作区已经是这一轮的，不另占、什么也不输出，退出码 0
   testpace release ID            放开 hold 占的工作区

@@ -3,7 +3,8 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { ENV, HOOK, MEMBER_PRICE, sampleRepo, sh, tempDir, TEST_HEAD, testcraft, write } from './helpers.ts'
+import { runs } from '../helpers.ts'
+import { ENV, HOOK, MEMBER_PRICE, sampleRepo, TEST_HEAD, TESTPACE, write } from './helpers.ts'
 
 function hook(cwd: string, event: string, extra: Record<string, unknown> = {}): Record<string, any> | undefined {
   const r = spawnSync('node', ['--disable-warning=ExperimentalWarning', HOOK, 'claude'], {
@@ -17,157 +18,91 @@ function hook(cwd: string, event: string, extra: Record<string, unknown> = {}): 
 
 const edit = (repo: string, path: string, from: string, to: string): void => {
   const file = join(repo, path)
-  writeFileSync(file, readFileSync(file, 'utf8').replace(from, to))
+  const text = readFileSync(file, 'utf8')
+  assert.ok(text.includes(from), `${path} 里没有 ${from}`)
+  writeFileSync(file, text.replace(from, to))
 }
 
 const realTest = `${TEST_HEAD}import { memberPrice } from '../src/price.mjs'\ntest('金卡九折', () => {\n  assert.equal(memberPrice(100, { level: 'gold' }), 90)\n  assert.equal(memberPrice(100, { level: 'silver' }), 100)\n})\n`
 
+/** 两条清单：改满减要查结算页提示；改合计要查发票。 */
+const COUPON = '# 改了满减，结算页提示要跟着改\n\n## 触发\n\n- `src/price.mjs` 改到 `coupon`\n\n## 怎么查\n\n结算页提示和 applyCoupon 对一遍。\n\n## 来由\n\nfix/coupon-hint：提示金额是旧的。\n'
+const TOTAL = '# 改了合计，发票金额要跟着改\n\n## 触发\n\n- `src/price.mjs` 改到 `quantity`\n\n## 怎么查\n\n发票金额和 total 对一遍。\n\n## 来由\n\nfix/invoice-total：发票还按旧的合计开。\n'
+const withItems = (): string =>
+  sampleRepo(dir => {
+    write(dir, '.testcraft/checklist/coupon-hint.md', COUPON)
+    write(dir, '.testcraft/checklist/invoice-total.md', TOTAL)
+  })
+const hitCoupon = (repo: string): void => edit(repo, 'src/price.mjs', 'return amount - coupon.off', 'return amount - coupon.off * 2')
+const hitTotal = (repo: string): void => edit(repo, 'src/price.mjs', 'sum += item.price * item.quantity', 'sum = sum + item.price * item.quantity')
+
 describe('hooks', () => {
-  test('会话开始：接入的仓库说明约定，没接入的不出声', () => {
+  test('会话开始：接入的仓库说明约定（改已定的业务规则先问用户，别的不问），不提证明、放水检查、复查；没接入的不出声', () => {
     const repo = sampleRepo()
-    assert.match(hook(repo, 'SessionStart')?.hookSpecificOutput.additionalContext, /testcraft prove/)
+    const told = hook(repo, 'SessionStart')?.hookSpecificOutput.additionalContext
+    assert.match(told, /用 testcraft 管测试的写法/)
+    assert.match(told, /要改已定的业务规则（包括为此删测试、让测试不跑、改期望值），先用白话问用户/)
+    assert.match(told, /测试上别的调整.*自己定，不问用户/)
+    assert.doesNotMatch(told, /testcraft prove|testcraft weaken|testcraft review|检查员|放水|证明/)
     // 没接入"测试写法"的仓库：只说 testpace 的测试节奏，不说写测试的约定
     const outside = sampleRepo(dir => rmSync(join(dir, '.testcraft'), { recursive: true }))
-    const told = hook(outside, 'SessionStart')?.hookSpecificOutput.additionalContext
-    assert.match(told, /testpace focused/)
-    assert.doesNotMatch(told, /testcraft/)
+    const quiet = hook(outside, 'SessionStart')?.hookSpecificOutput.additionalContext
+    assert.match(quiet, /testpace focused/)
+    assert.doesNotMatch(quiet, /testcraft/)
   })
 
-  test('停止门：没动测试不出声；动了测试没证明就拦一次；证明过就放行；只改文档不再拦', () => {
-    const repo = sampleRepo()
-    appendFileSync(join(repo, 'src/price.mjs'), MEMBER_PRICE)
-    assert.equal(hook(repo, 'Stop'), undefined)
-
-    write(repo, 'tests/member.test.mjs', realTest)
-    const blocked = hook(repo, 'Stop')
-    assert.equal(blocked?.decision, 'block')
-    assert.match(blocked?.reason, /testcraft prove.*tests\/member\.test\.mjs/)
-    // 没有要写理由的改动，不用跑放水检查
-    assert.doesNotMatch(blocked?.reason, /testcraft weaken/)
-    // 同一份改动只拦一次
-    assert.equal(hook(repo, 'Stop'), undefined)
-
-    assert.equal(testcraft(repo, ['prove']).code, 0)
-    assert.equal(hook(repo, 'Stop'), undefined)
-    write(repo, 'README.md', '# 说明\n')
-    assert.equal(hook(repo, 'Stop'), undefined)
-
-    // 再改一下测试，证明记录就对不上了
-    appendFileSync(join(repo, 'tests/member.test.mjs'), "test('银卡不打折', () => assert.equal(memberPrice(50, { level: 'silver' }), 50))\n")
-    assert.equal(hook(repo, 'Stop')?.decision, 'block')
-  })
-
-  test('停止门：有要写理由的改动时要求放水检查', () => {
-    const repo = sampleRepo()
-    hook(repo, 'SessionStart')
-    edit(repo, 'tests/price.test.mjs', "test('满额才减'", "test.skip('满额才减'")
-    assert.match(hook(repo, 'Stop')?.reason, /testcraft weaken/)
-  })
-
-  test('停止门：只改了和测试无关的 npm 脚本，不拦；改了测试命令调到的脚本，要放水检查', () => {
-    const repo = sampleRepo(dir => {
-      write(dir, 'package.json', JSON.stringify({ name: 's', private: true, type: 'module', scripts: { test: 'node --test', dev: 'node src/price.mjs' } }))
-      edit(dir, 'testpace.json', '"files": "node --test"', '"files": "npm test"')
-    })
-    hook(repo, 'SessionStart', { session_id: 's1' })
-    edit(repo, 'package.json', '"dev":"node src/price.mjs"', '"dev":"node --watch src/price.mjs"')
-    assert.equal(hook(repo, 'Stop', { session_id: 's1' }), undefined)
-    edit(repo, 'package.json', '"test":"node --test"', '"test":"node --test || true"')
-    assert.match(hook(repo, 'Stop', { session_id: 's1' })?.reason, /测试的配置或约定.*testcraft weaken/)
-  })
-
-  test('停止门只管这个会话改的测试：会话开始前就改了、这个会话没动，不拦', () => {
-    const repo = sampleRepo()
+  test('停止门：这个会话加了测试、跳过了测试、删了测试、改到了清单条目，都不拦，不要求证明或写下什么', () => {
+    const repo = withItems()
+    hook(repo, 'SessionStart', { session_id: 's' })
     appendFileSync(join(repo, 'src/price.mjs'), MEMBER_PRICE)
     write(repo, 'tests/member.test.mjs', realTest)
-    hook(repo, 'SessionStart', { session_id: 'later' })
-    assert.equal(hook(repo, 'Stop', { session_id: 'later' }), undefined)
-    // 这个会话只改了代码：也不拦
-    appendFileSync(join(repo, 'src/price.mjs'), '\n// 补一行注释\n')
-    assert.equal(hook(repo, 'Stop', { session_id: 'later' }), undefined)
-    // 压缩后再来一次 SessionStart，不覆盖会话开始时的样子
-    appendFileSync(join(repo, 'tests/member.test.mjs'), '\n// 补一行\n')
-    hook(repo, 'SessionStart', { session_id: 'later' })
-    assert.equal(hook(repo, 'Stop', { session_id: 'later' })?.decision, 'block')
-  })
-
-  test('停止门：这个会话改到了清单条目的触发条件、没写怎么查的，拦一次；写了就放行；会话开始前就命中的，这个会话没动不拦、又改了要拦', () => {
-    const item = '# 改了满减，结算页提示要跟着改\n\n## 触发\n\n- `src/price.mjs` 改到 `coupon`\n\n## 怎么查\n\n结算页提示和 applyCoupon 对一遍。\n\n## 来由\n\nfix/coupon-hint：提示金额是旧的。\n'
-    const repo = sampleRepo(dir => write(dir, '.testcraft/checklist/coupon-hint.md', item))
-    hook(repo, 'SessionStart', { session_id: 's1' })
-    edit(repo, 'src/price.mjs', 'return amount - coupon.off', 'return amount - coupon.off * 2')
-    const blocked = hook(repo, 'Stop', { session_id: 's1' })
-    assert.equal(blocked?.decision, 'block')
-    assert.match(blocked?.reason, /清单.*coupon-hint/)
-    assert.doesNotMatch(blocked?.reason, /testcraft prove|testcraft weaken/)
-
-    hook(repo, 'SessionStart', { session_id: 's2' })
-    assert.equal(hook(repo, 'Stop', { session_id: 's2' }), undefined)
-    // 会话开始时就命中、这个会话又改了命中的文件：拦
-    edit(repo, 'src/price.mjs', 'return amount - coupon.off * 2', 'return amount - coupon.off * 3')
-    assert.equal(hook(repo, 'Stop', { session_id: 's2' })?.decision, 'block')
-
-    write(repo, '.testcraft/changes/feature.md', '# feature\n\n## 清单\n\n- `coupon-hint`：提示改成按两倍显示，和 applyCoupon 对过\n')
-    assert.equal(hook(repo, 'Stop', { session_id: 's1' }), undefined)
-  })
-
-  test('停止门：没有这个会话在这里的起点（比如这个模块是会话中途才装上的）：不说是这个会话改的，从这时算起；之后再改照常拦', () => {
-    const repo = sampleRepo()
+    assert.equal(hook(repo, 'Stop', { session_id: 's' }), undefined)
     edit(repo, 'tests/price.test.mjs', "test('满额才减'", "test.skip('满额才减'")
-    // 这个会话没有过会话开始，也没在这里跑过命令：没有起点可比
-    assert.equal(hook(repo, 'Stop', { session_id: 'late' }), undefined)
-    edit(repo, 'tests/price.test.mjs', "test('合计是单价乘数量再相加'", "test.skip('合计是单价乘数量再相加'")
-    assert.match(hook(repo, 'Stop', { session_id: 'late' })?.reason, /testcraft weaken/)
+    assert.equal(hook(repo, 'Stop', { session_id: 's' }), undefined)
+    hitCoupon(repo)
+    hitTotal(repo)
+    assert.equal(hook(repo, 'Stop', { session_id: 's' }), undefined)
+    rmSync(join(repo, 'tests/price.test.mjs'))
+    assert.equal(hook(repo, 'Stop', { session_id: 's' }), undefined)
   })
+})
 
-  test('停止门：没有起点时清单也一样：早就命中了清单条目、没写怎么查的，不说是这个会话改到的；之后再改命中的文件照常拦', () => {
-    const item = '# 改了满减，结算页提示要跟着改\n\n## 触发\n\n- `src/price.mjs` 改到 `coupon`\n\n## 怎么查\n\n结算页提示和 applyCoupon 对一遍。\n\n## 来由\n\nfix/coupon-hint：提示金额是旧的。\n'
-    const repo = sampleRepo(dir => write(dir, '.testcraft/checklist/coupon-hint.md', item))
-    edit(repo, 'src/price.mjs', 'return amount - coupon.off', 'return amount - coupon.off * 2')
-    assert.equal(hook(repo, 'Stop', { session_id: 'late' }), undefined)
-    edit(repo, 'src/price.mjs', 'return amount - coupon.off * 2', 'return amount - coupon.off * 3')
-    assert.match(hook(repo, 'Stop', { session_id: 'late' })?.reason, /清单.*coupon-hint/)
-  })
-
-  /** 同一个仓库的另一个工作区（从 main 新开一个分支）。 */
-  const secondWorktree = (repo: string): string => {
-    const other = join(tempDir('testcraft-wt-'), 'wt')
-    sh(repo, `git worktree add -q -b second '${other}' main`)
-    return other
+describe('整组里"测试写法"的一段', () => {
+  const testpace = (repo: string, args: string[]) => {
+    const r = spawnSync(TESTPACE, args, { cwd: repo, env: ENV, encoding: 'utf8' })
+    return { code: r.status, out: r.stdout + r.stderr }
   }
-  const bash = (cwd: string, session: string, command: string): unknown =>
-    hook(cwd, 'PreToolUse', { session_id: session, tool_name: 'Bash', tool_input: { command } })
+  const kinds = (repo: string): string[] => ((runs(repo).at(-1)?.steps ?? []) as Array<{ kind: string }>).map(step => step.kind)
 
-  test('停止门按工作区认起点：会话后来进了同一个仓库的另一个工作区，那里早就改了的测试不算这个会话改的；在那里再改照常拦', () => {
-    const repo = sampleRepo()
-    hook(repo, 'SessionStart', { session_id: 's' })
-    const other = secondWorktree(repo)
-    // 别人早就在那个工作区加了测试，还没证明
-    appendFileSync(join(other, 'src/price.mjs'), MEMBER_PRICE)
-    write(other, 'tests/member.test.mjs', realTest)
-    bash(other, 's', 'ls')
-    assert.equal(hook(other, 'Stop', { session_id: 's' }), undefined)
-
-    appendFileSync(join(other, 'tests/member.test.mjs'), "test('银卡不打折', () => assert.equal(memberPrice(50, { level: 'silver' }), 50))\n")
-    assert.match(hook(other, 'Stop', { session_id: 's' })?.reason, /testcraft prove.*tests\/member\.test\.mjs/)
+  test('接入了的仓库：testpace full 在测试之前把命中的清单条目说一遍，不跑别的检查；加了测试、跳过了测试照样过', () => {
+    const repo = withItems()
+    // 改到满减那一段，但算出来的数不变：示例项目自己的测试照样过
+    edit(repo, 'src/price.mjs', 'export function applyCoupon', '// coupon：满额才减\nexport function applyCoupon')
+    appendFileSync(join(repo, 'src/price.mjs'), MEMBER_PRICE)
+    write(repo, 'tests/member.test.mjs', realTest)
+    edit(repo, 'tests/price.test.mjs', "test('合计是单价乘数量再相加'", "test.skip('合计是单价乘数量再相加'")
+    const r = testpace(repo, ['full'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /^整组通过 · 2 个测试文件/)
+    assert.deepEqual(kinds(repo), ['craft', 'full', 'tests'])
+    const log = readFileSync(runs(repo).at(-1)!.log as string, 'utf8')
+    assert.match(log, /===== testpace 清单：testcraft checklist\n[\s\S]*这次改动命中 1 条[\s\S]*· coupon-hint/)
+    assert.doesNotMatch(log, /证明|放水/)
   })
 
-  test('会话进了另一个工作区，在那里跑过命令以后才加的测试：起点在第一条命令之前就记了，照常拦', () => {
+  test('这次加的清单条目写坏了：这一段没过，后面的不跑', () => {
     const repo = sampleRepo()
-    hook(repo, 'SessionStart', { session_id: 's' })
-    const other = secondWorktree(repo)
-    bash(other, 's', 'ls')
-    write(other, 'tests/member.test.mjs', realTest)
-    assert.match(hook(other, 'Stop', { session_id: 's' })?.reason, /testcraft prove.*tests\/member\.test\.mjs/)
+    write(repo, '.testcraft/checklist/broken.md', '# 有个坑\n\n## 触发\n\n- `src/**`\n')
+    const r = testpace(repo, ['full'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^整组失败：清单（testcraft checklist）没通过，后面的没有跑/)
+    assert.deepEqual(kinds(repo), ['craft'])
   })
 
-  test('会话进了另一个工作区，先用改文件的工具加了测试、后来才在那里跑命令：起点是改之前的样子，照常拦', () => {
-    const repo = sampleRepo()
-    hook(repo, 'SessionStart', { session_id: 's' })
-    const other = secondWorktree(repo)
-    hook(repo, 'PreToolUse', { session_id: 's', tool_name: 'Write', tool_input: { file_path: join(other, 'tests/member.test.mjs') } })
-    write(other, 'tests/member.test.mjs', realTest)
-    bash(other, 's', 'ls')
-    assert.match(hook(other, 'Stop', { session_id: 's' })?.reason, /testcraft prove.*tests\/member\.test\.mjs/)
+  test('没接入的仓库（没有 .testcraft/）没有这一段', () => {
+    const repo = sampleRepo(dir => rmSync(join(dir, '.testcraft'), { recursive: true }))
+    const r = testpace(repo, ['full'])
+    assert.equal(r.code, 0, r.out)
+    assert.deepEqual(kinds(repo), ['full', 'tests'])
   })
 })

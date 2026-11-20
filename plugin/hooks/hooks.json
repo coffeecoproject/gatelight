@@ -1,5 +1,5 @@
 {
-  "description": "gatelight：会话开始时说明测试节奏和写测试的约定（接入了 testcraft 的仓库），直接跑 full 的命令时提醒改用 testpace full；接入了 modwall 的仓库再说明模块列表和写法约定，改文件之前拦下没有归属的代码文件（只看路径）；整组没跑完或结果没看、改了测试却还没过放水检查或没证明能抓错、改到了清单条目还没写怎么查的、改了代码却没有 modwall check 的通过记录，拦一次结束。合并门是 git 钩子（testpace install）。",
+  "description": "gatelight：会话开始时说明测试节奏和写测试的约定（接入了 testcraft 的仓库），直接跑 full 的命令时提醒改用 testpace full；接入了 modwall 的仓库再说明模块列表和写法约定，改文件之前拦下没有归属的代码文件（只看路径）；整组没跑完或结果没看、改了代码却没有 modwall check 的通过记录，拦一次结束。合并门是 git 钩子（testpace install）。",
   "hooks": {
     "SessionStart": [
       {

@@ -16,9 +16,7 @@ export const TESTPACE = fileURLToPath(new URL('../../bin/testpace', import.meta.
 export const HOOK = fileURLToPath(new URL('../../hooks/testpace.ts', import.meta.url))
 export const SAMPLE = fileURLToPath(new URL('../../../examples/craft-sample', import.meta.url))
 
-// 副本放在系统临时目录下（见 copy.ts）：测试给一个自己的，好查用完有没有删掉。
-export const TMP = tempDir('testcraft-tmp-')
-export const ENV: NodeJS.ProcessEnv = { ...BASE_ENV, TMPDIR: TMP }
+export const ENV: NodeJS.ProcessEnv = BASE_ENV
 
 export interface Result {
   code: number | null
@@ -46,10 +44,6 @@ export function sampleRepo(setup?: (repo: string) => void): string {
   setup?.(repo)
   sh(repo, 'git init -q -b main && git add -A && git commit -qm init && git checkout -qb feature')
   return repo
-}
-
-export function commitOnMain(repo: string, message: string): void {
-  sh(repo, `git checkout -q main && git add -A && git commit -qm "${message}" && git checkout -q feature && git merge -q main`)
 }
 
 export const MEMBER_PRICE = `

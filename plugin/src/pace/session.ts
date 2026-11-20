@@ -1,12 +1,12 @@
-// "跑测试"说给 agent 的话，经底座的钩子送出去（base/module.ts 的 brief、alerts、beforeCommand、unfinished）：
-// 测试节奏、名单上的时好时坏测试、直接跑 full 命令时的提示、停止门里这个会话认出的时好时坏测试。
+// "跑测试"说给 agent 的话，经底座的钩子送出去（base/module.ts 的 brief、alerts、beforeCommand）：
+// 测试节奏、名单上的时好时坏测试、直接跑 full 命令时的提示。认出的时好时坏测试在测试结果里点名，收尾时不再拦。
 
 import { basename } from 'node:path'
 import { openRepo, type Repo } from '../base/repo.ts'
 import { invocations, runsCommand } from '../base/shell.ts'
 import { loadConfig } from './config.ts'
-import { describeTest, flakyBrief } from './results.ts'
-import { flakyTests, testKey } from './testlist.ts'
+import { flakyBrief } from './results.ts'
+import { flakyTests } from './testlist.ts'
 
 /** 测试节奏。repo 是话里指这个仓库的写法。落地的规矩由底座接在后面说。 */
 export function rhythm(repo: string): string[] {
@@ -32,14 +32,4 @@ export function fullCommandHint(command: string, cwd: string): string | undefine
   const calls = invocations(command, cwd)
   if (!full || calls.some(call => basename(call.argv[0] ?? '') === 'testpace') || !runsCommand(command, full, cwd)) return undefined
   return '这是 testpace.json 里 full 的检查，只是整组的一部分（整组还要跑 tests 规则找到的全部测试）。直接跑不会留下通过记录，合并门不认；整组改用 testpace full，结果会按当前代码记录。'
-}
-
-/** 这个会话认出的时好时坏测试，还在名单上的：每个拦一次（记号 flaky:<testKey>），免得一句带过。 */
-export function unfinished(repo: Repo, sessionId: string, seen: readonly string[], named: boolean): { keys: string[]; text: string } | undefined {
-  const found = flakyTests(repo.store).filter(test => test.session === sessionId && !seen.includes(`flaky:${testKey(test)}`))
-  if (found.length === 0) return undefined
-  return {
-    keys: found.map(test => `flaky:${testKey(test)}`),
-    text: `这个会话${named ? `在 ${repo.root} ` : ''}认出了时好时坏的测试，还在名单上：${found.map(describeTest).join('、')}。不能靠重跑过关：按 testcraft 写测试技能里"测试时好时坏"一节找原因修；和手上的活无关的，告诉用户是哪个测试、在哪次没过、日志在哪（testpace status 列着）。说清楚了再收尾。`,
-  }
 }

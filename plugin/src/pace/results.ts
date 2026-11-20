@@ -15,9 +15,9 @@ import { addFlaky, type FlakyTest, flakyTests, LOCATED, readRounds, removeFlaky,
 export const RESULTS_ENV = 'TESTPACE_RESULTS'
 
 /** 连跑这么多次都过（代码没改），才算证明时好时坏的测试修好了，从名单上去掉。 */
-export const PROVE_RUNS = 10
+export const PROVE_RUNS = 3
 
-/** 同一个测试连着这么多轮（每轮改了代码）没过，就让 agent 停下来找用户。 */
+/** 同一个测试连着这么多轮（每轮改了代码）没过，就提醒 agent 先别接着试、回头找原因。只是提醒，不找用户。 */
 export const STOP_ROUNDS = 3
 
 /** 一个测试的结果，文件相对仓库根目录。 */
@@ -110,7 +110,7 @@ export interface ResultsInput {
  *   "同一份代码"要两次都是跑的过程中代码没改过的（tree 和 treeAtEnd 一样）。
  * - 名单上的测试不在了：在认出它的工作区里（或那个工作区已经删了）整个跑了它的文件、全部通过，
  *   文件里却没有这个名字（删掉或改了名），从名单上去掉。别的工作区的代码可能还没有这个测试，不算。
- * - 几轮没过：改了代码再跑还没过算一轮，过了清零；到 STOP_ROUNDS 轮让 agent 停下来找用户。
+ * - 几轮没过：改了代码再跑还没过算一轮，过了清零；到 STOP_ROUNDS 轮提醒 agent 先找原因再改。
  * 返回要说给 agent 的话。
  */
 export function noteResults(repo: Repo, input: ResultsInput): string[] {
@@ -204,7 +204,7 @@ export function noteResults(repo: Repo, input: ResultsInput): string[] {
   }
   if (changed) saveRounds(repo.store, record.worktree, rounds)
   if (stuck.length > 0) {
-    notes.push(...stuck, '停下来：把失败原因和这几轮各改了什么告诉用户，等用户决定。不要接着改，也不要改测试凑通过。')
+    notes.push(...stuck, '先别接着试：回头读失败输出和它测的代码，找到原因再改；不要改测试凑通过。查出来是业务规则本身说不清或要变的，才问用户。')
   }
   return notes
 }

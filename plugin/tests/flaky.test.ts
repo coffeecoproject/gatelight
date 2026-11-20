@@ -61,7 +61,7 @@ describe('时好时坏的测试', () => {
     assert.equal(second.code, 0, second.out)
     assert.match(second.out, new RegExp(`时好时坏：${FLIP_TEST.source} 这次过了，同一份代码 .+ 却没过（那次的日志：.+\\.log）`))
     assert.match(second.out, /不要靠重跑过关/)
-    assert.match(second.out, /testpace files --repeat 10/)
+    assert.match(second.out, /testpace files --repeat 3/)
 
     const status = testpace(repo, ['status'], env)
     assert.match(status.out, new RegExp(`时好时坏的测试（1 个[^\\n]*\\n  ${FLIP_TEST.source}：.+同一份代码先后一次没过、一次过了\\n    没过那次的日志：.+\\n    过了那次的日志：.+`))
@@ -116,7 +116,7 @@ describe('时好时坏的测试', () => {
     assert.match(listed(repo, env), /时好时坏的测试：没有/)
   })
 
-  test('连跑：前面过了、后面没过也算；代码没改连跑 10 次都过才从名单上去掉，不到 10 次不去掉', () => {
+  test('连跑：前面过了、后面没过也算；代码没改连跑 3 次都过才从名单上去掉，不到 3 次不去掉', () => {
     const { repo, env } = flipRepo('2')
     const caught = testpace(repo, ['files', '--repeat', '5', 'tests/flip.test.mjs'], env)
     assert.equal(caught.code, 1, caught.out)
@@ -124,24 +124,24 @@ describe('时好时坏的测试', () => {
     assert.match(caught.out, new RegExp(`时好时坏：${FLIP_TEST.source} 这次没过，代码没改，连跑时前面却过了`))
     assert.equal(runs(repo).length, 3, '没过就停')
 
-    const short = testpace(repo, ['files', '--repeat', '9', 'tests/flip.test.mjs'], env)
+    const short = testpace(repo, ['files', '--repeat', '2', 'tests/flip.test.mjs'], env)
     assert.equal(short.code, 0, short.out)
-    assert.match(short.out, /^1 个测试文件连跑 9 次都通过/)
+    assert.match(short.out, /^1 个测试文件连跑 2 次都通过/)
     assert.match(testpace(repo, ['status'], env).out, /时好时坏的测试（1 个/)
 
-    const proven = testpace(repo, ['files', '--repeat', '10', 'tests/flip.test.mjs'], env)
+    const proven = testpace(repo, ['files', '--repeat', '3', 'tests/flip.test.mjs'], env)
     assert.equal(proven.code, 0, proven.out)
-    assert.match(proven.out, new RegExp(`${FLIP_TEST.source} 连跑 10 次都过了，从时好时坏名单上去掉`))
+    assert.match(proven.out, new RegExp(`${FLIP_TEST.source} 连跑 3 次都过了，从时好时坏名单上去掉`))
     assert.match(testpace(repo, ['status'], env).out, /时好时坏的测试：没有/)
-    assert.deepEqual(runs(repo).slice(-2).map(run => run.repeat), [{ index: 9, of: 10 }, { index: 10, of: 10 }])
+    assert.deepEqual(runs(repo).slice(-2).map(run => run.repeat), [{ index: 2, of: 3 }, { index: 3, of: 3 }])
   })
 
   test('连跑的过程中工作区变了（测试写了没被忽略的文件）：不算证明修好了，说一句', () => {
     const { repo, env } = flipRepo('0')
     listFlip(repo, env)
-    const r = testpace(repo, ['files', 'tests/flip.test.mjs', '--repeat', '10'], { ...env, TOUCH_EACH: join(repo, 'src', 'out.txt') })
+    const r = testpace(repo, ['files', 'tests/flip.test.mjs', '--repeat', '3'], { ...env, TOUCH_EACH: join(repo, 'src', 'out.txt') })
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /连跑 10 次都通过/)
+    assert.match(r.out, /连跑 3 次都通过/)
     assert.match(r.out, /连跑的过程中代码或工作区变了.+不算证明时好时坏的测试修好了/)
     assert.match(listed(repo, env), /时好时坏的测试（1 个/)
   })
@@ -207,16 +207,14 @@ describe('时好时坏的测试', () => {
     assert.match(listed(repo, env), /时好时坏的测试：没有/)
   })
 
-  test('这个会话认出的时好时坏测试：收尾时拦一次；别的会话不拦', () => {
+  test('这个会话认出的时好时坏测试：测试结果里点过名了，收尾时不拦', () => {
     const { repo, env } = flipRepo('0')
     const session = { ...env, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'flaky-finder' }
     testpace(repo, ['files', 'tests/flip.test.mjs'], session)
     testpace(repo, ['files', 'tests/flip.test.mjs'], session)
     const stop = (id: string) => handle({ hook_event_name: 'Stop', session_id: id, cwd: repo }, Date.now(), 'claude') as { decision?: string; reason?: string } | undefined
-    const first = stop('flaky-finder')
-    assert.equal(first?.decision, 'block')
-    assert.match(first!.reason!, new RegExp(`认出了时好时坏的测试，还在名单上：${FLIP_TEST.source}`))
-    assert.equal(stop('flaky-finder')?.decision, undefined, '只拦一次')
+    assert.match(listed(repo, session), /时好时坏的测试（1 个/)
+    assert.equal(stop('flaky-finder')?.decision, undefined)
     assert.equal(stop('someone-else')?.decision, undefined)
   })
 })
@@ -225,7 +223,7 @@ describe('几轮没过', () => {
   const FAILING = (round: number) => `import { test } from 'node:test'\nimport assert from 'node:assert/strict'\n// 第 ${round} 轮的改法\ntest('总是不对', () => assert.equal(1 + 1, 3))\n`
   const PASSING = "import { test } from 'node:test'\nimport assert from 'node:assert/strict'\n// 修好了\ntest('总是不对', () => assert.equal(1 + 1, 2))\n"
 
-  test('改了代码再跑还没过算一轮，到第三轮让 agent 停下来找用户；代码没改重跑不算一轮；过了清零', () => {
+  test('改了代码再跑还没过算一轮，到第三轮提醒 agent 先找原因再改，不让它去找用户拿主意；代码没改重跑不算一轮；过了清零', () => {
     const repo = sampleRepo()
     setConfig(repo, { files: 'testpace run node-test' })
     commit(repo, '配置')
@@ -234,15 +232,16 @@ describe('几轮没过', () => {
       writeFileSync(file, text)
       return testpace(repo, ['files', 'tests/stuck.test.mjs'])
     }
-    assert.doesNotMatch(round(FAILING(1)).out, /停下来/)
-    assert.doesNotMatch(testpace(repo, ['files', 'tests/stuck.test.mjs']).out, /停下来/, '代码没改的重跑不算一轮')
-    assert.doesNotMatch(round(FAILING(2)).out, /停下来/)
+    assert.doesNotMatch(round(FAILING(1)).out, /先别接着试/)
+    assert.doesNotMatch(testpace(repo, ['files', 'tests/stuck.test.mjs']).out, /先别接着试/, '代码没改的重跑不算一轮')
+    assert.doesNotMatch(round(FAILING(2)).out, /先别接着试/)
     const third = round(FAILING(3))
     assert.equal(third.code, 1)
     assert.match(third.out, /tests\/stuck\.test\.mjs:4 「总是不对」 已经连着 3 轮改了代码还没过（最近 3 轮的日志：.+\.log、.+\.log、.+\.log）/)
-    assert.match(third.out, /停下来：把失败原因和这几轮各改了什么告诉用户，等用户决定。不要接着改，也不要改测试凑通过/)
+    assert.match(third.out, /先别接着试：回头读失败输出和它测的代码，找到原因再改；不要改测试凑通过。查出来是业务规则本身说不清或要变的，才问用户。/)
+    assert.doesNotMatch(third.out, /等用户决定|告诉用户/)
 
     assert.equal(round(PASSING).code, 0)
-    assert.doesNotMatch(round(FAILING(4)).out, /停下来/, '过了之后重新数')
+    assert.doesNotMatch(round(FAILING(4)).out, /先别接着试/, '过了之后重新数')
   })
 })
