@@ -1,11 +1,12 @@
-// agent hook 的判断：SessionStart 注入节奏说明，PreToolUse 补说节奏和软提示，
+// agent hook 的判断：SessionStart 注入节奏说明，PreToolUse 补说节奏和软提示（执行命令的工具）、问各模块这次改文件拦不拦（改文件的工具），
 // PostToolUse、PostToolUseFailure 记下 agent 在前台看到了整组结果（Claude Code 通过的走前者，失败的走后者），Stop 跑停止门。
 // 各 agent 的 hook 输入输出格式和 Claude Code 一样（Codex 实测：执行命令的工具也叫 Bash，输入是字符串的 command）；
 // 工具名的大小写不一样（dsh 是 bash），这里统一。
 // 合并门不在这里：它是 git 的钩子（gate.ts），git 移动默认分支时检查。
 // 入口在 plugin/hooks/testpace.ts，由它说明是哪个 agent。
 
-import { basename } from 'node:path'
+import { realpathSync, statSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AGENTS, type AgentKind } from './agent.ts'
 import { CONTRACT_FILE, joined, loadContract } from './contract.ts'
@@ -24,7 +25,7 @@ interface HookInput {
   session_id?: string
   cwd?: string
   tool_name?: string
-  tool_input?: { command?: unknown; run_in_background?: unknown }
+  tool_input?: { command?: unknown; run_in_background?: unknown; file_path?: unknown }
   tool_response?: unknown
 }
 
@@ -116,6 +117,34 @@ function untoldRepos(command: string, cwd: string, sessionId: string, now: numbe
   return untold
 }
 
+/** 改文件的工具（Claude Code 的，和 hooks.json 里的 matcher 一样）。Codex 的 apply_patch 把几个文件的改动放在一段补丁里，不在这里管。 */
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
+
+/**
+ * 改文件之前：目标在接入了的仓库里时，问各模块拦不拦（module.ts 的 beforeEdit），有一个说了原因就拒绝。
+ * 目标可以不在会话所在的仓库里，按它自己所在的仓库算；还不存在的文件按最近的已有目录找仓库。
+ */
+function editRefusal(cwd: string, target: unknown): string | undefined {
+  if (typeof target !== 'string' || target === '') return undefined
+  const file = isAbsolute(target) ? target : resolve(cwd, target)
+  let dir = dirname(file)
+  while (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
+    const up = dirname(dir)
+    if (up === dir) return undefined
+    dir = up
+  }
+  const repo = openRepo(dir)
+  if (!repo || !joined(repo.root)) return undefined
+  // git 给的是真实路径（软链展开了，比如 macOS 的 /var 是 /private/var），目标路径也按真实路径算
+  const path = relative(repo.root, join(realpathSync(dir), relative(dir, file))).split('\\').join('/')
+  if (path === '' || path.startsWith('../')) return undefined
+  for (const module of modules()) {
+    const reason = module.beforeEdit?.(repo, path)
+    if (reason) return reason
+  }
+  return undefined
+}
+
 /** agent：hook 来自哪个 agent（入口参数说明），决定要补充哪些前提。 */
 export function handle(input: HookInput, now: number, agent: AgentKind): unknown {
   const cwd = input.cwd ?? process.cwd()
@@ -147,6 +176,11 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context },
       ...(notice ? { systemMessage: notice } : {}),
     }
+  }
+
+  if (event === 'PreToolUse' && EDIT_TOOLS.has(input.tool_name ?? '')) {
+    const reason = editRefusal(cwd, input.tool_input?.file_path)
+    return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : undefined
   }
 
   const command = typeof input.tool_input?.command === 'string' ? input.tool_input.command : undefined

@@ -200,8 +200,12 @@ export interface ReportInput {
   landings: Landing[]
 }
 
+/** 整组里"跑测试"自己两段的名字（full.ts 交段时用，这里认旧记录时也用）。 */
+export const FULL_STEP = '整组的检查（full）'
+export const TESTS_STEP = '全部测试'
+
 export interface StepStats {
-  /** 哪一段：附加检查写登记的命令。 */
+  /** 哪一段：模块给的名字（base/module.ts 的 FullStep.name）。 */
   step: string
   /** 跑到这一段的整组次数（前面一段没过的，后面的没有跑）。 */
   count: number
@@ -209,8 +213,9 @@ export interface StepStats {
 }
 
 /**
- * 整组的时间花在哪一段：每条附加检查、整组的检查（full）、全部测试，各跑了几次、共多久。按第一次出现的顺序。
+ * 整组的时间花在哪一段：各模块的检查、整组的检查（full）、全部测试，各跑了几次、共多久。按第一次出现的顺序。
  * 只算记了分段的整组（旧版本写的记录没有分段）；fulls 是这样的整组有几次。
+ * 段的名字是跑的时候模块给的；旧版本写的记录里没有名字的，"跑测试"自己的两段按 kind 认，别的写 kind。
  */
 export function fullSteps(runs: PaceRun[]): { fulls: number; steps: StepStats[] } {
   const stats = new Map<string, StepStats>()
@@ -219,7 +224,7 @@ export function fullSteps(runs: PaceRun[]): { fulls: number; steps: StepStats[] 
     if (run.kind !== 'full' || !run.steps) continue
     fulls += 1
     for (const step of run.steps) {
-      const name = step.kind === 'check' ? `附加检查 ${step.check}` : step.kind === 'full' ? '整组的检查（full）' : '全部测试'
+      const name = step.name ?? (step.kind === 'full' ? FULL_STEP : step.kind === 'tests' ? TESTS_STEP : step.kind)
       const s = stats.get(name) ?? { step: name, count: 0, totalMs: 0 }
       s.count += 1
       s.totalMs += step.durationMs

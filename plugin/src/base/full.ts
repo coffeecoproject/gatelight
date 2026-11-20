@@ -1,7 +1,7 @@
-// 整组（testpace full）的编排：底座跑、底座记录，跑什么由本机登记的附加检查和各模块交的各段决定（module.ts 的 fullPart）。
+// 整组（testpace full）的编排：底座跑、底座记录，跑什么由各模块交的各段决定（module.ts 的 fullPart）。
+// 检查随插件一起装，没有在本机另外登记检查的入口：模块的顺序就是各段的顺序（src/modules.ts）。
 
 import { appendFileSync, existsSync, statSync } from 'node:fs'
-import { CHECK_KEY, extraChecks } from './checks.ts'
 import { countedIgnore, loadContract } from './contract.ts'
 import { type Execution, execute, RUN_ENV } from './execute.ts'
 import { EXIT } from './exit.ts'
@@ -12,7 +12,7 @@ import { busyText, coverageOf, describeCoverage, failureText, type Repo, runner,
 import { isHold, newRunId, type RunMarker, type RunRecord, type RunStep } from './store.ts'
 
 /**
- * testpace full：依次跑本机登记的附加检查和各模块交的各段，便宜的在前，一段没过就停；都过了、跑的过程中内容没变，
+ * testpace full：依次跑各模块交的各段，便宜的在前，一段没过就停；都过了、跑的过程中内容没变，
  * 才留下这份内容的整组通过记录。sessionId 是起这次整组的 agent 会话（停止门只拦起它的会话和等着用它结果的会话）。
  */
 export async function full(ctx: Repo, sessionId: string | undefined): Promise<number> {
@@ -70,14 +70,11 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
     return EXIT.busy
   }
 
-  // 依次跑，便宜的在前，一段没过就停：本机登记的附加检查，再是各模块交的各段。都过了才算整组通过
-  const checks = extraChecks(ctx.root)
-  const steps: Array<FullStep & { check?: string; env?: Record<string, string> }> = [
-    // 只有附加检查拿到这一轮的运行 id（见 RUN_ENV）：它们在测试之前跑，在里面借用工作区（testpace hold）不另占
-    ...checks.map(check => ({ kind: 'check', title: `附加检查 ${check}`, header: `附加检查：${check}`, command: check, args: [], check, env: { [RUN_ENV]: id } })),
-    // 模块交的段里要借用工作区的（建副本），同样拿到这一轮的运行 id
-    ...parts.flatMap(part => part.steps.map(step => (step.borrows ? { ...step, env: { [RUN_ENV]: id } } : step))),
-  ]
+  // 依次跑各模块交的各段，便宜的在前，一段没过就停。都过了才算整组通过。
+  // 要借用工作区的段（建副本）拿到这一轮的运行 id（见 RUN_ENV）：它们在测试之前跑，在里面借用工作区不另占
+  const steps: Array<FullStep & { env?: Record<string, string> }> = parts.flatMap(part =>
+    part.steps.map(step => (step.borrows ? { ...step, env: { [RUN_ENV]: id } } : step)),
+  )
   // 各模块给命令的环境变量（比如交每个测试结果的位置），每一段都带着
   const partsEnv: Record<string, string> = Object.assign({}, ...parts.map(part => part.env ?? {}))
   // 每段各用了多久：report 据此说整组的时间花在哪一段
@@ -95,7 +92,7 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
       appendFileSync(log, `===== testpace ${step.header}\n`)
       const part = await execute(step.command, step.args, ctx.root, log, onStart, { ...partsEnv, ...step.env })
       execution = execution ? { ...part, durationMs: execution.durationMs + part.durationMs } : part
-      if (!part.interrupted) timings.push({ kind: step.kind, ...(step.check !== undefined ? { check: step.check } : {}), durationMs: part.durationMs })
+      if (!part.interrupted) timings.push({ kind: step.kind, name: step.name, durationMs: part.durationMs })
       if (part.interrupted || part.exitCode !== 0) {
         failed = step
         break
@@ -130,7 +127,6 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
     result,
     ...session,
     ...(waiting.length ? { waiting } : {}),
-    ...(checks.length ? { checks } : {}),
     steps: timings,
     ...Object.assign({}, ...finished.map(done => done.fields ?? {})),
     ...runner(),
@@ -142,8 +138,7 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
 
   const took = duration(execution.durationMs)
   if (result === 'pass' && tree === treeAtEnd) {
-    const extra = checks.length ? `\n附加检查通过：${checks.join('、')}` : ''
-    say(`${['整组通过', ...parts.flatMap(part => part.summary ?? []), `用时 ${took}`, `代码 ${short(tree)}`].join(' · ')}${extra}\n日志：${log}`)
+    say(`${['整组通过', ...parts.flatMap(part => part.summary ?? []), `用时 ${took}`, `代码 ${short(tree)}`].join(' · ')}\n日志：${log}`)
     return EXIT.ok
   }
   if (result === 'pass') {
@@ -158,12 +153,8 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
     )
     return EXIT.fail
   }
-  const check = failed?.check
   const what = failed?.title ?? '整组'
   const gap = /[A-Za-z0-9]$/.test(what) ? ' ' : ''
   say(failureText(`整组失败：${what}${gap}没通过${failed === steps.at(-1) ? '' : '，后面的没有跑'}`, log, execution, excerptFrom))
-  if (check && execution.exitCode === 127) {
-    console.log(`附加检查的命令找不到（登记它的插件停用了或没装好）。重新装好它；不再用的话取消登记：git config --global --fixed-value --unset-all ${CHECK_KEY} '${check}'`)
-  }
   return EXIT.fail
 }

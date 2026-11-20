@@ -6,7 +6,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path'
 import { before, describe, test } from 'node:test'
 import { landings } from '../src/base/git.ts'
-import { BIN, commit, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, setConfig as setConfigWith, sh, tempDir, testpace as run } from './helpers.ts'
+import { BIN, commit, ENV, type ExtraStep, fullWithSteps, gatedRepo, globalGitConfig, type Result, runs, sampleRepo, setConfig as setConfigWith, sh, tempDir, testpace as run } from './helpers.ts'
 
 const testpace = (cwd: string, ...args: string[]) => run(cwd, args)
 const setConfig = (repo: string, full: string): void => setConfigWith(repo, { full })
@@ -354,7 +354,7 @@ describe('testpace hold / release：借用这个工作区（比如 testcraft 建
     await slow.done
   })
 
-  test('带着在跑那一轮的 TESTPACE_RUN 借用（整组的附加检查）：不另占、什么也不输出；别的运行 id 照样被挡', { timeout: 60_000 }, async () => {
+  test('带着在跑那一轮的 TESTPACE_RUN 借用（整组里要建副本的检查）：不另占、什么也不输出；别的运行 id 照样被挡', { timeout: 60_000 }, async () => {
     const repo = sampleRepo()
     const slow = await slowFiles(repo)
     const own = run(repo, ['hold', String(process.pid), 'testcraft 建副本'], { ...ENV, TESTPACE_RUN: slow.id })
@@ -651,88 +651,87 @@ describe('整组跑 tests 规则找到的全部测试', () => {
   })
 })
 
-describe('附加检查', () => {
-  const withChecks = (...checks: string[]): NodeJS.ProcessEnv => {
-    const env = { ...ENV, GIT_CONFIG_GLOBAL: globalGitConfig() }
-    for (const check of checks) sh(process.cwd(), `git config --file '${env.GIT_CONFIG_GLOBAL}' --add testpace.check '${check}'`)
-    return env
+describe('整组里各模块交的各段', () => {
+  /** 整组，最前面多几段（测试里加的）。 */
+  const fullWith = (repo: string, ...steps: Array<string | ExtraStep>): Result => {
+    const { program, args } = fullWithSteps(steps.map(step => (typeof step === 'string' ? { command: step } : step)))
+    const r = spawnSync(program, args, { cwd: repo, env: ENV, encoding: 'utf8' })
+    return { code: r.status, out: r.stdout + r.stderr }
   }
 
-  test('先依次跑本机登记的附加检查，再跑整组，都过了才算通过', () => {
+  test('按模块的顺序依次跑各段，都过了才算通过；每段各记一条用时', () => {
     const repo = sampleRepo()
-    const env = withChecks('echo 第一条', 'echo 第二条')
-    const r = run(repo, ['full'], env)
+    const r = fullWith(repo, 'echo 第一条', 'echo 第二条')
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /附加检查通过：echo 第一条、echo 第二条/)
     const record = runs(repo).at(-1)!
     assert.equal(record.result, 'pass')
-    assert.deepEqual(record.checks, ['echo 第一条', 'echo 第二条'])
-    // 每段各记一条用时，按跑的顺序，加起来就是整组的用时
-    const steps = record.steps as Array<{ kind: string; check?: string; durationMs: number }>
-    assert.deepEqual(steps.map(({ kind, check }) => [kind, check]), [['check', 'echo 第一条'], ['check', 'echo 第二条'], ['full', undefined], ['tests', undefined]])
+    // 每段各记一条用时，按跑的顺序，加起来就是整组的用时；名字是模块给的
+    const steps = record.steps as Array<{ kind: string; name: string; durationMs: number }>
+    assert.deepEqual(steps.map(({ kind, name }) => [kind, name]), [['extra', '加的第 1 段'], ['extra', '加的第 2 段'], ['full', '整组的检查（full）'], ['tests', '全部测试']])
     assert.equal(steps.reduce((sum, step) => sum + step.durationMs, 0), record.durationMs)
     const text = readFileSync(record.log as string, 'utf8')
-    assert.match(text, /===== testpace 附加检查：echo 第二条\n第二条/)
+    assert.match(text, /===== testpace 加的段：echo 第二条\n第二条/)
     assert.ok(text.indexOf('第二条') < text.indexOf('===== testpace 整组的检查（full）：'), text)
     assert.match(text, /===== testpace 全部测试（2 个文件）：[^\n]*\n(.*\n)*# pass/)
-    assert.match(run(repo, ['status'], env).out, /附加检查（全局 git 配置 testpace\.check）：echo 第一条、echo 第二条，整组之前先跑/)
   })
 
-  test('附加检查没过：不跑整组，不算通过，合并门照常拦', () => {
+  test('前面的一段没过：后面的不跑，不算通过，合并门照常拦', () => {
     const repo = sampleRepo()
-    const env = withChecks('echo 放水了 && exit 1')
-    const r = run(repo, ['full'], env)
+    const r = fullWith(repo, 'echo 放水了 && exit 1')
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /^整组失败：附加检查 echo 放水了 && exit 1 没通过，后面的没有跑/)
+    assert.match(r.out, /^整组失败：加的段 echo 放水了 && exit 1 没通过，后面的没有跑/)
     assert.match(r.out, /输出节选 ---\n(.*\n)*放水了/)
     const record = runs(repo).at(-1)!
     assert.equal(record.result, 'fail')
     // 只有跑到的那一段有用时
-    assert.deepEqual((record.steps as Array<{ kind: string }>).map(step => step.kind), ['check'])
+    assert.deepEqual((record.steps as Array<{ kind: string }>).map(step => step.kind), ['extra'])
     assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /===== testpace (整组的检查|全部测试)|# pass/)
-    assert.match(run(repo, ['status'], env).out, /没有整组通过记录/)
+    assert.match(run(repo, ['status']).out, /没有整组通过记录/)
   })
 
-  test('前一条附加检查没过、后一条过了：照样不算通过，后一条不再跑', () => {
+  test('前一段没过、后一段过了：照样不算通过，后一段不再跑', () => {
     const repo = sampleRepo()
-    const env = withChecks('exit 1', 'echo 后一条')
-    const r = run(repo, ['full'], env)
+    const r = fullWith(repo, 'exit 1', 'echo 后一条')
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /附加检查 exit 1 没通过/)
+    assert.match(r.out, /加的段 exit 1 没通过/)
     const record = runs(repo).at(-1)!
     assert.equal(record.result, 'fail')
     assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /后一条\n/)
   })
 
-  test('附加检查拿得到这一轮的运行 id（TESTPACE_RUN），在里面借用工作区不另占；整组接着跑完测试、通过', () => {
+  test('要借用工作区的段拿得到这一轮的运行 id（TESTPACE_RUN），在里面借用不另占；别的段拿不到；整组接着跑完测试、通过', () => {
     const repo = sampleRepo()
-    const r = run(repo, ['full'], withChecks('echo "运行 $TESTPACE_RUN" && testpace hold $$ testcraft 建副本 && echo 借到了'))
+    const r = fullWith(repo, { command: 'echo "运行 $TESTPACE_RUN" && testpace hold $$ testcraft 建副本 && echo 借到了', borrows: true }, 'echo "没给[$TESTPACE_RUN]"')
     assert.equal(r.code, 0, r.out)
     const record = runs(repo).at(-1)!
     assert.equal(record.result, 'pass')
     assert.equal(record.tests, 2)
-    assert.match(readFileSync(record.log as string, 'utf8'), new RegExp(`运行 ${record.id}\\n借到了\\n`))
+    const text = readFileSync(record.log as string, 'utf8')
+    assert.match(text, new RegExp(`运行 ${record.id}\\n借到了\\n`))
+    assert.match(text, /没给\[\]\n/)
     assert.equal(readdirSync(join(repo, '.git', 'testpace', 'running')).filter(name => name.endsWith('.json')).length, 0, '整组的登记照常放开')
   })
 
-  test('登记的命令找不到：说明怎么取消登记', () => {
-    const repo = sampleRepo()
-    const r = run(repo, ['full'], withChecks('testpace-no-such-check'))
-    assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /命令找不到.*unset-all testpace\.check 'testpace-no-such-check'/)
-  })
-
-  test('附加检查过了、整组失败：不算通过，节选是整组的输出；没登记时照旧', () => {
+  test('前面的段过了、后面的失败：不算通过，节选是失败那一段的输出', () => {
     const repo = sampleRepo()
     setConfig(repo, 'echo 整组输出 && exit 1')
     commit(repo, '配置')
-    const r = run(repo, ['full'], withChecks('echo 检查输出'))
+    const r = fullWith(repo, 'echo 检查输出')
     assert.equal(r.code, 1, r.out)
     assert.match(r.out, /^整组失败：整组的检查（full）没通过，后面的没有跑/)
     const excerpt = r.out.split('输出节选')[1] as string
     assert.match(excerpt, /整组输出/)
     assert.doesNotMatch(excerpt, /检查输出/)
     assert.equal(runs(repo).at(-1)!.result, 'fail')
-    assert.match(run(repo, ['status']).out, /附加检查（全局 git 配置 testpace\.check）：没有/)
+  })
+
+  test('没有在本机另外登记检查的入口：全局 git 配置里留着的 testpace.check 不再跑', () => {
+    const repo = sampleRepo()
+    const env = { ...ENV, GIT_CONFIG_GLOBAL: globalGitConfig() }
+    sh(process.cwd(), `git config --file '${env.GIT_CONFIG_GLOBAL}' --add testpace.check 'echo 旧登记 && exit 1'`)
+    const r = run(repo, ['full'], env)
+    assert.equal(r.code, 0, r.out)
+    assert.doesNotMatch(readFileSync(runs(repo).at(-1)!.log as string, 'utf8'), /旧登记/)
+    assert.doesNotMatch(run(repo, ['status'], env).out, /附加检查/)
   })
 })

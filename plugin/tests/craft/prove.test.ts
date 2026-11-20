@@ -8,6 +8,7 @@ import { inOrder, testStatements } from '../../src/craft/files.ts'
 import { provedText } from '../../src/craft/prove.ts'
 import { hash } from '../../src/craft/store.ts'
 import { BIN, ENV, MEMBER_PRICE, sampleRepo, sh, TEST_HEAD, tempDir, testcraft, TESTPACE, TMP, write } from './helpers.ts'
+import { fullWithSteps } from '../helpers.ts'
 
 /** 这个工作区的副本位置（和 copy.ts 的 copyDirOf 一样算，临时目录用测试给的）。 */
 const copyOf = (repo: string): string => {
@@ -597,19 +598,18 @@ describe('建副本的那几秒借用工作区：有测试在跑不建，复制�
   test('工作区有 testpace 的命令在跑：不建副本，说在跑什么、等它结束；整组里测试之前的段（testcraft check 就是）来证明照常建，整组照常跑完', async () => {
     const repo = sampleRepo()
     memberFeature(repo)
-    // 登记一个附加检查：记下 testpace 给它的运行 id，停着等 hold 删掉，像整组跑到一半
+    // 整组最前面加一段要借用工作区的检查：记下 testpace 给它的运行 id，停着等 hold 删掉，像整组跑到一半
     const dir = tempDir('testcraft-hold-')
     const hold = join(dir, 'hold')
     write(dir, 'check.sh', `echo "$TESTPACE_RUN" > "${hold}.tmp" && mv "${hold}.tmp" "${hold}.id"\nwhile [ -f "${hold}" ]; do sleep 0.1; done\n`)
-    const config = join(dir, 'gitconfig')
-    writeFileSync(config, `${readFileSync(ENV.GIT_CONFIG_GLOBAL!, 'utf8')}[testpace]\n\tcheck = sh ${join(dir, 'check.sh')}\n`)
     writeFileSync(hold, '')
-    const full = spawn(TESTPACE, ['full'], { cwd: repo, env: { ...ENV, GIT_CONFIG_GLOBAL: config }, stdio: 'ignore' })
+    const { program, args } = fullWithSteps([{ command: `sh ${join(dir, 'check.sh')}`, borrows: true }])
+    const full = spawn(program, args, { cwd: repo, env: ENV, stdio: 'ignore' })
     const exited = new Promise(resolve => full.on('exit', resolve))
     try {
       const deadline = Date.now() + 30_000
       while (!existsSync(`${hold}.id`)) {
-        assert.ok(Date.now() < deadline, '整组的附加检查没跑起来')
+        assert.ok(Date.now() < deadline, '整组最前面的那一段没跑起来')
         await new Promise(resolve => setTimeout(resolve, 100))
       }
       const busy = testcraft(repo, ['prove'])

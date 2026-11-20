@@ -1,0 +1,6 @@
+{
+  "fast": "node -e 0",
+  "files": "node --test",
+  "full": "node -e 0",
+  "tests": ["tests/**/*.test.ts"]
+}

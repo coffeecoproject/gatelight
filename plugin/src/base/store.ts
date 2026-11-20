@@ -38,17 +38,15 @@ export interface RunRecord {
   version?: string
   /** 想跑整组时发现它已经在跑、等着用它结果的其他会话。 */
   waiting?: string[]
-  /** 整组之前先跑的附加检查（本机登记的）。 */
-  checks?: string[]
   /** 整组各段的耗时，按跑的顺序；一段没过，后面的没有跑，就没有。旧版本写的记录没有。 */
   steps?: RunStep[]
   log: string
 }
 
-/** 整组的一段：一条附加检查（kind 是 check，check 是登记的命令），或模块交的一段（kind 由模块定，见 module.ts 的 FullStep）。 */
+/** 整组的一段：模块交的（kind、name 由模块定，见 module.ts 的 FullStep）。name 是耗时报告里的名字，旧版本写的记录没有。 */
 export interface RunStep {
   kind: string
-  check?: string
+  name?: string
   durationMs: number
 }
 

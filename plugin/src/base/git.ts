@@ -236,10 +236,18 @@ export function fileNow(root: string, path: string): string | undefined {
   return statSync(full, { throwIfNoEntry: false })?.isFile() ? readFileSync(full, 'utf8') : undefined
 }
 
-/** 工作区里这个目录下现有的文件：跟踪的，加上没跟踪、没被 .gitignore 忽略的；删掉了的不算。 */
-export function filesNow(root: string, dir: string): string[] {
-  const out = git(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', `${dir.replace(/\/+$/, '')}/`])
+/**
+ * 工作区里这个目录下（不给 dir 就是整个仓库）现有的文件：跟踪的，加上没跟踪、没被 .gitignore 忽略的；
+ * 删掉了的不算，嵌套的仓库（别的 worktree）不进去。
+ */
+export function filesNow(root: string, dir?: string): string[] {
+  const out = git(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard', ...(dir === undefined ? [] : ['--', `${dir.replace(/\/+$/, '')}/`])])
   return [...new Set(out.split('\0').filter(Boolean))].filter(path => statSync(join(root, path), { throwIfNoEntry: false })?.isFile() === true)
+}
+
+/** 这个路径（相对仓库根目录）被 .gitignore 忽略了。 */
+export function isIgnored(root: string, path: string): boolean {
+  return gitOr(root, ['check-ignore', '-q', '--', path]) !== undefined
 }
 
 /** 提交（或分支）里这个文件原样的字节（二进制文件也行）；没有这个文件返回 undefined。 */

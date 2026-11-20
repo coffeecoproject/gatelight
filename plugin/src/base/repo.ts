@@ -143,7 +143,7 @@ export function failureCause(execution: Execution): string {
 }
 
 /** 失败时的输出：结论、节选和日志路径。 */
-/** from：从日志的这个位置（字节）起节选，比如只看没通过的那条附加检查的输出。 */
+/** from：从日志的这个位置（字节）起节选，比如只看没通过的那一段的输出。 */
 export function failureText(title: string, log: string, execution: Execution, from = 0): string {
   return [
     `${title}（${failureCause(execution)}）· 用时 ${duration(execution.durationMs)}`,

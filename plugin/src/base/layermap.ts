@@ -29,6 +29,12 @@ export function tooOld(): LayermapFailure {
   }
 }
 
+/** layermap --version 的输出（给各模块的 status 看）；找不到命令或它没跑成时为 undefined。 */
+export function layermapVersion(): string | undefined {
+  const r = spawnSync('layermap', ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  return r.status === 0 ? r.stdout.trim() : undefined
+}
+
 /** 最多等多久：大仓库第一次建地图要几分钟。 */
 const TIMEOUT_MS = 600_000
 

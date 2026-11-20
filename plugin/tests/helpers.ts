@@ -73,6 +73,46 @@ export function setConfig(repo: string, change: Record<string, unknown>): void {
 
 const dirs: string[] = []
 
+/** 测试里加进整组的一段：一条 sh 命令；borrows 是它要借用工作区（底座给它这一轮的运行 id）。 */
+export interface ExtraStep {
+  command: string
+  borrows?: boolean
+}
+
+/**
+ * 起一次整组，最前面多几段：一个只在测试里有的模块交出这几段，排在插件自己的模块之前。
+ * 用来测底座怎么跑各模块交的段（顺序、一段没过就停、借用工作区），不靠哪个具体的检查模块。
+ * 返回要起的程序和参数（在仓库目录里起，等同 testpace full）。
+ */
+export function fullWithSteps(steps: ExtraStep[]): { program: string; args: string[] } {
+  const src = fileURLToPath(new URL('../src', import.meta.url))
+  const extra = steps.map((step, index) => ({
+    kind: 'extra',
+    name: `加的第 ${index + 1} 段`,
+    title: `加的段 ${step.command}`,
+    header: `加的段：${step.command}`,
+    command: step.command,
+    args: [],
+    ...(step.borrows ? { borrows: true } : {}),
+  }))
+  const file = join(tempDir('testpace-full-'), 'full.mjs')
+  writeFileSync(
+    file,
+    [
+      `import ${JSON.stringify(`${src}/modules.ts`)}`,
+      `import { EXIT } from ${JSON.stringify(`${src}/base/exit.ts`)}`,
+      `import { full } from ${JSON.stringify(`${src}/base/full.ts`)}`,
+      `import { modules, registerModules } from ${JSON.stringify(`${src}/base/module.ts`)}`,
+      `import { openRepo } from ${JSON.stringify(`${src}/base/repo.ts`)}`,
+      `registerModules([{ name: 'extra', fullPart: () => ({ steps: ${JSON.stringify(extra)} }) }, ...modules()])`,
+      'const repo = openRepo(process.cwd())',
+      'process.exitCode = repo ? await full(repo, undefined) : EXIT.usage',
+      '',
+    ].join('\n'),
+  )
+  return { program: process.execPath, args: ['--disable-warning=ExperimentalWarning', file] }
+}
+
 /**
  * 当成由 testpace 的 files、focused、full 起的 testpace run：给它交结果的位置（见 results.ts），跑完读出交回的结果，
  * 每个写成 "结果 名字"（重试后才过的结果后加" 重试后"），排好序。

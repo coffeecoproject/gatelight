@@ -4,7 +4,6 @@
 
 import './modules.ts'
 import { AGENT, context, gate, hold, install, release, sandboxRefusal } from './base/commands.ts'
-import { extraChecks } from './base/checks.ts'
 import { CONTRACT_FILE, joined } from './base/contract.ts'
 import { entryPath, entryState } from './base/entry.ts'
 import { EXIT } from './base/exit.ts'
@@ -29,11 +28,12 @@ const USAGE = `用法：
   testpace files [--repeat N] PATH[:行号]...
                                  只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试。
                                  --repeat N 连跑 N 次、没过就停：造出时好时坏的测试的失败，或修好后连跑 10 次证明
-  testpace full                  跑整组：附加检查、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
+  testpace full                  跑整组：接入了的检查（modwall check、testcraft check）、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，
+                                 一段没过就停，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace hold PID 说明         借用这个工作区（比如 testcraft 建副本）：占着时别的 testpace 命令不跑，说明是谁占着。
                                  PID 是借用的那个进程，它不在了占用就作废。占上时输出这次的 id，退出码 0；有在跑的、占着的，说明是谁，退出码 3。
-                                 整组先跑的附加检查带着这一轮的 TESTPACE_RUN，工作区已经是这一轮的，不另占、什么也不输出，退出码 0
+                                 整组里要建副本的检查带着这一轮的 TESTPACE_RUN，工作区已经是这一轮的，不另占、什么也不输出，退出码 0
   testpace release ID            放开 hold 占的工作区
   testpace report [--days N]     计时诊断，默认最近 28 天
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
@@ -98,8 +98,6 @@ function status(): number {
   const dangling = joined(ctx.root) ? danglingNote(ctx.root) : undefined
   if (dangling) lines.push(`  ${dangling}`)
   lines.push(`固定命令入口（${entryPath()}）：${ENTRY_STATES[entryState()]}`)
-  const checks = extraChecks(ctx.root)
-  lines.push(`附加检查（全局 git 配置 testpace.check）：${checks.length ? `${checks.join('、')}，整组之前先跑` : '没有'}`)
   // 版本太旧不在这里查：focused 读输出时会说
   lines.push(`layermap：${commandExists(ctx.root, 'layermap') ? '找到' : `找不到，focused 没法按改动选测试，每次都会建议跑整组。${LAYERMAP_HINT}`}`)
 

@@ -239,11 +239,12 @@ describe('报告的统计', () => {
 
   test('整组的时间花在哪一段：每段跑到几次、平均、合计、占比；没记分段的整组不算', () => {
     const now = 100 * 24 * 3600 * 1000
-    const check = (durationMs: number) => ({ kind: 'check' as const, check: 'testcraft check', durationMs })
+    const check = (durationMs: number) => ({ kind: 'craft', name: '测试写法的检查（testcraft check）', durationMs })
     const runs = [
-      // 附加检查没过：后面两段没有跑
+      // 模块的检查没过：后面两段没有跑
       run({ startedAt: now - 3000, result: 'fail', exitCode: 1, steps: [check(20_000)] }),
-      run({ startedAt: now - 2000, steps: [check(40_000), { kind: 'full', durationMs: 10_000 }, { kind: 'tests', durationMs: 120_000 }] }),
+      run({ startedAt: now - 2000, steps: [check(40_000), { kind: 'full', name: '整组的检查（full）', durationMs: 10_000 }, { kind: 'tests', name: '全部测试', durationMs: 120_000 }] }),
+      // 旧版本写的记录里各段没有名字："跑测试"自己的两段照样认得
       run({ startedAt: now - 1000, steps: [check(0), { kind: 'full', durationMs: 10_000 }, { kind: 'tests', durationMs: 100_000 }] }),
       // 旧版本写的记录没有分段
       run({ startedAt: now - 500 }),
@@ -251,13 +252,13 @@ describe('报告的统计', () => {
     assert.deepEqual(fullSteps(runs), {
       fulls: 3,
       steps: [
-        { step: '附加检查 testcraft check', count: 3, totalMs: 60_000 },
+        { step: '测试写法的检查（testcraft check）', count: 3, totalMs: 60_000 },
         { step: '整组的检查（full）', count: 2, totalMs: 20_000 },
         { step: '全部测试', count: 2, totalMs: 220_000 },
       ],
     })
     const text = renderReport({ repo: '/repo', days: 7, now, runs, landings: [] })
-    assert.match(text, /整组的时间花在哪（3 次整组；前一段没过，后面的不跑）：\n整组的哪一段\s+跑到\s+平均\s+合计\s+占比\n附加检查 testcraft check\s+3 次\s+20秒\s+1分00秒\s+20%\n整组的检查（full）\s+2 次\s+10秒\s+20秒\s+7%\n全部测试\s+2 次\s+1分50秒\s+3分40秒\s+73%/)
+    assert.match(text, /整组的时间花在哪（3 次整组；前一段没过，后面的不跑）：\n整组的哪一段\s+跑到\s+平均\s+合计\s+占比\n测试写法的检查（testcraft check）\s+3 次\s+20秒\s+1分00秒\s+20%\n整组的检查（full）\s+2 次\s+10秒\s+20秒\s+7%\n全部测试\s+2 次\s+1分50秒\s+3分40秒\s+73%/)
     // 没有记分段的整组时不出这张表
     assert.doesNotMatch(renderReport({ repo: '/repo', days: 7, now, runs: [run({ startedAt: now - 500 })], landings: [] }), /整组的时间花在哪/)
   })

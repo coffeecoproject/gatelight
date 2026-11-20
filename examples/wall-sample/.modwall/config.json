@@ -1,0 +1,9 @@
+{
+  "roots": ["src/modules"],
+  "shared": ["src/shared/**"],
+  "app": ["src/main.ts"],
+  "entry": ["index.ts", "index.tsx", "index.js", "__init__.py"],
+  "map": {},
+  "outside": ["scripts/**"],
+  "allow": []
+}
