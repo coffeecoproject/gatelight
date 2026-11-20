@@ -159,7 +159,7 @@ export function unanswered(hits: Hit[], records: Records): Hit[] {
 
 /** 停止门用：命中条目的那些文件和改动记录现在的样子。 */
 export function checklistFingerprint(s: Snapshot, hits: Hit[], records: Records): string {
-  return contentKey(s.root, s.base, [...hits.flatMap(hit => hit.paths), ...records.files], 'checklist-1', hits.map(hit => hit.item.id).join(','))
+  return contentKey(s.root, s.base, [...hits.flatMap(hit => hit.paths), ...records.files], 'checklist-2', hits.map(hit => hit.item.id).join(','))
 }
 
 /** 条目从分叉点到现在放宽了什么：去掉或改了触发条件、改了怎么查。只加触发条件、改标题和来由不算。 */

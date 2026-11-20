@@ -1,7 +1,7 @@
 // 这次改动的全貌：分叉点、改了哪些文件、各是什么文件。weaken、prove、status、停止门共用。
 
 import { posix } from 'node:path'
-import { type Change, changesSince, fileAt, fileNow, forkPoint, isFileAt } from '../base/git.ts'
+import { blobIdsAt, type Change, changesSince, fileAt, fileNow, forkPoint, isFileAt } from '../base/git.ts'
 import { matchesAny } from '../base/glob.ts'
 import { judgingFile } from '../base/judging.ts'
 import { type Config, joined, loadConfig, readTestpace, TESTPACE_FILE, type TestpaceCommands } from './config.ts'
@@ -180,9 +180,15 @@ export function contractOf(commands: TestpaceCommands | undefined, read: (path: 
   return { files, scripts }
 }
 
-/** 工作区里这些文件现在的内容摘要。 */
+/**
+ * 这些文件的内容摘要：每个文件在分叉点上的内容和现在的内容（改了名的，旧名字也要放进 paths）。
+ * 不带"分叉点是哪个提交"：默认分支往前走了、这些文件在分叉点上的样子没变，按它们得出的结论照旧成立，不用重跑。
+ * 结论还取决于别的东西时（哪些文件换回旧版、用哪条命令跑），调用方放进 extra。
+ */
 export function contentKey(root: string, base: string, paths: Iterable<string>, ...extra: string[]): string {
-  const parts: Array<string | undefined> = [base, ...extra]
-  for (const path of [...paths].sort()) parts.push(path, fileNow(root, path))
+  const sorted = [...new Set(paths)].sort()
+  const before = blobIdsAt(root, base, sorted)
+  const parts: Array<string | undefined> = [...extra]
+  for (const path of sorted) parts.push(path, before.get(path), fileNow(root, path))
   return hash(...parts)
 }

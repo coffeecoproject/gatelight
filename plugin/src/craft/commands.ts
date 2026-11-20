@@ -16,7 +16,22 @@ import { cachedVerdicts, guardsFor, namedTargets, prove, proofKey, proofKeys, pr
 import { readRecords } from './records.ts'
 import { missingChecks, reviewKey, reviewing } from './review.ts'
 import { openStore, type Store, type UserReview } from './store.ts'
-import { behaviorCheck, behaviorUnits, describe, explain, FOR_USER, REVIEW_HEADING, reviewItem, settled, staticSignals, userReview, weakenKey } from './weaken.ts'
+import {
+  behaviorCheck,
+  behaviorKey,
+  type BehaviorResult,
+  behaviorUnits,
+  describe,
+  explain,
+  FOR_USER,
+  REVIEW_HEADING,
+  reviewItem,
+  settled,
+  staticSignals,
+  type Unit,
+  userReview,
+  weakenKey,
+} from './weaken.ts'
 
 const USAGE = `用法：
   testcraft prove [测试文件...]
@@ -76,8 +91,33 @@ function currentWeakenKey(root: string): string {
   return 'problem' in opened ? '' : weakenKey(opened.snapshot)
 }
 
+/** 现在这份改动里按行为判断的 key，同上。 */
+function currentBehaviorKey(root: string): string {
+  const opened = open(root)
+  return 'problem' in opened ? '' : behaviorKey(opened.snapshot, behaviorUnits(opened.snapshot))
+}
+
+/**
+ * 按行为判断：测试和代码没变的用上次跑的结果（补理由、改清单的写法不用重跑），不然在副本里跑。
+ * 跑完了的才记；跑的过程中测试或代码改过的不记。
+ */
+async function behavior({ snapshot: s, store, repo }: Opened, units: Unit[]): Promise<BehaviorResult> {
+  const key = behaviorKey(s, units)
+  const done = store.behavior.get(key)
+  if (done) return { signals: done.signals }
+  const copy = Copy.create(repo)
+  try {
+    const result = await behaviorCheck(s, copy, store.logPath('weaken'), units)
+    if (!result.problem) store.behavior.saveChecked(key, () => currentBehaviorKey(s.root), { signals: result.signals, at: Date.now() })
+    return result
+  } finally {
+    copy.dispose()
+  }
+}
+
 /** 放水检查：打印结论，返回退出码、按的 key 和要给用户过目的放水。 */
-async function weaken({ snapshot: s, store, repo }: Opened): Promise<Weakened> {
+async function weaken(opened: Opened): Promise<Weakened> {
+  const { snapshot: s, store } = opened
   const key = weakenKey(s)
   const done = store.weaken.get(key)
   if (done?.result === 'pass') {
@@ -91,15 +131,9 @@ async function weaken({ snapshot: s, store, repo }: Opened): Promise<Weakened> {
   if (units.length) {
     if (!s.filesCommand) problem = 'testpace.json 里没有 files 命令，没法把旧版测试放到新代码上跑'
     else {
-      const log = store.logPath('weaken')
-      const copy = Copy.create(repo)
-      try {
-        const behavior = await behaviorCheck(s, copy, log, units)
-        signals.push(...behavior.signals)
-        problem = behavior.problem
-      } finally {
-        copy.dispose()
-      }
+      const result = await behavior(opened, units)
+      signals.push(...result.signals)
+      problem = result.problem
     }
   }
   const explained = explain(signals, records)

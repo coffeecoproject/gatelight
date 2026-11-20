@@ -421,8 +421,8 @@ export async function behaviorCheck(s: Snapshot, copy: Copy, log: string, units:
     return { outcome: result.outcome, failed: new Map([...found.files].map(([as, lines]) => [named.get(as) as string, lines])), known: found.known }
   }
   const budget: Budget = { left: SPLIT_RUNS }
-  // 测试这一侧之外都没改：旧版测试跑新代码就是分叉点上的样子，不用跑
-  const onlyTests = s.changes.every(change => onTestSide(change) || change.kind === 'record' || ignoredChange(s, change))
+  // 测试这一侧之外都没改（改动记录和清单是给人看的文字，不算）：旧版测试跑新代码就是分叉点上的样子，不用跑
+  const onlyTests = s.changes.every(change => onTestSide(change) || change.kind === 'record' || change.kind === 'checklist' || ignoredChange(s, change))
   const changed = onlyTests ? { signals: [] } : await oldOnNewCode(s, copy, log, units, run, budget)
   const flagged = new Set(changed.signals.map(signal => signal.path))
   const tests = units.filter(unit => unit.kind === 'test' && !flagged.has(unit.change.path))
@@ -757,8 +757,10 @@ function relevantPaths(s: Snapshot, withCode: boolean): Set<string> {
   return paths
 }
 
+/** 这些文件在分叉点上和现在的内容，各是什么文件、怎么改的，用哪条命令跑。不带分叉点是哪个提交（见 contentKey）。 */
 function keyOf(s: Snapshot, paths: Set<string>, tag: string): string {
-  return contentKey(s.root, s.base, paths, tag, JSON.stringify(s.changes.filter(c => paths.has(c.path)).map(c => [c.status, c.path, c.oldPath])))
+  const changed = s.changes.filter(c => paths.has(c.path)).map(c => [c.status, c.path, c.oldPath, c.kind, c.oldKind])
+  return contentKey(s.root, s.base, paths, tag, s.filesCommand ?? '', JSON.stringify(changed))
 }
 
 /** 放水检查的结果按这份改动里相关的内容记；有要按行为判断的测试时，代码也算（旧版测试跑的是新代码）。 */
@@ -766,10 +768,25 @@ export function weakenKey(s: Snapshot): string {
   const units = behaviorUnits(s)
   const paths = relevantPaths(s, units.length > 0)
   for (const unit of units) for (const path of unit.runs) paths.add(path)
-  return keyOf(s, paths, 'weaken-11')
+  return keyOf(s, paths, 'weaken-12')
+}
+
+/**
+ * 按行为判断（behaviorCheck）跑出来的结果按什么记：和放水检查一样的那些文件，去掉改动记录和清单。
+ * 跑的是测试和代码，理由和清单是给人看的文字：补一行理由、改清单的写法，这部分不用重跑，只重新对理由。
+ */
+export function behaviorKey(s: Snapshot, units: Unit[]): string {
+  const paths = relevantPaths(s, true)
+  for (const change of s.changes) {
+    if (change.kind !== 'record' && change.kind !== 'checklist') continue
+    paths.delete(change.path)
+    if (change.oldPath) paths.delete(change.oldPath)
+  }
+  for (const unit of units) for (const path of unit.runs) paths.add(path)
+  return keyOf(s, paths, 'behavior-1')
 }
 
 /** 测试这一侧现在的样子（不含代码）：停止门用它判断这个会话有没有改过测试。 */
 export function testFingerprint(s: Snapshot): string {
-  return keyOf(s, relevantPaths(s, false), 'fingerprint-1')
+  return keyOf(s, relevantPaths(s, false), 'fingerprint-2')
 }
