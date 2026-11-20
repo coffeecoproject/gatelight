@@ -25,7 +25,7 @@ interface HookInput {
   session_id?: string
   cwd?: string
   tool_name?: string
-  tool_input?: { command?: unknown; run_in_background?: unknown; file_path?: unknown }
+  tool_input?: { command?: unknown; run_in_background?: unknown; file_path?: unknown; content?: unknown; new_string?: unknown; edits?: unknown }
   tool_response?: unknown
 }
 
@@ -149,9 +149,23 @@ function editTarget(cwd: string, target: unknown): { repo: Repo; path: string } 
 }
 
 /** 改文件之前：问各模块拦不拦（module.ts 的 beforeEdit），有一个说了原因就拒绝。 */
-function editRefusal({ repo, path }: { repo: Repo; path: string }): string | undefined {
+/** 改文件的工具这次要写进文件的新文字：Write 的整份内容，Edit、MultiEdit 替换进去的那几段。 */
+function writtenText(input: HookInput['tool_input']): string | undefined {
+  const parts: string[] = []
+  if (typeof input?.content === 'string') parts.push(input.content)
+  if (typeof input?.new_string === 'string') parts.push(input.new_string)
+  if (Array.isArray(input?.edits)) {
+    for (const item of input.edits as unknown[]) {
+      const text = (item as { new_string?: unknown } | null)?.new_string
+      if (typeof text === 'string') parts.push(text)
+    }
+  }
+  return parts.length > 0 ? parts.join('\n') : undefined
+}
+
+function editRefusal({ repo, path }: { repo: Repo; path: string }, text: string | undefined): string | undefined {
   for (const module of modules()) {
-    const reason = module.beforeEdit?.(repo, path)
+    const reason = module.beforeEdit?.(repo, path, text)
     if (reason) return reason
   }
   return undefined
@@ -197,7 +211,7 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
     if (!target) return undefined
     // 改之前先记起点：先用改文件的工具改、后来才在这个工作区跑命令的，起点也得是改之前的样子
     noteSession(target.repo, sessionId)
-    const reason = editRefusal(target)
+    const reason = editRefusal(target, writtenText(input.tool_input))
     return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : undefined
   }
 

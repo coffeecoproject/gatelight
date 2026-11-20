@@ -73,7 +73,7 @@ describe('会话开始', () => {
   })
 })
 
-describe('改文件之前（只看路径）', () => {
+describe('改文件之前（看路径，和要写进去的新文字）', () => {
   test('没有归属的代码文件：新建和修改都拒绝，附上改法', () => {
     const repo = sampleRepo(dir => write(dir, 'src/old.ts', 'export const old = 1\n'))
     const created = edit(repo, 'src/new.ts')?.hookSpecificOutput
@@ -87,6 +87,48 @@ describe('改文件之前（只看路径）', () => {
     // 目标不在会话所在的仓库里：按它自己所在的仓库算
     const elsewhere = sampleRepo()
     assert.equal(hook(elsewhere, 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: join(repo, 'src/new3.ts') } })?.hookSpecificOutput.permissionDecision, 'deny')
+  })
+
+  test('写文件时就拦绕过入口：新文字里用相对路径直接引用别的模块的内部文件，拒绝并说改法；走入口、同模块内部、共享层放行', () => {
+    const repo = sampleRepo()
+    const writing = (path: string, content: string, tool = 'Write'): Record<string, any> | undefined =>
+      hook(repo, 'PreToolUse', {
+        tool_name: tool,
+        tool_input: tool === 'Write' ? { file_path: join(repo, path), content } : tool === 'Edit' ? { file_path: join(repo, path), old_string: 'x', new_string: content } : { file_path: join(repo, path), edits: [{ old_string: 'x', new_string: content }] },
+      })
+    const denied = (out: Record<string, any> | undefined): string | undefined => (out?.hookSpecificOutput.permissionDecision === 'deny' ? out.hookSpecificOutput.permissionDecisionReason : undefined)
+
+    const reason = denied(writing('src/modules/billing/fee.ts', "import { slot } from '../booking/internal/slot.ts'\nexport const fee = slot\n"))
+    assert.match(reason ?? '', /modwall（R1 绕过入口）：src\/modules\/billing\/fee\.ts（billing 模块）要 import booking 模块的内部文件（\.\.\/booking\/internal\/slot\.ts）。改成从 booking 的入口引用（src\/modules\/booking\/ 下的 index\.ts、index\.tsx、index\.js）；入口里没有，就先在对方入口新增导出/)
+    // Edit、MultiEdit 替换进去的那几段也看；没写扩展名、写成 .js、export … from、require、import() 都认；装配层也只能走入口
+    assert.ok(denied(writing('src/modules/billing/fee.ts', "import { slot } from '../booking/internal/slot'", 'Edit')))
+    assert.ok(denied(writing('src/modules/billing/fee.ts', "export * from '../booking/internal/slot.js'", 'MultiEdit')))
+    assert.ok(denied(writing('src/modules/billing/fee.ts', "const slot = require('../booking/rules')")))
+    assert.ok(denied(writing('src/modules/billing/deep/fee.ts', "const m = await import('../../booking/internal/slot.ts')")))
+    assert.ok(denied(writing('src/main.ts', "import { slot } from './modules/booking/internal/slot.ts'")))
+
+    // 走入口：入口文件（.js 的写法对应 .ts 的入口）、直接引模块目录
+    for (const ok of ["import { book } from '../booking/index.ts'", "import { book } from '../booking/index.js'", "import { book } from '../booking/index'", "import { book } from '../booking'"]) {
+      assert.equal(writing('src/modules/billing/fee.ts', ok), undefined, ok)
+    }
+    // 同一个模块里互相引用、引共享层、整行注释里提到的、引样式和数据文件（留给 modwall check）：不拦
+    assert.equal(writing('src/modules/booking/a.ts', "import { slot } from './internal/slot.ts'"), undefined)
+    assert.equal(writing('src/modules/billing/fee.ts', "import { today } from '../../shared/date.ts'"), undefined)
+    assert.equal(writing('src/modules/billing/fee.ts', "// import { slot } from '../booking/internal/slot.ts'\nexport const fee = 1\n"), undefined)
+    assert.equal(writing('src/modules/billing/fee.ts', "import '../booking/internal/slot.css'\nimport data from '../booking/internal/data.json'"), undefined)
+    // 没有新文字可看（只给了路径）：照旧只看路径
+    assert.equal(edit(repo, 'src/modules/billing/fee.ts'), undefined)
+  })
+
+  test('配置里给这个文件写了绕过入口的例外：写文件时不拦，留给 modwall check 按例外判', () => {
+    const repo = sampleRepo(dir => {
+      const file = join(dir, '.modwall/config.json')
+      const config = JSON.parse(readFileSync(file, 'utf8'))
+      config.allow = [{ rule: 'R1', from: 'src/modules/billing/fee.ts', to: 'src/modules/booking/internal/slot.ts', reason: '历史原因' }]
+      writeFileSync(file, JSON.stringify(config))
+    })
+    const out = hook(repo, 'PreToolUse', { tool_name: 'Write', tool_input: { file_path: join(repo, 'src/modules/billing/fee.ts'), content: "import { slot } from '../booking/internal/slot.ts'" } })
+    assert.equal(out, undefined)
   })
 
   test('新模块、共享层、装配层、outside、测试文件、不是代码的文件：放行', () => {
