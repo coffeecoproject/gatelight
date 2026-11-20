@@ -2,7 +2,7 @@
   "name": "gatelight",
   "private": true,
   "type": "module",
-  "description": "Three gates for coding agents (Claude Code and Codex plugin)",
+  "description": "Gates for coding agents (Claude Code and Codex plugin)",
   "license": "MIT",
   "engines": { "node": ">=22.18" },
   "scripts": {

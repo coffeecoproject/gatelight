@@ -1,7 +1,7 @@
 {
   "name": "gatelight",
-  "version": "0.11.1",
-  "description": "Three gates for coding agents: tests actually ran before code lands, tests actually catch mistakes, and code stays inside its module boundaries",
+  "version": "0.12.0",
+  "description": "Gates for coding agents: tests actually ran before code lands, code stays inside its module boundaries, plus test-writing conventions and a change-triggered checklist",
   "author": {
     "name": "coffeecoproject"
   },
@@ -11,7 +11,7 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "gatelight",
-    "shortDescription": "Three gates for coding agents: tests ran, tests catch mistakes, code stays in bounds",
+    "shortDescription": "Gates for coding agents: tests ran, code stays in bounds, test-writing conventions",
     "developerName": "coffeecoproject",
     "category": "Developer Tools"
   }
