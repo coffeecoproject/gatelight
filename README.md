@@ -54,17 +54,29 @@ codex plugin add testpace@testpace
 
 仓库里有 `.testcraft/` 目录才启用，没有的仓库里它不出声、不加检查。启用后 `testpace full` 在测试之前跑一次 `testcraft check`，不用另外登记。接入步骤见 [plugin/skills/setup-testcraft/SKILL.md](plugin/skills/setup-testcraft/SKILL.md)（`testpace:setup-testcraft` 技能），写测试的约定见 `testpace:write-tests`，复查见 `testpace:review-tests`。`examples/craft-sample` 是它的示例项目。
 
-它原来是单独的 testcraft 插件。换成这一版时，把旧插件卸掉，并取消它在本机登记的附加检查：
+它原来是单独的 testcraft 插件，换成这一版时把旧插件卸掉（`claude plugin uninstall testcraft@testcraft`）。旧插件记在 `.git/testcraft/` 下的证明、放水检查、用户同意的记录不带过来：新测试要重新证明一次，同意过的放水要重新同意一次。
+
+## 模块边界（modwall）
+
+同一个插件里的第三项检查，管代码有没有越界：项目分成模块、共享层和装配层，要别的模块的能力只能走它的入口，模块之间不能成环，依赖方向不能反，代码文件要有归属；用 Postgres 的项目，数据库也按模块分 schema。代码里的 import 和调用来自 [layermap](https://github.com/coffeecoproject/layermap)（0.1.48 以上），没有它检查算没做完、不算通过。
+
+仓库里有 `.modwall/` 目录才启用。启用后会话开始时说明模块列表和写法约定，agent 改没有归属的代码文件之前就被拦下，`testpace full` 在最前面跑一次 `modwall check`，不用另外登记。放宽规则（加例外、扩大共享层、删模块根目录、删配置等）要你在弹窗里同意，同意按项记。库里的现状由项目在整组里跑完迁移后用 `modwall db check --psql "<执行 SQL 的命令>"` 查。接入步骤见 [plugin/skills/setup-modwall/SKILL.md](plugin/skills/setup-modwall/SKILL.md)（`testpace:setup-modwall` 技能），写法约定见 `testpace:modular`。`examples/wall-sample` 是它的示例项目。
+
+它原来是单独的 modwall 插件，换成这一版时把旧插件卸掉：
 
 ```bash
-claude plugin uninstall testcraft@testcraft
+claude plugin uninstall modwall@modwall
 ```
+
+旧插件记在 `.git/modwall/` 下的通过记录、用户同意的记录不带过来：同意过的放宽项要重新同意一次。只接了 modwall、没接 testpace 的仓库，钩子不再管，只剩自己跑 `modwall check`。
+
+## 换成这一版要做的
+
+整组里的检查现在随插件一起装，不再靠在本机登记（全局 git 配置 `testpace.check`）。这一版不读那项配置，留着也不起作用；旧的 testcraft、modwall 插件登记过的，可以清掉：
 
 ```bash
-git config --global --fixed-value --unset-all testpace.check 'testcraft check'
+git config --global --unset-all testpace.check
 ```
-
-旧插件记在 `.git/testcraft/` 下的证明、放水检查、用户同意的记录不带过来：新测试要重新证明一次，同意过的放水要重新同意一次。
 
 ## 开发节奏
 
@@ -80,10 +92,10 @@ git config --global --fixed-value --unset-all testpace.check 'testcraft check'
 |---|---|
 | `testpace focused [--base REF]` | 改完先跑：`fast`，再用 layermap 选出和改动相关的测试交给 `files` 跑，并把选出的测试交回 layermap，问它们跑不跑得到每处改动。只从 `tests` 规则找到的测试里选（和整组一致）：规则外的不选，但点出是哪几个（是测试的话整组跑不到它，该补进规则），这次改到的规则内测试文件都选。默认对比和默认分支的分叉点，分支上已提交的改动也算。只改了 `ignore` 路径、规则外的测试或删掉了整组的测试时不跑测试。改了地图跟不到的文件（配置、依赖、迁移、模板、脚本、样式等，`ignore` 里的不算），没有 layermap 或它出错，没找到相关测试，或者选出的测试有跑不到的改动时，在默认分支上建议跑整组；在别的分支上只说明一句，不建议现在跑，合回默认分支时的整组会覆盖 |
 | `testpace files [--repeat N] PATH[:行号]...` | 只跑给定的测试文件；`文件:行号` 只跑那一行的测试，比如重跑失败的测试（测试框架不能按行跑的，跑整个文件）。`--repeat N` 连跑 N 次、没过就停：用来造出时好时坏的测试的失败，或修好后连跑证明；每次各记一条运行记录，`report` 不把它们算成反复跑 |
-| `testpace full` | 依次跑本机登记的附加检查、`full`（测试以外的检查），再把 `tests` 规则在工作区里找到的全部测试文件交给 `files`，一段没过就停；按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑（`testpace.json` 自己不算忽略路径，改了它要重跑）。跑的过程中代码改过，通过也不算记录，输出里列出变了的文件 |
+| `testpace full` | 依次跑这个仓库接入了的检查（`modwall check`、`testcraft check`）、`full`（测试以外的检查），再把 `tests` 规则在工作区里找到的全部测试文件交给 `files`，一段没过就停；按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑（`testpace.json` 自己不算忽略路径，改了它要重跑）。跑的过程中代码改过，通过也不算记录，输出里列出变了的文件 |
 | `testpace status` | 当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、时好时坏的测试名单（各自怎么认出来的、两次的日志）、配置检查（含 `tests` 规则找到多少个测试文件）、合并门和固定命令入口在不在、有没有 layermap |
-| `testpace hold PID 说明`<br>`testpace release ID` | 借用这个工作区（只占这个工作区，别的工作区不管），给要复制或接着用工作区的工具用，比如 testcraft 建副本：跑到一半的状态（锁文件、临时文件）会一起带进副本。查有没有在跑的和占上是同一步，问完到用完之间不会有新起的命令插进来。占着时别的 testpace 命令（`fast`、`files`、`full`、`verify`）不跑，说明是谁占着（`说明` 里写的）、等它放开再跑。`PID` 是借用的那个进程（一般是调用者自己，要是还在的进程，不在的报用法错）：它不在了（被杀、崩了），占用跟着作废，不会把工作区永远锁住。占上时输出这次的 id，退出码 0，用完用 `testpace release ID` 放开（只放借用的，跑着的命令放不开）；有在跑的、已经被借用着的，不占，说明是谁（testpace 被强杀后测试进程组还在跑的，给出停掉它的命令），退出码 3。`testpace full` 只给附加检查在环境变量 `TESTPACE_RUN` 里带上这一轮的运行 id：附加检查在测试之前跑，工作区已经是这一轮的，在里面借用不另占、什么也不输出，退出码 0。别的项目命令（`fast`、`files`、`full` 和整组跑测试的那一段）不带，testpace 起项目命令时去掉从外面继承来的 `TESTPACE_RUN`，`testpace run` 也不把它交给跑测试的进程：测试里借用照样被挡，同一轮别的测试可能正拿着锁 |
-| `testpace report [--days N]` | 计时诊断：各命令次数和耗时、有几个 agent 跑过时按谁跑的分开的次数和耗时、整组的时间花在哪一段（每条附加检查、`full`、全部测试各跑到几次、平均、合计、占比）、平均每次落地的测试耗时和整组次数、失败后重跑轮数、同一份代码整组先失败后通过的（可能是测试不稳定，也可能是环境问题，列出失败用时和日志供分辨）、`fast` 是否过慢、按周的测试行数和整组耗时 |
+| `testpace hold PID 说明`<br>`testpace release ID` | 借用这个工作区（只占这个工作区，别的工作区不管），给要复制或接着用工作区的工具用，比如 testcraft 建副本：跑到一半的状态（锁文件、临时文件）会一起带进副本。查有没有在跑的和占上是同一步，问完到用完之间不会有新起的命令插进来。占着时别的 testpace 命令（`fast`、`files`、`full`、`verify`）不跑，说明是谁占着（`说明` 里写的）、等它放开再跑。`PID` 是借用的那个进程（一般是调用者自己，要是还在的进程，不在的报用法错）：它不在了（被杀、崩了），占用跟着作废，不会把工作区永远锁住。占上时输出这次的 id，退出码 0，用完用 `testpace release ID` 放开（只放借用的，跑着的命令放不开）；有在跑的、已经被借用着的，不占，说明是谁（testpace 被强杀后测试进程组还在跑的，给出停掉它的命令），退出码 3。`testpace full` 只给要建副本的检查（`testcraft check`）在环境变量 `TESTPACE_RUN` 里带上这一轮的运行 id：它在测试之前跑，工作区已经是这一轮的，在里面借用不另占、什么也不输出，退出码 0。别的项目命令（`fast`、`files`、`full` 和整组跑测试的那一段）不带，testpace 起项目命令时去掉从外面继承来的 `TESTPACE_RUN`，`testpace run` 也不把它交给跑测试的进程：测试里借用照样被挡，同一轮别的测试可能正拿着锁 |
+| `testpace report [--days N]` | 计时诊断：各命令次数和耗时、有几个 agent 跑过时按谁跑的分开的次数和耗时、整组的时间花在哪一段（各项检查、`full`、全部测试各跑到几次、平均、合计、占比）、平均每次落地的测试耗时和整组次数、失败后重跑轮数、同一份代码整组先失败后通过的（可能是测试不稳定，也可能是环境问题，列出失败用时和日志供分辨）、`fast` 是否过慢、按周的测试行数和整组耗时 |
 | `testpace verify [测试文件...]` | 核对这个项目的接入守不守约定，由程序实际去跑，不靠 agent 说检查过了：`testpace.json` 没写坏、三条命令找得到、合并门在把关、`files` 给了不存在的文件要失败；给了测试文件时，逐个核对它在 `tests` 规则里（整组跑得到它这一类）、能通过、混进不存在的路径要失败、`文件:行号` 和 `文件:行号:列号` 能用，给了几个时再核对它们一起交给 `files` 能通过。项目里的测试交给不同工具或配置跑的（比如前端用 Vitest、接口用 node:test），每种各给一个文件。`tests` 规则一个都找不到算没通过。整组太长不在这里跑。这几次运行不记进报告。接入时和升级 testpace 后各跑一次 |
 | `testpace run node-test [--cwd 目录] [--node-arg 参数]... 文件[:行号[:列号]]...`<br>`testpace run vitest [--cwd 目录] [--vitest-arg 参数]... 文件[:行号[:列号]]...`<br>`testpace run playwright [--cwd 目录] [--playwright-arg 参数]... 文件[:行号[:列号]]...` | 写在 `testpace.json` 的 `files` 里，或项目的 `files` 脚本里：用项目的测试框架跑测试文件，守 `files` 的约定，项目不用自己写这层包装。文件不存在、不是文件时退出码 2。逐个核对给的文件和 `文件:行号`：整个文件给的看这个文件的测试，按行给的看这一行选中的测试（测试自己，或它外层哪一级分组声明在这一行，三个框架按行跑都这么选）；一个测试都没跑到（文件没加载起来、里面没有测试、给的行上没有测试、文件被项目配置排除了，哪怕框架照样通过，比如 Playwright 只要别的行有测试就通过）时失败，这次已有测试没过的，另提醒框架可能提前停下了（bail、max-failures、依赖的准备项目没过）；选中的测试全被跳过时说一句，不算失败；框架在选测试之前就停了（参数不认、配置写错）时不核对，用它的退出码；框架还跑了没给的文件（Vitest、Playwright 把文件参数当名字片段，Playwright 先跑给的测试依赖的准备项目）时说一句，那些文件里的测试不算给的。`node-test` 用 PATH 上的 node，不加 `--test-only`，留着的 `.only` 不起作用；不能按行跑，按行给的整个文件跑，说一句，跑完照样核对那一行。`vitest`、`playwright` 用 `--cwd` 目录里装的 Vitest、`@playwright/test`，按行给的交给它们按行跑，项目配置里的报告器照常起作用：`vitest` 经插件的启动脚本调 Vitest 导出的 `startVitest`（命令行也是调它）照 `vitest run` 跑（不支持 `--watch`、`--ui` 这类另起分支的参数，Vitest 5 起不认的参数和命令行一样报错），跑完从它的状态里读结果；`playwright` 的计数报告器经 `PW_TEST_REPORTER` 加在项目配置的报告器后面，路径按正则转义后交给它。`--cwd` 换框架的工作目录（文件仍按当前目录算），`--node-arg`、`--vitest-arg`、`--playwright-arg` 原样交给框架，可以给几次。框架起在自己的进程组里，被中断时给整个组发 SIGINT（跑测试的子进程一起收到），8 秒还没退就强杀。由 `files`、`focused`、`full` 起的，把每个测试的结果（文件、行号、带外层分组的名字、过没过、是不是框架重试后才过）交回给 testpace，见下面的时好时坏的测试；交结果的位置（环境变量 `TESTPACE_RESULTS`）不传给跑测试的进程。testpace 跑项目命令时把自己的命令目录放在 PATH 最前面，命令和脚本里调的 `testpace` 就是正在跑的这一版 |
 | `testpace install` | 在全局 git 配置（`git config --global`）里配上合并门的钩子：`hook.testpace.event = reference-transaction` 和 `hook.testpace.command`。这台机器配一次，所有仓库、所有工作区生效；不往仓库里写文件，也不影响项目自己的钩子（`core.hooksPath`、husky 这些照常跑）。钩子命令只把引用更新转交给 `testpace gate`，规则都在 testpace 里。git 太旧（不认配置里声明的钩子）时不配，说明要升级 git。同时放上固定命令入口 `~/.local/bin/testpace`（见安装的 Codex 一节）；那里已经有别的文件时不覆盖 |
@@ -130,12 +142,13 @@ git config --global --fixed-value --unset-all testpace.check 'testcraft check'
   - 钩子命令里记着是哪一版 testpace 配的。Claude Code 和 Codex 装的版本不同时，会话开始的自动更新只升不降，不来回覆盖。
   - 合并门没配、配的命令是更旧版本的、被仓库自己的配置关掉（`hook.testpace.enabled = false`）、git 太旧，或找不到默认分支（没有 `origin/HEAD`，本地和 origin 上也没有 `main`、`master`）时，`testpace status` 和会话开始时的说明会讲出来。
 - **整组跑全部测试**：测试由 testpace 按 `tests` 规则自己找，交给 `files` 跑，不靠谁记得把新测试加进整组。放松整组的办法（改 `full`、`tests` 规则）要你同意，见上面。
-- **附加检查**（全局 git 配置 `testpace.check`，可以有多条）：`testpace full` 先在仓库根目录依次跑这台机器上登记的附加检查，再跑 `full` 和全部测试：附加检查便宜，有一条没过就不往下跑、不算整组通过，合并门照常拦。附加检查由别的插件装好时登记；登记在本机、不在仓库里，agent 在改动里删不掉。`testpace status` 列出登记了哪些。登记的命令找不到（插件停用了）时，`full` 不通过并说明怎么取消登记。
+- **整组里的检查**：仓库里有 `.modwall/`、`.testcraft/` 时，`testpace full` 先跑 `modwall check`、`testcraft check`，再跑 `full` 和全部测试：检查便宜，有一段没过就不往下跑、不算整组通过，合并门照常拦。它们随插件一起装，不在仓库里也不在本机配置里登记；分支上删掉 `.modwall/`、`.testcraft/` 躲不过（默认分支上有就算接入）。
 - **用户确认**（确认工具 `confirm_with_user`）：要你同意的改动，检查把它们按编号存好，agent 调这个工具弹窗给你看，你点了同意才记下；agent 自己说"用户同意了"不算。同意按项记（哪项检查的、改之前是什么、改成什么、你看到的文字），同意过的那一项没再变就不再问。
-- **停止门**（agent 的 Stop hook）：这个会话认出了时好时坏的测试、还在名单上的，每个拦一次。启用了 testcraft 的仓库里，这个会话改了测试却还没过放水检查、新测试还没证明能抓错，或改到了清单条目还没写怎么查的，同一份改动拦一次。这个会话起的整组（按 agent 给命令带的会话号认，别的会话和终端里起的不算）还在跑，或这个会话还没看过结果（`testpace status`，或在前台等到了 `testpace full` 的输出，通过、失败都算），拦一次。每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里。本地默认分支或 `origin` 上的默认分支在会话里有了没有通过记录的提交时，提示用户。会话从仓库外开始的，也查它碰过的仓库。
+- **停止门**（agent 的 Stop hook）：这个会话认出了时好时坏的测试、还在名单上的，每个拦一次。启用了 testcraft 的仓库里，这个会话改了测试却还没过放水检查、新测试还没证明能抓错，或改到了清单条目还没写怎么查的，同一份改动拦一次。启用了 modwall 的仓库里，这个会话改了代码或配置、当前内容却没有 `modwall check` 的通过记录，同一份内容拦一次。这个会话起的整组（按 agent 给命令带的会话号认，别的会话和终端里起的不算）还在跑，或这个会话还没看过结果（`testpace status`，或在前台等到了 `testpace full` 的输出，通过、失败都算），拦一次。每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里。本地默认分支或 `origin` 上的默认分支在会话里有了没有通过记录的提交时，提示用户。会话从仓库外开始的，也查它碰过的仓库。
+- **改文件之前**（agent 的 hook，只在 Claude Code 里）：启用了 modwall 的仓库里，agent 要新建或修改一个没有归属的代码文件时直接拒绝，附上该放哪。只看路径；用命令行改文件绕得过这一步，结束前和合并前的 `modwall check` 照样查出来。
 - **软提示**（agent 的 hook）：会话开始时说明测试节奏（上一节），会话从仓库外开始的，第一次在仓库里执行命令时补说，压缩、恢复后再说一次；agent 直接跑 `full` 配置的命令时，提示它只是整组的一部分、不留记录，改用 `testpace full`。
 
-记录放在仓库的 `.git/testpace/`（所有 worktree、Claude Code 和 Codex 共用）：`runs.jsonl` 每次运行一行（记着哪个 agent、哪一版 testpace 跑的），`logs/` 是完整输出，`running/` 是每个工作区正在跑的命令（或借用着它的工具），`sessions/` 是各会话的状态，`flaky/` 是时好时坏的测试名单（一个测试一份），`rounds/` 是各工作区里测试连着几轮没过，`confirm/` 是等你确认的和你同意过的，`craft/` 是 testcraft 的证明、放水检查记录。
+记录放在仓库的 `.git/testpace/`（所有 worktree、Claude Code 和 Codex 共用）：`runs.jsonl` 每次运行一行（记着哪个 agent、哪一版 testpace 跑的），`logs/` 是完整输出，`running/` 是每个工作区正在跑的命令（或借用着它的工具），`sessions/` 是各会话的状态，`flaky/` 是时好时坏的测试名单（一个测试一份），`rounds/` 是各工作区里测试连着几轮没过，`confirm/` 是等你确认的和你同意过的，`craft/` 是 testcraft 的证明、放水检查记录，`wall/` 是 modwall 的通过记录。
 
 ## 开发
 

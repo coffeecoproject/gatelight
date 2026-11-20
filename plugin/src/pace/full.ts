@@ -6,6 +6,7 @@ import type { Repo } from '../base/repo.ts'
 import { loadConfig } from './config.ts'
 import { unconfirmedChanges } from './consent.ts'
 import type { PaceRun } from './record.ts'
+import { FULL_STEP, TESTS_STEP } from './report.ts'
 import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile } from './results.ts'
 import { findTests } from './tests.ts'
 
@@ -20,8 +21,8 @@ export function fullPart(repo: Repo): FullPart | { problem: string } {
   const resultsAt = resultsFile()
   return {
     steps: [
-      { kind: 'full', title: '整组的检查（full）', header: `整组的检查（full）：${config.full}`, command: config.full, args: [] },
-      { kind: 'tests', title: `全部测试（${tests.length} 个文件）`, header: `全部测试（${tests.length} 个文件）：${config.files}`, command: config.files, args: tests },
+      { kind: 'full', name: FULL_STEP, title: FULL_STEP, header: `${FULL_STEP}：${config.full}`, command: config.full, args: [] },
+      { kind: 'tests', name: TESTS_STEP, title: `${TESTS_STEP}（${tests.length} 个文件）`, header: `${TESTS_STEP}（${tests.length} 个文件）：${config.files}`, command: config.files, args: tests },
     ],
     summary: `${tests.length} 个测试文件`,
     env: { [RESULTS_ENV]: resultsAt.path },

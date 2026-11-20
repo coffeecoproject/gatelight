@@ -688,12 +688,12 @@ test('hook 入口：从标准输入读事件，把判断写到标准输出', () 
   assert.equal(JSON.parse(unnamed.stdout).systemMessage, 'testpace hook 出错，这次没有检查：不认识的 agent "undefined"')
 })
 
-test('hooks.json 把用到的事件都交给入口：Bash 的三个工具事件只看 Bash', () => {
+test('hooks.json 把用到的事件都交给入口：工具调用前看执行命令和改文件的工具，调用后只看 Bash', () => {
   const { hooks } = JSON.parse(readFileSync(fileURLToPath(new URL('../hooks/hooks.json', import.meta.url)), 'utf8')) as {
     hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>
   }
   const registered = Object.fromEntries(Object.entries(hooks).map(([event, entries]) => [event, entries.map(entry => entry.matcher ?? '')]))
-  assert.deepEqual(registered, { SessionStart: [''], PreToolUse: ['Bash'], PostToolUse: ['Bash'], PostToolUseFailure: ['Bash'], Stop: [''] })
+  assert.deepEqual(registered, { SessionStart: [''], PreToolUse: ['Bash|Edit|Write|MultiEdit'], PostToolUse: ['Bash'], PostToolUseFailure: ['Bash'], Stop: [''] })
   for (const entries of Object.values(hooks)) {
     for (const entry of entries) assert.match(entry.hooks[0]!.command, /"\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/testpace\.ts" claude$/, '说明是 Claude Code')
   }

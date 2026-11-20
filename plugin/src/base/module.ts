@@ -8,13 +8,15 @@ import type { RunRecord } from './store.ts'
 /** 整组里的一段：一条要跑的命令。kind 记进运行记录的分段用时（RunStep.kind），由模块自己定名字。 */
 export interface FullStep {
   kind: string
+  /** 耗时报告里这一段的名字：固定的，不带数量（比如"全部测试"）。记进运行记录的分段用时（RunStep.name）。 */
+  name: string
   /** 没通过时说的名字，比如"全部测试（12 个文件）"。 */
   title: string
   /** 写进日志的分隔行。 */
   header: string
   command: string
   args: string[]
-  /** 这一段要借用工作区（比如建副本）：底座把这一轮的运行 id 给它（见 execute.ts 的 RUN_ENV），它借用时不另占。只给测试之前跑的段。 */
+  /** 这一段要借用工作区（比如建副本）：底座把这一轮的运行 id 给它（见 execute.ts 的 RUN_ENV），它借用时不另占。只给测试之前跑的检查。 */
   borrows?: boolean
 }
 
@@ -54,6 +56,11 @@ export interface Module {
 
   /** 工具调用前：agent 要在 cwd 里跑这条命令时给它的提示。 */
   beforeCommand?(command: string, cwd: string): string | undefined
+  /**
+   * 改文件之前：agent 要用改文件的工具新建或修改这个仓库里的 path（相对仓库根目录）。返回原因就拒绝这次改动，
+   * 话里要说清怎么改。每次改文件都会问，只做看路径就能判断的事。
+   */
+  beforeEdit?(repo: Repo, path: string): string | undefined
 
   /**
    * 停止门：这个会话在这个仓库里还有没处理完的事。keys 是这几件事各自的记号，底座记下拦过的，每件只拦一次

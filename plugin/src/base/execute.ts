@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url'
 import { COMMAND_KILL_AFTER_MS, spawnGroup } from './process-group.ts'
 
 /**
- * 整组起附加检查时，在这个环境变量里给这一轮的运行 id（登记的 RunMarker.id），只给附加检查。
- * testpace hold 见到它和这个工作区的登记一样就不另占：附加检查在测试之前跑，那时工作区里还没有测试在跑，工作区已经是这一轮的。
+ * 整组起要借用工作区的检查（模块交的段里标了 borrows 的，比如 testcraft check 要建副本）时，在这个环境变量里给这一轮的运行 id
+ * （登记的 RunMarker.id），只给这样的段。借用工作区时见到它和这个工作区的登记一样就不另占：这些检查在测试之前跑，
+ * 那时工作区里还没有测试在跑，工作区已经是这一轮的。
  * 别的项目命令（fast、files、full 和整组跑测试的那一段）跑的就是测试，在里面借用工作区要被挡，不给。
  */
 export const RUN_ENV = 'TESTPACE_RUN'
@@ -16,13 +17,16 @@ export const RUN_ENV = 'TESTPACE_RUN'
 /**
  * 跑项目命令的环境：testpace 自己的命令目录放在 PATH 最前面。项目命令和脚本里调的 testpace（比如 files 里的
  * testpace run）就是正在跑的这一版，Claude Code、Codex、合并门的钩子里都一样，不靠 PATH 上碰巧有哪一版。
- * 从外面继承来的 RUN_ENV 去掉（比如附加检查里又调了 testpace files）：它只认起它的那一轮，附加检查由 execute 的 env 按这一轮重新给。
+ * 从外面继承来的 RUN_ENV 去掉（比如整组里的检查又调了 testpace files）：它只认起它的那一轮，要给的段由 execute 的 env 按这一轮重新给。
  */
 const { [RUN_ENV]: _inheritedRun, ...inherited } = process.env
 export const PROJECT_ENV: NodeJS.ProcessEnv = {
   ...inherited,
   PATH: [fileURLToPath(new URL('../../bin', import.meta.url)), process.env.PATH].filter(Boolean).join(delimiter),
 }
+
+/** 把一段文字（比如带空格的完整路径）写进命令字符串：加单引号，sh 照原样当成一个词。 */
+export const quoted = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`
 
 export interface Execution {
   /** 正常退出时的退出码；被信号终止或没能启动时为 null。 */
