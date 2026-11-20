@@ -1,10 +1,10 @@
-// "模块边界"说给 agent 的话，经整个插件共用的那个钩子入口出去：会话说明、改文件之前、停止门。
+// "模块边界"说给 agent 的话，经整个插件共用的那个钩子入口出去：会话说明、改文件之前。收尾时不拦。
 
 import assert from 'node:assert/strict'
 import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { hook, modwall, sampleRepo, sh, write } from './helpers.ts'
+import { hook, sampleRepo, sh, write } from './helpers.ts'
 
 const edit = (repo: string, path: string, tool = 'Write'): Record<string, any> | undefined =>
   hook(repo, 'PreToolUse', { tool_name: tool, tool_input: { file_path: join(repo, path) } })
@@ -141,68 +141,16 @@ describe('改文件之前（只看路径）', () => {
 })
 
 describe('结束之前', () => {
-  test('这个会话没改东西：不拦；改了代码没跑 modwall check：拦一次；check 通过后放行；改了内容要重跑', () => {
+  test('这个会话改了代码、越了界、没跑 modwall check：收尾时都不拦，越界留给合回默认分支时的整组', () => {
     const repo = sampleRepo()
     hook(repo, 'SessionStart', { session_id: 's1' })
     assert.equal(stop(repo, 's1'), undefined)
 
     appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee = 1\n')
-    assert.match(stop(repo, 's1') as string, /改了代码或 modwall 的配置.*用 Bash 跑 modwall check.*confirm_with_user/)
-    // 同一份内容只拦一次
-    assert.equal(stop(repo, 's1'), undefined)
-    // 内容又变了还没有通过记录：再拦
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee2 = 1\n')
-    assert.match(stop(repo, 's1') as string, /modwall check/)
-
-    assert.equal(modwall(repo, ['check']).code, 0)
-    assert.equal(stop(repo, 's1'), undefined)
-    // 只改文档不算
-    write(repo, 'src/modules/billing/MODULE.md', '负责收款和退款。\n')
-    assert.equal(stop(repo, 's1'), undefined)
-
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const tax = 1\n')
-    assert.match(stop(repo, 's1') as string, /modwall check/)
-  })
-
-  test('没有这个会话在这里的起点（比如这个模块是会话中途才装上的）：不说是这个会话改的，从这时算起；之后再改照常拦', () => {
-    const repo = sampleRepo()
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee = 1\n')
-    // 这个会话没有过会话开始，也没在这里跑过命令：没有起点可比
-    assert.equal(stop(repo, 'late'), undefined)
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee2 = 1\n')
-    assert.match(stop(repo, 'late') as string, /modwall check/)
-  })
-
-  test('改了配置也要重跑；压缩后再来一次会话开始，不覆盖会话开始时的样子', () => {
-    const repo = sampleRepo()
-    hook(repo, 'SessionStart', { session_id: 's2' })
-    write(repo, '.modwall/config.json', '{"roots":["src/modules"],"entry":["index.ts"],"shared":["src/shared/**"],"app":["src/main.ts"],"outside":["scripts/**"]}')
-    hook(repo, 'SessionStart', { session_id: 's2' })
-    assert.match(stop(repo, 's2') as string, /modwall check/)
-  })
-
-  test('在默认分支上：检查通过后提交、默认分支往前走，通过记录照样有效；分叉点上的配置变了才要重跑', () => {
-    const repo = sampleRepo()
-    sh(repo, 'git checkout -q main')
-    hook(repo, 'SessionStart', { session_id: 'main1' })
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee = 1\n')
-    assert.match(blocked(repo, 'main1') as string, /modwall check/)
-    assert.equal(modwall(repo, ['check']).code, 0)
-    sh(repo, 'git add -A && git commit -qm fee')
-    assert.equal(blocked(repo, 'main1'), undefined)
-    assert.match(modwall(repo, ['status']).out, /当前内容 modwall check 通过过/)
-    // 默认分支上又提交了别的东西（不是代码）：照样有效
-    write(repo, 'notes.md', '说明\n')
-    sh(repo, 'git add -A && git commit -qm notes')
-    assert.equal(blocked(repo, 'main1'), undefined)
-    // 提交了配置的改动：分叉点上的配置变了，要重跑
-    const file = join(repo, '.modwall/config.json')
-    const config = JSON.parse(readFileSync(file, 'utf8'))
-    config.entry = ['index.ts']
-    writeFileSync(file, JSON.stringify(config, null, 2))
-    assert.equal(modwall(repo, ['check']).code, 0)
-    sh(repo, 'git add -A && git commit -qm entry')
-    assert.match(blocked(repo, 'main1') as string, /modwall check/)
+    assert.equal(blocked(repo, 's1'), undefined)
+    // 直接引用别的模块的内部文件（越界）：收尾时照样不拦，modwall check 才查得出来
+    write(repo, 'src/modules/billing/peek.ts', "import '../booking/internal.ts'\n")
+    assert.equal(blocked(repo, 's1'), undefined)
   })
 
   test('没接入的仓库不出声', () => {

@@ -1,22 +1,19 @@
-// "模块边界"说给 agent 的话，经底座的钩子送出去（base/module.ts 的 brief、onSession、unfinished、beforeEdit）：
-//   会话说明    模块列表、各模块的职责和写法约定（用库的应用加上数据库的约定）；记下这时内容的样子（会话起点，底座存，见 base/baseline.ts）
+// "模块边界"说给 agent 的话，经底座的钩子送出去（base/module.ts 的 brief、beforeEdit）：
+//   会话说明    模块列表、各模块的职责和写法约定（用库的应用加上数据库的约定）
 //   改文件之前  只做最轻的路径检查：目标是代码文件又没有归属（R5），新建和修改都拒绝，附上改法
-//   停止门      不跑检查（钩子进程里 layermap 首次建图可能超过时限）：这个会话改过代码或配置（和起点比，没有起点的不算）、
-//               当前内容又没有 modwall check 的通过记录时拦一次，让 agent 用 Bash 跑 modwall check。
-//               同一份内容只拦一次（记号里带着内容的样子）：改了以后还没有通过记录，再拦。
+// 没有停止门：分支上改了代码没跑 modwall check，收尾时不拦。越界由合回默认分支时的整组兜底（full.ts），
+// 开发中想早点知道就自己跑 modwall check。
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { SessionBaselines } from '../base/baseline.ts'
 import { CONFIRM_TOOL } from '../base/confirm.ts'
 import { fileNow, isIgnored } from '../base/git.ts'
 import type { Repo } from '../base/repo.ts'
 import { type App, CONFIG_PATH, joined, readConfig, type Scheme, schemeOf } from './config.ts'
 import { isCode, unreadDirectory } from './files.ts'
 import { type Layout, type Module, ownerIn } from './layout.ts'
-import { CONTENT_FORMAT, contentKey, layoutOf, openProject } from './project.ts'
+import { layoutOf, openProject } from './project.ts'
 import { unownedText } from './rules.ts'
-import { MODULE, openStore } from './store.ts'
 
 /** 模块超过这个数，只列模块名和 MODULE.md 的头两句。 */
 const MANY_MODULES = 12
@@ -28,35 +25,6 @@ export function brief(label: string, repo?: Repo): string[] {
   if ('notJoined' in opened) return []
   const config = opened.project.now.config
   return guide(repo.root, config ? layoutOf(opened.project, config) : undefined, label).split('\n')
-}
-
-/** 这个仓库里各会话的起点：那时内容的样子（底座存，按会话和工作区各一份）。 */
-function baselines(repo: Repo): SessionBaselines<string> {
-  return new SessionBaselines(repo, MODULE, CONTENT_FORMAT)
-}
-
-/** 会话碰到这个工作区时：记下这时内容的样子（只记第一次）。没接入时不记。 */
-export function onSession(repo: Repo, sessionId: string): void {
-  baselines(repo).note(sessionId, () => {
-    const opened = openProject(repo.root)
-    return 'notJoined' in opened ? undefined : contentKey(opened.project)
-  })
-}
-
-/** 停止门：这个会话在这个仓库里改了代码或配置（和起点比；没有起点的不算这个会话改的），当前内容还没有 modwall check 的通过记录。 */
-export function unfinished(repo: Repo, sessionId: string, seen: readonly string[], named: boolean): { keys: string[]; text: string } | undefined {
-  const opened = openProject(repo.root)
-  if ('notJoined' in opened) return undefined
-  const now = contentKey(opened.project)
-  if (baselines(repo).since(sessionId, now) === now || openStore(repo).passes.get(now)) return undefined
-  const key = `wall:check:${now}`
-  if (seen.includes(key)) return undefined
-  return {
-    keys: [key],
-    text:
-      `这个会话${named ? `在 ${repo.root} ` : ''}改了代码或 modwall 的配置，当前内容还没有 modwall check 的通过记录。` +
-      `用 Bash 跑 modwall check，按输出的改法改到通过再收尾；要放宽规则的，照输出调用 ${CONFIRM_TOOL} 工具让用户确认；改不了的，用白话告诉用户卡在哪。`,
-  }
 }
 
 function guide(root: string, layout: Layout | undefined, label: string): string {

@@ -13,9 +13,9 @@ export function rhythm(repo: string): string[] {
   return [
     `${repo}用 testpace 管测试节奏（testpace.json）：`,
     '1. 每个任务在自己的分支上做，最好是自己的 worktree，不和别的会话挤在同一个目录里。',
-    '2. 改完跑 testpace focused：fast 检查加上和改动相关的测试。在分支上不跑整组。',
+    '2. 改完跑 testpace focused：fast 检查加上和改动直接相关的测试。在分支上不跑整组，范围更宽的留给合并时的整组兜底。',
     '3. 有失败，用 testpace files <文件:行号> 只重跑失败的那几个测试（位置看失败输出）。',
-    '4. 整组在合回默认分支时跑：做完的几个分支一起合，合并后的代码跑一次 testpace full，通过了再落地（gatelight:merge 技能）。整组要跑几分钟，能把命令放到后台的就放后台、接着做别的，不要干等；跑完用 testpace status 看结果。',
+    '4. 做完一个任务不要自己马上合回默认分支：提交干净，告诉用户这个分支做完了、等着合；待合的分支有三个以上时提一句。用户说合（"合一批""合并"），被叫到的会话把所有做完待合的分支一起合，合并后的代码跑一次 testpace full，通过了再落地（gatelight:merge 技能）。整组要跑几分钟，能把命令放到后台的就放后台、接着做别的，不要干等；跑完用 testpace status 看结果。',
   ]
 }
 

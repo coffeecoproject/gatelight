@@ -49,11 +49,6 @@ export interface Module {
    * 给了 repo 就是在说那个仓库，模块没在那个仓库里启用的不用说。
    */
   brief?(label: string, repo?: Repo): string[]
-  /**
-   * 会话碰到这个工作区时（会话开始、每条命令之前、每次改文件之前都来）：模块记下会话在这里的起点（比如这时测试的样子，
-   * 停止门只管这之后改的）。用底座的 SessionBaselines 记（baseline.ts）：只记第一次，已经有了就不再算。
-   */
-  onSession?(repo: Repo, sessionId: string): void
   /** 会话说明里跟在后面的提醒：这个仓库现在有什么要留意的（比如时好时坏的测试）。 */
   alerts?(repo: Repo): string[]
 
@@ -64,12 +59,6 @@ export interface Module {
    * 话里要说清怎么改。每次改文件都会问，只做看路径就能判断的事。
    */
   beforeEdit?(repo: Repo, path: string): string | undefined
-
-  /**
-   * 停止门：这个会话在这个仓库里还有没处理完的事。keys 是这几件事各自的记号，底座记下拦过的，每件只拦一次
-   * （seen 是已经拦过的）；named 为真时话里要写明是哪个仓库（会话不是在这个仓库里开始的）。
-   */
-  unfinished?(repo: Repo, sessionId: string, seen: readonly string[], named: boolean): { keys: string[]; text: string } | undefined
 
   /** 整组里这个模块的部分；现在跑不了（配置不对、没有要跑的）时给出原因。 */
   fullPart?(repo: Repo): FullPart | { problem: string }
