@@ -1,7 +1,7 @@
 {
   "name": "gatelight",
   "displayName": "gatelight",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Three gates for coding agents: tests actually ran before code lands, tests actually catch mistakes, and code stays inside its module boundaries",
   "author": {
     "name": "coffeecoproject"
