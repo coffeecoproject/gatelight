@@ -786,7 +786,10 @@ export function behaviorKey(s: Snapshot, units: Unit[]): string {
   return keyOf(s, paths, 'behavior-1')
 }
 
+/** testFingerprint 的算法的名字：算法变了要改它，会话起点里以前记的样子就不算了（见 base/baseline.ts）。 */
+export const FINGERPRINT_FORMAT = 'fingerprint-2'
+
 /** 测试这一侧现在的样子（不含代码）：停止门用它判断这个会话有没有改过测试。 */
 export function testFingerprint(s: Snapshot): string {
-  return keyOf(s, relevantPaths(s, false), 'fingerprint-2')
+  return keyOf(s, relevantPaths(s, false), FINGERPRINT_FORMAT)
 }

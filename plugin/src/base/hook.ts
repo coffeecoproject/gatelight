@@ -38,7 +38,10 @@ export function sessionBrief(label = '这个仓库', repo?: Repo): string {
   return [...modules().flatMap(module => module.brief?.(label, repo) ?? []), LANDING_RULE].join('\n')
 }
 
-/** 会话碰到了这个仓库：让各模块记下自己要记的。哪个模块出错不挡别的，也不挡会话说明。 */
+/**
+ * 会话碰到了这个工作区：让各模块记下自己要记的（会话起点，见 baseline.ts）。会话开始、每条命令之前、每次改文件之前都来，
+ * 模块只记第一次。哪个模块出错不挡别的，也不挡会话说明。
+ */
 function noteSession(repo: Repo, sessionId: string): void {
   for (const module of modules()) {
     try {
@@ -104,7 +107,10 @@ function contractRepos(dirs: Iterable<string>): Repo[] {
 
 /**
  * 这条命令碰到的接入仓库（会话所在目录和命令里 cd 进去的目录；同一条命令里多数调用在同一个目录，按目录去重）。
- * 每个仓库都记下会话，插件数据目录里记下会话碰过它；返回还没给这个会话说过节奏的。
+ * 每个仓库都记下会话，插件数据目录里记下会话碰过它；每个工作区都让各模块记下会话在那里的起点（节奏按仓库说一次，起点按工作区各记一份：
+ * 同一个仓库的另一个工作区不会再说节奏，起点照样要记）。返回还没给这个会话说过节奏的。
+ * 已知的缺口：会话没进某个工作区、从外面按路径往里写了文件（cp、重定向这类），这里看不到，那个工作区的起点要到会话进去时才记，
+ * 已经带着它写的东西；停止门不提醒这一部分，合并前的整组照样查（整体设计方案 9.4）。
  */
 function untoldRepos(command: string, cwd: string, sessionId: string, now: number): Array<{ repo: Repo; state: SessionState }> {
   const repos = contractRepos([cwd, ...invocations(command, cwd).map(call => call.cwd)])
@@ -112,6 +118,7 @@ function untoldRepos(command: string, cwd: string, sessionId: string, now: numbe
   const untold: Array<{ repo: Repo; state: SessionState }> = []
   for (const repo of repos) {
     const state = repo.store.session(sessionId, now, () => defaultTips(repo))
+    noteSession(repo, sessionId)
     if (!state.rhythm) untold.push({ repo, state })
   }
   return untold
@@ -121,10 +128,10 @@ function untoldRepos(command: string, cwd: string, sessionId: string, now: numbe
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
 
 /**
- * 改文件之前：目标在接入了的仓库里时，问各模块拦不拦（module.ts 的 beforeEdit），有一个说了原因就拒绝。
- * 目标可以不在会话所在的仓库里，按它自己所在的仓库算；还不存在的文件按最近的已有目录找仓库。
+ * 要改的文件在哪个接入了的仓库里、相对仓库根目录的路径。目标可以不在会话所在的仓库里，按它自己所在的仓库算；
+ * 还不存在的文件按最近的已有目录找仓库。不在接入的仓库里时没有。
  */
-function editRefusal(cwd: string, target: unknown): string | undefined {
+function editTarget(cwd: string, target: unknown): { repo: Repo; path: string } | undefined {
   if (typeof target !== 'string' || target === '') return undefined
   const file = isAbsolute(target) ? target : resolve(cwd, target)
   let dir = dirname(file)
@@ -138,6 +145,11 @@ function editRefusal(cwd: string, target: unknown): string | undefined {
   // git 给的是真实路径（软链展开了，比如 macOS 的 /var 是 /private/var），目标路径也按真实路径算
   const path = relative(repo.root, join(realpathSync(dir), relative(dir, file))).split('\\').join('/')
   if (path === '' || path.startsWith('../')) return undefined
+  return { repo, path }
+}
+
+/** 改文件之前：问各模块拦不拦（module.ts 的 beforeEdit），有一个说了原因就拒绝。 */
+function editRefusal({ repo, path }: { repo: Repo; path: string }): string | undefined {
   for (const module of modules()) {
     const reason = module.beforeEdit?.(repo, path)
     if (reason) return reason
@@ -181,7 +193,11 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
   }
 
   if (event === 'PreToolUse' && EDIT_TOOLS.has(input.tool_name ?? '')) {
-    const reason = editRefusal(cwd, input.tool_input?.file_path)
+    const target = editTarget(cwd, input.tool_input?.file_path)
+    if (!target) return undefined
+    // 改之前先记起点：先用改文件的工具改、后来才在这个工作区跑命令的，起点也得是改之前的样子
+    noteSession(target.repo, sessionId)
+    const reason = editRefusal(target)
     return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : undefined
   }
 
@@ -190,10 +206,7 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
     // 记下会话第一次出现的时间：停止门只管这之后起的整组。会话不在仓库里开始（SessionStart 没说节奏）时，
     // 第一次碰到接入的仓库就补说一次。
     const untold = untoldRepos(command, cwd, sessionId, now)
-    for (const { repo, state } of untold) {
-      repo.store.saveSession(sessionId, { ...state, rhythm: true })
-      noteSession(repo, sessionId)
-    }
+    for (const { repo, state } of untold) repo.store.saveSession(sessionId, { ...state, rhythm: true })
     const hints = modules().flatMap(module => module.beforeCommand?.(command, cwd) ?? [])
     const context = [...untold.map(({ repo }) => told(repo, agent, `${repo.root} 这个仓库`)), ...hints].join('\n\n')
     if (context) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }

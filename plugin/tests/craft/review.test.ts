@@ -5,16 +5,24 @@ import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { commitOnMain, ENV, HOOK, MEMBER_PRICE, sampleRepo, sh, TEST_HEAD, testcraft, write } from './helpers.ts'
 
-/** 停止门说的话：不拦时没有。 */
-function stop(cwd: string): string | undefined {
+function hook(cwd: string, event: string): string {
   const r = spawnSync('node', ['--disable-warning=ExperimentalWarning', HOOK, 'claude'], {
-    input: JSON.stringify({ hook_event_name: 'Stop', cwd }),
+    input: JSON.stringify({ hook_event_name: event, cwd }),
     env: ENV,
     encoding: 'utf8',
   })
   assert.equal(r.status, 0, r.stderr)
-  if (!r.stdout.trim()) return undefined
-  const said = JSON.parse(r.stdout)
+  return r.stdout.trim()
+}
+
+/** 会话在这个工作目录开始：停止门只管这之后改的。 */
+const start = (cwd: string): void => void hook(cwd, 'SessionStart')
+
+/** 停止门说的话：不拦时没有。 */
+function stop(cwd: string): string | undefined {
+  const out = hook(cwd, 'Stop')
+  if (!out) return undefined
+  const said = JSON.parse(out)
   assert.equal(said.decision, 'block')
   return said.reason
 }
@@ -22,9 +30,10 @@ function stop(cwd: string): string | undefined {
 const memberTest = `${TEST_HEAD}import { memberPrice } from '../src/price.mjs'\ntest('金卡九折', () => {\n  assert.equal(memberPrice(100, { level: 'gold' }), 90)\n  assert.equal(memberPrice(100, { level: 'silver' }), 100)\n})\n`
 const silverTest = "test('银卡不打折', () => assert.equal(memberPrice(50, { level: 'silver' }), 50))\n"
 
-/** 加了会员价和它的测试、还没证明的仓库。 */
+/** 会话开始后加了会员价和它的测试、还没证明的仓库。 */
 function withNewTest(setup?: (repo: string) => void): string {
   const repo = sampleRepo(setup)
+  start(repo)
   appendFileSync(join(repo, 'src/price.mjs'), MEMBER_PRICE)
   write(repo, 'tests/member.test.mjs', memberTest)
   return repo
@@ -90,6 +99,7 @@ describe('复查', () => {
     // 另一个工作目录从同一个提交分出来，记录和这边存在同一处
     const other = join(dirname(repo), 'other')
     sh(repo, `git worktree add -q -b other "${other}" main`)
+    start(other)
     appendFileSync(join(other, 'src/price.mjs'), MEMBER_PRICE)
     write(other, 'tests/silver.test.mjs', `${TEST_HEAD}import { memberPrice } from '../src/price.mjs'\n${silverTest}`)
     assert.match(stop(other) ?? '', /还缺：testcraft prove.*tests\/silver\.test\.mjs/)

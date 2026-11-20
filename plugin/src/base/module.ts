@@ -49,7 +49,10 @@ export interface Module {
    * 给了 repo 就是在说那个仓库，模块没在那个仓库里启用的不用说。
    */
   brief?(label: string, repo?: Repo): string[]
-  /** 会话开始、会话第一次碰到这个仓库时：模块记下自己要记的（比如这时测试的样子，停止门只管这之后改的）。同一个会话会来不止一次。 */
+  /**
+   * 会话碰到这个工作区时（会话开始、每条命令之前、每次改文件之前都来）：模块记下会话在这里的起点（比如这时测试的样子，
+   * 停止门只管这之后改的）。用底座的 SessionBaselines 记（baseline.ts）：只记第一次，已经有了就不再算。
+   */
   onSession?(repo: Repo, sessionId: string): void
   /** 会话说明里跟在后面的提醒：这个仓库现在有什么要留意的（比如时好时坏的测试）。 */
   alerts?(repo: Repo): string[]

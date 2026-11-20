@@ -1,4 +1,4 @@
-// "测试写法"要记的东西：证明、放水检查和其中按行为判断的结果（按内容记），会话开始时测试的样子，开着的复查，日志。
+// "测试写法"要记的东西：证明、放水检查和其中按行为判断的结果（按内容记），开着的复查，日志。会话起点归底座（base/baseline.ts），记什么见 session.ts。
 // 都经底座存取（base/records.ts，文件在 .git/testpace/craft/ 下，所有 worktree 共用），这里只定记的是什么。
 // 用户过目同意的记录不在这里：归底座的用户确认（base/confirm.ts）。
 
@@ -43,14 +43,6 @@ export interface BehaviorRecord {
   at: number
 }
 
-export interface SessionRecord {
-  /** 会话开始时测试这一侧的样子。 */
-  fingerprint: string
-  /** 会话开始时清单命中的文件和改动记录的样子。 */
-  checklist?: string
-  at: number
-}
-
 /** 开着的复查（见 review.ts）：有这条就是复查中，结束时去掉。 */
 export interface ReviewRecord {
   at: number
@@ -60,20 +52,18 @@ export interface Store {
   proofs: ModuleRecords<ProofRecord>
   weaken: ModuleRecords<WeakenRecord>
   behavior: ModuleRecords<BehaviorRecord>
-  sessions: ModuleRecords<SessionRecord>
   reviews: ModuleRecords<ReviewRecord>
   /** 新日志的路径（底座只留最近的若干份）。 */
   logPath(name: string): string
 }
 
-const MODULE = 'craft'
+export const MODULE = 'craft'
 
 export function openStore(repo: Repo): Store {
   return {
     proofs: new ModuleRecords(repo.store, MODULE, 'proofs'),
     weaken: new ModuleRecords(repo.store, MODULE, 'weaken'),
     behavior: new ModuleRecords(repo.store, MODULE, 'behavior'),
-    sessions: new ModuleRecords(repo.store, MODULE, 'sessions'),
     reviews: new ModuleRecords(repo.store, MODULE, 'reviews'),
     logPath: name => repo.store.logPath(`${newRunId(Date.now())}-${name}`),
   }
