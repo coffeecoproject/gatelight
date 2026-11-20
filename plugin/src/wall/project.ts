@@ -60,6 +60,9 @@ export function layoutOf(project: Project, config: Config): Layout {
 /** 影响检查结果的文件：代码文件（含测试），JSON（配置、路径别名、包清单、小程序页面配置），Python 和 Go 的项目文件，SQL（迁移），小程序的模板和样式。 */
 const MATTERS = (path: string): boolean => isCode(path) || /\.(?:json|toml|sql|wxml|wxss)$/.test(path) || /(?:^|\/)go\.(?:mod|work)$/.test(path)
 
+/** contentKey 的算法的名字：算法变了要改它，会话起点里以前记的样子就不算了（见 base/baseline.ts）。 */
+export const CONTENT_FORMAT = 'content-1'
+
 /**
  * 当前内容的摘要：分叉点上的配置加上影响检查结果的文件。通过记录、会话起点都按它记。
  * 检查能不能过，和分叉点有关的只有那里的配置（放宽项和它比；R4、入口清单只是提示），所以不记分叉点的提交号：

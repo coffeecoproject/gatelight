@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { SessionBaselines } from '../src/base/baseline.ts'
 import { askUser, confirm, CONFIRM_TOOL, type ConfirmItem } from '../src/base/confirm.ts'
 import { effectiveIgnore, parseContract } from '../src/base/contract.ts'
 import { forkPoint } from '../src/base/git.ts'
@@ -429,5 +430,19 @@ describe('模块的记录', () => {
     assert.equal(notes.get('recent'), undefined)
     notes.put('again', { text: '再来', at: Date.now() })
     assert.equal(notes.get('again')?.text, '再来')
+  })
+})
+
+describe('会话起点', () => {
+  test('算法的名字换了，以前记的起点不算：当作没有，把现在的样子记成起点', () => {
+    const repo = openRepo(sampleRepo())
+    assert.ok(repo)
+    const old = new SessionBaselines<string>(repo, 'craft', 'look-1')
+    old.note('s1', () => 'before')
+    assert.equal(old.since('s1', 'now'), 'before')
+    // 换了算法：旧起点和新算出来的样子没法比
+    const next = new SessionBaselines<string>(repo, 'craft', 'look-2')
+    assert.equal(next.since('s1', 'now'), 'now')
+    assert.equal(next.since('s1', 'later'), 'now')
   })
 })

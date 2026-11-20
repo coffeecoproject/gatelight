@@ -3,11 +3,13 @@
 
 import type { Module } from '../base/module.ts'
 import { fullPart } from './full.ts'
-import { beforeEdit, brief } from './session.ts'
+import { beforeEdit, brief, onSession, unfinished } from './session.ts'
 
 export const wall: Module = {
   name: 'wall',
   brief,
+  onSession,
   beforeEdit,
+  unfinished,
   fullPart,
 }
