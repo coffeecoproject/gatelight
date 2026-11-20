@@ -1,4 +1,4 @@
-// testcraft 的命令：prove、weaken、checklist、check、status。命令入口（src/testcraft.ts）分发到这里。
+// testcraft 的命令：prove、weaken、checklist、review、check、status。命令入口（src/testcraft.ts）分发到这里。
 // 找仓库、存记录、让用户确认都用底座的；合并前的检查（check）是整组里的一段（见 full.ts），不用另外登记。
 
 import { readdirSync, readFileSync } from 'node:fs'
@@ -14,6 +14,7 @@ import { Copy } from './copy.ts'
 import { kindOf, testNames } from './files.ts'
 import { cachedVerdicts, guardsFor, namedTargets, prove, proofKey, proofKeys, proveTargets, type Target, type Verdict } from './prove.ts'
 import { readRecords } from './records.ts'
+import { missingChecks, reviewKey, reviewing } from './review.ts'
 import { openStore, type Store, type UserReview } from './store.ts'
 import { behaviorCheck, behaviorUnits, describe, explain, FOR_USER, REVIEW_HEADING, reviewItem, settled, staticSignals, userReview, weakenKey } from './weaken.ts'
 
@@ -23,6 +24,9 @@ const USAGE = `用法：
   testcraft weaken    放水检查：删测试、跳过、改测试配置和数据、改依赖和测试约定、旧版测试在新代码上跑不过，都要在这次的改动记录里写理由；
                       其中要给用户过目的几种，还要写一行给用户看的白话
   testcraft checklist 清单（.testcraft/checklist/）里这次改动命中的条目：每条要在改动记录的"## 清单"写一行怎么查的、结论
+  testcraft review start | done
+                      检查员复查的开始和结束。开始前这份改动要先跑过 prove、weaken（检查员要看输出）；复查中改测试不用重跑，
+                      收尾时也不催；问题都改完后 done，再各跑一次
   testcraft check     合并前的检查（testpace full 里的一段，接入了的仓库自动跑）：放水检查；放水里删测试、让测试不跑、程序的做法变了、
                       删了或放宽了清单条目这几种要用户过目同意（确认工具弹窗）；清单里命中的条目都写了怎么查的；这次新增、改了的测试都要证明能抓错
   testcraft status    这次改动的证明和放水检查情况、改动记录、清单命中的条目、暂定的规则`
@@ -187,6 +191,38 @@ function checklist(s: Snapshot): number {
   return missing.length || changed.problems.length || records.checkProblems.length ? EXIT.fail : EXIT.ok
 }
 
+/** 复查的开始和结束（见 review.ts）：只记状态、查记录，不跑测试。 */
+function review({ snapshot: s, store }: Opened, action: string | undefined): number {
+  const key = reviewKey(s)
+  const isOpen = reviewing(s, store)
+  if (action === 'start') {
+    if (isOpen) {
+      console.log('复查已经开着。')
+      return EXIT.ok
+    }
+    const missing = missingChecks(s, store)
+    if (missing.length) {
+      console.log(`复查前先跑一次，检查员要看输出。这份改动还缺：${missing.join('；')}。`)
+      return EXIT.fail
+    }
+    store.reviews.put(key, { at: Date.now() })
+    console.log('复查开始。复查中改测试不用重跑 testcraft prove、testcraft weaken，收尾时也不催；检查员提的问题都改完后，跑 testcraft review done。')
+    return EXIT.ok
+  }
+  if (action === 'done') {
+    if (!isOpen) {
+      console.log('没有开着的复查。')
+      return EXIT.ok
+    }
+    store.reviews.remove(key)
+    const missing = missingChecks(s, store)
+    console.log(missing.length ? `复查结束。复查中改过测试，现在补上：${missing.join('；')}。` : '复查结束。证明和放水检查的记录都还对得上，不用重跑。')
+    return EXIT.ok
+  }
+  console.error(`testcraft review 后面要写 start 或 done。\n${USAGE}`)
+  return EXIT.usage
+}
+
 async function proveCommand(paths: string[]): Promise<number> {
   const opened = snapshot()
   if (typeof opened === 'number') return opened
@@ -315,6 +351,7 @@ function status(): number {
       lines.push(`  ${proven ? '✓' : '·'} ${target.change.path}（${target.why}）${proven ? '' : '：还没证明（testcraft prove）'}`)
     }
   }
+  if (reviewing(s, store)) lines.push('复查：开着，停止时不催证明和放水检查（问题都改完后 testcraft review done）')
   lines.push(`这次的改动记录：${records.files.length ? records.files.join('、') : `没有（${CHANGES_DIR}/<分支名>.md）`}`)
   const base = baseChecklist(s)
   if (base.items.length) {
@@ -366,11 +403,13 @@ export async function main(argv: string[]): Promise<number> {
       return proveCommand(argv.slice(1))
     case 'weaken':
     case 'checklist':
+    case 'review':
     case 'check': {
       const opened = snapshot()
       if (typeof opened === 'number') return opened
       if (argv[0] === 'weaken') return (await weaken(opened)).code
       if (argv[0] === 'checklist') return checklist(opened.snapshot)
+      if (argv[0] === 'review') return review(opened, argv[1])
       return check(opened)
     }
     case 'status':
