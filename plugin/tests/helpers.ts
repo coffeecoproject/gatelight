@@ -2,7 +2,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -25,6 +25,16 @@ export function globalGitConfig(): string {
   return file
 }
 process.env.GIT_CONFIG_GLOBAL = globalGitConfig()
+
+// 家目录也换成测试自己的：固定命令入口放在 ~/.local/bin/testpace（base/entry.ts），会话说明要看它在不在、是不是这一版放的。
+// 测试不读也不改用户真实的那份；要测入口的测试另给一个家目录。测试起的命令（ENV）跟着用这个。
+// 这层隔离要比"会写家目录的代码"先落到默认分支（见 .testcraft/checklist/outside-repo-writes.md）。
+// npm 放在家目录里的两样（下载缓存、用户设置）接着用用户的：模块边界的测试真起 layermap，它在一个新的缓存目录里
+// 头一次跑要用 npm 装自己（tests/wall/helpers.ts 给的是临时目录）。缓存跟着家目录换掉的话，每个测试文件都整包重新下载。
+process.env.npm_config_cache ??= join(homedir(), '.npm')
+process.env.npm_config_userconfig ??= join(homedir(), '.npmrc')
+const testHome = mkdtempSync(join(tmpdir(), 'testpace-home-'))
+process.env.HOME = testHome
 
 // node:test 会把 NODE_TEST_CONTEXT 传给子进程，示例项目里的 node --test 看到它就跳过所有测试文件。
 // 插件数据目录也不带：测试不写真实的会话记录。Codex 的目录（CODEX_HOME，固定入口按它找 Codex 装的插件）也不带。
@@ -177,3 +187,4 @@ export function agent(cwd: string, script: string, env: NodeJS.ProcessEnv = {}):
 after(() => {
   for (const dir of [...dirs, globalConfigDir]) rmSync(dir, { recursive: true, force: true })
 })
+after(() => rmSync(testHome, { recursive: true, force: true }))
