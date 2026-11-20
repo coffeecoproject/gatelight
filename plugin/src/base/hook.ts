@@ -38,6 +38,20 @@ export function sessionBrief(label = '这个仓库', repo?: Repo): string {
   return [...modules().flatMap(module => module.brief?.(label, repo) ?? []), LANDING_RULE].join('\n')
 }
 
+/**
+ * 会话碰到了这个工作区：让各模块记下自己要记的（会话起点，见 baseline.ts）。会话开始、每条命令之前、每次改文件之前都来，
+ * 模块只记第一次。哪个模块出错不挡别的，也不挡会话说明。
+ */
+function noteSession(repo: Repo, sessionId: string): void {
+  for (const module of modules()) {
+    try {
+      module.onSession?.(repo, sessionId)
+    } catch {
+      // 记不下只是停止门少一个参照，不挡 agent
+    }
+  }
+}
+
 /** 新仓库最多这么多个提交：还没接入时，会话开始就提出接入。老仓库要先改造，不在这里提。 */
 export const NEW_REPO_COMMITS = 20
 
@@ -104,6 +118,7 @@ function untoldRepos(command: string, cwd: string, sessionId: string, now: numbe
   const untold: Array<{ repo: Repo; state: SessionState }> = []
   for (const repo of repos) {
     const state = repo.store.session(sessionId, now, () => defaultTips(repo))
+    noteSession(repo, sessionId)
     if (!state.rhythm) untold.push({ repo, state })
   }
   return untold
@@ -164,6 +179,7 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
     for (const repo of repos) {
       const state = repo.store.session(sessionId, now, () => defaultTips(repo))
       repo.store.saveSession(sessionId, { ...state, rhythm: true })
+      noteSession(repo, sessionId)
     }
     noteSessionRepos(sessionId, repos.map(repo => repo.root), now)
     const context = [
@@ -180,6 +196,7 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
     const target = editTarget(cwd, input.tool_input?.file_path)
     if (!target) return undefined
     // 改之前先记起点：先用改文件的工具改、后来才在这个工作区跑命令的，起点也得是改之前的样子
+    noteSession(target.repo, sessionId)
     const reason = editRefusal(target)
     return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : undefined
   }
