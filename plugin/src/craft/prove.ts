@@ -123,30 +123,38 @@ export function namedTargets(s: Snapshot, paths: string[]): Target[] | { problem
   return targets
 }
 
-/** 证明一要换回旧版的文件：这次改了的、不属于测试这一侧，也不是依赖、测试配置和测试约定的。 */
+/** 证明一要换回旧版的文件：这次改了的、不属于测试这一侧，也不是依赖、测试配置和测试约定的。改动记录和清单是给人看的文字，不影响测试，不换。 */
 export function revertSet(s: Snapshot): Changed[] {
   return s.changes.filter(
     change =>
       !onTestSide(change) &&
       !ignoredChange(s, change) &&
-      !['deps', 'lock', 'testConfig', 'contract', 'record'].includes(change.kind) &&
+      !['deps', 'lock', 'testConfig', 'contract', 'record', 'checklist'].includes(change.kind) &&
       !s.contractFiles.has(change.path),
   )
 }
 
 /**
- * 证明记录的 key：这个测试文件、改了的测试辅助文件和测试数据、证明一里换回旧版的那些文件（revertSet，和实际换的是同一批）、守的代码。
+ * 证明记录的 key：这个测试文件、改了的测试辅助文件和测试数据、证明一里换回旧版的那些文件（revertSet，和实际换的是同一批）、守的代码，
+ * 各自在分叉点上和现在的内容；再加上哪些换回了旧版、用哪条命令跑。
  * 别的测试文件不算，改了不用重证。文档这类不影响测试的文件，项目写进 testpace.json 的 ignore 就不换回、也不算。
+ * 不带分叉点是哪个提交：默认分支往前走了，这些文件原来的样子没变的，不用重证。
  */
 export function proofKey(s: Snapshot, target: Target, guards: Guard[]): string {
   const paths = new Set<string>([target.change.path])
+  if (target.change.oldPath) paths.add(target.change.oldPath)
   const reverted = revertSet(s)
+  const used: Array<[string, string, string | undefined, boolean]> = []
   for (const change of s.changes) {
     const support = [change.kind, change.oldKind].some(kind => kind === 'helper' || kind === 'data')
-    if (support || reverted.includes(change)) paths.add(change.path)
+    const back = reverted.includes(change)
+    if (!support && !back) continue
+    paths.add(change.path)
+    if (change.oldPath) paths.add(change.oldPath)
+    used.push([change.status, change.path, change.oldPath, back])
   }
   for (const guard of guards) paths.add(guard.path)
-  return contentKey(s.root, s.base, paths, 'prove-5', JSON.stringify(guards.map(g => [g.test, g.path, g.name])))
+  return contentKey(s.root, s.base, paths, 'prove-6', s.filesCommand ?? '', JSON.stringify(used), JSON.stringify(guards.map(g => [g.test, g.path, g.name])))
 }
 
 /** 这个测试现在的证明记录的 key：重新看一遍改动和改动记录。写记录之前核对用；看不了时为空（对不上任何 key）。 */

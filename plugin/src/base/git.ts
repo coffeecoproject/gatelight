@@ -223,6 +223,24 @@ export function fileAt(root: string, rev: string, path: string): string | undefi
   return blobAt(root, rev, path)?.toString('utf8')
 }
 
+/**
+ * 提交（或分支）里这些文件各自内容的标识（git 的 blob id，内容一样就一样）；那里没有的文件不在结果里。一次取完，不按文件各起一次 git。
+ * git 跑不成（比如没有这个提交）就报错，不当成"那里没有这些文件"：按内容记的结论靠它分辨原来的样子变没变。
+ */
+export function blobIdsAt(root: string, rev: string, paths: string[]): Map<string, string> {
+  const ids = new Map<string, string>()
+  if (paths.length === 0) return ids
+  // -z：路径原样输出，不转义中文。每条是 "<模式> <类型> <id>\t<路径>"
+  const out = git(root, ['ls-tree', '-z', rev, '--', ...paths])
+  for (const entry of out.split('\0')) {
+    const tab = entry.indexOf('\t')
+    if (tab < 0) continue
+    const [, type, id] = entry.slice(0, tab).split(' ')
+    if (type === 'blob' && id) ids.set(entry.slice(tab + 1), id)
+  }
+  return ids
+}
+
 /** 提交（或分支）里这个目录下的全部文件（路径相对仓库根目录）；没有这个目录时为空。 */
 export function filesAt(root: string, rev: string, dir: string): string[] {
   // -z：路径原样输出，不转义中文
