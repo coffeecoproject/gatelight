@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { fullReasons, type LayermapCheck, outsideNote, parseCheck, parseUntested, select, type Untested } from '../src/pace/focused.ts'
+import { fullReasons, type LayermapCheck, NEARBY_RANK, outsideNote, parseCheck, parseUntested, select, type Untested } from '../src/pace/focused.ts'
 import { matcher } from '../src/base/glob.ts'
 import { commit, ENV, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
 
@@ -14,6 +14,32 @@ describe('选测', () => {
   // 整组的测试：tests 规则在工作区里找到的，已删除的不在里面
   const suite = new Set(['t/a.test.ts', 't/b.test.ts', 't/s.test.ts', 't/c.test.ts', 'tests/a.test.ts'])
   const inRules = (path: string): boolean => /^(t|tests)\/.*\.test\.ts$/.test(path)
+
+  test('在分支上只选直接相关的（rank 3 以下）：同目录、可能经支持文件用到、间接导入的不选，记成留给合并的；这次改到的测试文件照样选', () => {
+    const selection = select(
+      check({
+        files: [
+          { path: 'src/a.ts', status: 'MODIFIED' },
+          { path: 't/c.test.ts', status: 'MODIFIED' },
+        ],
+        tests: [
+          { path: 't/a.test.ts', rank: 0, why: 'calls a' },
+          { path: 'tests/a.test.ts', rank: 2, why: 'imports src/a.ts' },
+          { path: 't/b.test.ts', rank: 3, why: 'same directory' },
+          { path: 't/s.test.ts', rank: 3.5, why: 'may use it through t/support.ts' },
+          { path: 't/c.test.ts', rank: 4, why: 'imports' },
+        ],
+      }),
+      () => false,
+      suite,
+      inRules,
+      NEARBY_RANK,
+    )
+    assert.equal(selection.kind, 'selected')
+    if (selection.kind !== 'selected') return
+    assert.deepEqual([...selection.tests].sort(), ['t/a.test.ts', 't/c.test.ts', 'tests/a.test.ts'])
+    assert.equal(selection.indirect, 2)
+  })
 
   test('选 rank 4 以下（含 3.5）而且在整组里的测试文件', () => {
     const selection = select(
@@ -328,6 +354,26 @@ describe('testpace focused', () => {
     assert.match(r.out, /layermap 出错了：layermap: map build failed/)
     // 装了但出错：不提示去装
     assert.doesNotMatch(r.out, /装上 layermap 插件/)
+  })
+
+  test('在分支上只跑直接相关的测试：同目录那一档不跑，说明留给合并时的整组；在默认分支上照旧跑', () => {
+    const nearby = check({
+      files: [{ path: 'src/format.mjs', status: 'MODIFIED' }],
+      tests: [
+        { path: 'tests/format.test.mjs', rank: 0, why: 'calls yuan' },
+        { path: 'tests/price.test.mjs', rank: 3, why: 'same directory' },
+      ],
+    })
+    const repo = sampleRepo()
+    const onMain = testpace(repo, ['focused'], fakeLayermap(nearby).env)
+    assert.equal(onMain.code, 0, onMain.out)
+    assert.match(onMain.out, /相关测试 2 个/)
+
+    sh(repo, 'git checkout -qb feature')
+    const r = testpace(repo, ['focused'], fakeLayermap(nearby).env)
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /相关测试 1 个（对比 [0-9a-f]{10}；另有 1 个只是同模块或间接相关，留给合并时的整组）：\n {2}tests\/format\.test\.mjs\n相关测试通过/)
+    assert.deepEqual(runs(repo).at(-1)!.files, ['tests/format.test.mjs'])
   })
 
   test('在分支上选测靠不住时不建议现在跑整组，退出码 0；合并时的整组会覆盖', () => {

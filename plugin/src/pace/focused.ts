@@ -7,10 +7,13 @@ import { layermap, type LayermapFailure, tooOld } from '../base/layermap.ts'
 
 /**
  * layermap 的 rank：0 到 1 以下调用改动，1 是改动里的测试，2 直接导入改动，3 同模块或同目录，
- * 3.5 可能通过测试支持文件或类型不明的对象用到，4 间接导入。4 以下都跑；4 不选。
+ * 3.5 可能通过测试支持文件或类型不明的对象用到，4 间接导入。
+ * 在默认分支上 4 以下都跑（INDIRECT_RANK）。在分支上只跑直接相关的，3 以下（NEARBY_RANK）：同模块、同目录、
+ * 可能经支持文件用到的那些常常是小半个整组，留给合回默认分支时的整组——开发要轻，合并兜底。
  * 选得准不准不看 rank，看选出的测试跑不跑得到每处改动（untested）。
  */
 export const INDIRECT_RANK = 4
+export const NEARBY_RANK = 3
 
 /** layermap check --json 里 testpace 用到的部分。 */
 export interface LayermapCheck {
@@ -36,7 +39,7 @@ export type Selection =
       /** 改动只涉及 ignore 路径和整组不跑的测试（规则外的、删掉的），也没有整组的测试和它们相关：不用跑测试。 */
       nothingToTest: boolean
       tests: string[]
-      /** 整组里间接导入改动、没选上的测试文件数。 */
+      /** 整组里和改动有关、却没选上的测试文件数（间接导入的；在分支上还有同模块、同目录、可能经支持文件用到的）。 */
       indirect: number
       /** layermap 认为相关、但不在 tests 规则里的测试文件，没选。 */
       outside: string[]
@@ -66,15 +69,17 @@ export function parseUntested(value: unknown): Untested | undefined {
  * 从 layermap 的结果里选要跑的测试文件。suite 是整组的测试（tests 规则在工作区里找到的，和整组同一份），
  * inRules 判断路径在不在 tests 规则里（删掉的文件不在 suite 里，用它认出删掉的是不是整组的测试）。
  * 选 layermap 给的相关测试里在整组的，再加上这次改到、在整组里的测试文件（不按惯例命名的 layermap 认不出）。
+ * limit 是选到哪一档为止（不含）：默认分支上是 INDIRECT_RANK，分支上是 NEARBY_RANK。
  */
 export function select(
   check: LayermapCheck,
   isIgnored: (path: string) => boolean,
   suite: ReadonlySet<string>,
   inRules: (path: string) => boolean,
+  limit: number = INDIRECT_RANK,
 ): Selection {
   const changed = check.files.map(file => file.path)
-  const related = check.tests.filter(test => test.rank < INDIRECT_RANK).map(test => test.path)
+  const related = check.tests.filter(test => test.rank < limit).map(test => test.path)
   const tests = [...new Set([...related, ...changed])].filter(path => suite.has(path))
   const outside = [...new Set(related.filter(path => !suite.has(path)))]
   // 整组不跑的测试的改动，和 ignore 路径一样不用测：layermap 当成测试、规则又不收的（规则排除的测试、练习脚本），
@@ -88,7 +93,7 @@ export function select(
     changed,
     nothingToTest: tests.length === 0 && changed.every(path => isIgnored(path) || notRun.has(path)),
     tests,
-    indirect: new Set(check.tests.filter(test => test.rank >= INDIRECT_RANK && suite.has(test.path) && !tests.includes(test.path)).map(test => test.path)).size,
+    indirect: new Set(check.tests.filter(test => test.rank >= limit && suite.has(test.path) && !tests.includes(test.path)).map(test => test.path)).size,
     outside,
     // ignore 里的文件约定不影响测试，地图跟不到它们也无妨
     unmapped: check.unmapped.filter(file => !isIgnored(file.path)),
@@ -147,6 +152,7 @@ export function askLayermap(
   isIgnored: (path: string) => boolean,
   suite: ReadonlySet<string>,
   inRules: (path: string) => boolean,
+  limit: number = INDIRECT_RANK,
 ): Selection {
   const unavailable = (failure: LayermapFailure): Selection =>
     failure.kind === 'missing' ? { kind: 'unavailable', reason: '找不到 layermap 命令，没法按改动选测试', missing: true } : { kind: 'unavailable', reason: failure.problem }
@@ -155,7 +161,7 @@ export function askLayermap(
   if (!first.ok) return unavailable(first)
   const check = parseCheck(first.value)
   if (!check) return unavailable(tooOld())
-  const selection = select(check, isIgnored, suite, inRules)
+  const selection = select(check, isIgnored, suite, inRules, limit)
   if (selection.kind === 'selected' && selection.tests.length > 0) {
     const second = layermap(root, [...args, ...selection.tests])
     if (!second.ok) return unavailable(second)

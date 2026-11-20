@@ -1,5 +1,5 @@
 // 停止门：agent 要结束这一轮时，这个会话起的整组还在跑、或跑完还没看结果，就拦一次。
-// 各模块在这个会话里还没处理完的事（module.ts 的 unfinished，比如改了代码还没有 modwall check 的通过记录），每件也拦一次。
+// 只有这一种拦截：分支上开发时不设别的门，把关集中在合回默认分支那一步。
 // 每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里，不靠 agent 给的 stop_hook_active：
 // 有的 agent 不给或总是 false，靠它会反复拦。
 // 谁起的整组看记录里的会话号（testpace full 从命令环境里 agent 的会话号记下，见 agent.ts）；
@@ -56,26 +56,9 @@ export function stopCheck(input: StopInput): StopResult {
     result.block = `这个会话${input.named ? `在 ${repo.root} ` : ''}${verb}的整组已经结束（${outcome}），还没看结果。先跑 testpace status 看结果，再收尾。`
   }
 
-  // 各模块在这个会话里还没处理完的事（比如认出的时好时坏测试）：每件拦一次，免得一句带过
-  const moduleProblems: string[] = []
-  for (const module of modules()) {
-    if (result.block) break
-    let left: ReturnType<NonNullable<typeof module.unfinished>>
-    try {
-      left = module.unfinished?.(repo, input.sessionId, blocked, input.named === true)
-    } catch (error) {
-      // 一个模块出错不挡别的检查，但要让人看得到
-      moduleProblems.push(`testpace：停止门里"${module.name}"这一项检查出错，这次没查它（${(error as Error).message.split('\n')[0]}）。`)
-      continue
-    }
-    if (!left) continue
-    blocked.push(...left.keys)
-    result.block = left.text
-  }
-
   // 没经过合并门的落地：默认分支在这个会话里有了新提交，却没有整组通过记录
   const warned = [...session.warned]
-  const warns: string[] = [...moduleProblems]
+  const warns: string[] = []
   for (const [ref, commit] of Object.entries(defaultTips(repo))) {
     if (commit === session.tipsAtStart[ref] || warned.includes(commit)) continue
     const tip = refTip(repo.root, ref)

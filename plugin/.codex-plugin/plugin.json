@@ -1,6 +1,6 @@
 {
   "name": "gatelight",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Gates for coding agents: tests actually ran before code lands, code stays inside its module boundaries, plus test-writing conventions and a change-triggered checklist",
   "author": {
     "name": "coffeecoproject"
