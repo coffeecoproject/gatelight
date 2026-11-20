@@ -1,6 +1,7 @@
 // "模块边界"说给 agent 的话，经底座的钩子送出去（base/module.ts 的 brief、onSession、unfinished、beforeEdit）：
 //   会话说明    模块列表、各模块的职责和写法约定（用库的应用加上数据库的约定）；记下这时内容的样子（会话起点，底座存，见 base/baseline.ts）
-//   改文件之前  只做最轻的路径检查：目标是代码文件又没有归属（R5），新建和修改都拒绝，附上改法
+//   改文件之前  只做看路径、看要写的文字就能判断的事：目标是代码文件又没有归属（R5），新建和修改都拒绝，附上改法；
+//               要写进去的新文字里用相对路径直接引用了别的模块的内部文件（R1 的一部分，见 edit.ts），也拒绝
 //   停止门      不跑检查（钩子进程里 layermap 首次建图可能超过时限）：这个会话改过代码或配置（和起点比，没有起点的不算）、
 //               当前内容又没有 modwall check 的通过记录时拦一次，让 agent 用 Bash 跑 modwall check。
 //               同一份内容只拦一次（记号里带着内容的样子）：改了以后还没有通过记录，再拦。
@@ -13,6 +14,7 @@ import { CONFIRM_TOOL } from '../base/confirm.ts'
 import { fileNow, isIgnored } from '../base/git.ts'
 import type { Repo } from '../base/repo.ts'
 import { type App, CONFIG_PATH, joined, readConfig, type Scheme, schemeOf } from './config.ts'
+import { entryBypass } from './edit.ts'
 import { isCode, unreadDirectory } from './files.ts'
 import { type Layout, type Module, ownerIn } from './layout.ts'
 import { CONTENT_FORMAT, contentKey, layoutOf, openProject } from './project.ts'
@@ -176,7 +178,7 @@ function firstTwo(text: string): string {
  * 交给 modwall check；路径重叠、map 指向不存在的模块这类要看全部文件才知道的配置错误，这里不查，照路径判断归属。
  * 看的是工作区里现在的配置：这只是提前提醒，放宽配置躲不过 modwall check（放宽项要用户同意）。
  */
-export function beforeEdit(repo: Repo, path: string): string | undefined {
+export function beforeEdit(repo: Repo, path: string, text?: string): string | undefined {
   if (!isCode(path)) return undefined
   // LayerMap 不读的目录里被 git 忽略的文件（装依赖生成的 node_modules 这类）不在检查范围里，和文件清单一致
   if (unreadDirectory(path) !== undefined && isIgnored(repo.root, path)) return undefined
@@ -184,7 +186,8 @@ export function beforeEdit(repo: Repo, path: string): string | undefined {
   if (!loaded.config) return undefined
   const scheme = schemeOf(loaded.config)
   const owner = ownerIn(scheme, path)
-  if (owner.kind !== 'none') return undefined
+  // 有归属的：再看要写进去的新文字里有没有绕过入口引用别的模块的内部文件（edit.ts）
+  if (owner.kind !== 'none') return text === undefined ? undefined : entryBypass(scheme, path, owner, text)
   const { where, fix } = unownedText(scheme, path, owner)
   const reason = owner.unread ? fix : `代码文件要${fix}新功能默认在${scheme.grouped ? '所在应用的' : ''}模块根目录下新建一个模块目录，不用登记。`
   return `modwall（R5 文件没有归属）：${where}。${reason}`

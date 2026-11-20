@@ -70,7 +70,7 @@ codex plugin add gatelight@gatelight
 
 同一个插件里的第三项检查，管代码有没有越界：项目分成模块、共享层和装配层，要别的模块的能力只能走它的入口，模块之间不能成环，依赖方向不能反，代码文件要有归属；用 Postgres 的项目，数据库也按模块分 schema。代码里的 import 和调用来自 [layermap](https://github.com/coffeecoproject/layermap)（0.1.48 以上），没有它检查算没做完、不算通过。
 
-仓库里有 `.modwall/` 目录才启用。启用后会话开始时说明模块列表和写法约定，agent 改没有归属的代码文件之前就被拦下，`testpace full` 在最前面跑一次 `modwall check`，不用另外登记。放宽规则（加例外、扩大共享层、删模块根目录、删配置等）要你在弹窗里同意，同意按项记。库里的现状由项目在整组里跑完迁移后用 `modwall db check --psql "<执行 SQL 的命令>"` 查。接入步骤见 [plugin/skills/setup-modwall/SKILL.md](plugin/skills/setup-modwall/SKILL.md)（`gatelight:setup-modwall` 技能），写法约定见 `gatelight:modular`。`examples/wall-sample` 是它的示例项目。
+仓库里有 `.modwall/` 目录才启用。启用后会话开始时说明模块列表和写法约定，agent 改没有归属的代码文件、或者要写进绕过入口的引用之前就被拦下，`testpace full` 在最前面跑一次 `modwall check`，不用另外登记。放宽规则（加例外、扩大共享层、删模块根目录、删配置等）要你在弹窗里同意，同意按项记。库里的现状由项目在整组里跑完迁移后用 `modwall db check --psql "<执行 SQL 的命令>"` 查。接入步骤见 [plugin/skills/setup-modwall/SKILL.md](plugin/skills/setup-modwall/SKILL.md)（`gatelight:setup-modwall` 技能），写法约定见 `gatelight:modular`。`examples/wall-sample` 是它的示例项目。
 
 它原来是单独的 modwall 插件，换成这一版时把旧插件卸掉：
 
@@ -171,7 +171,7 @@ git config --global --unset-all testpace.check
 - **整组里的检查**：仓库里有 `.modwall/`、`.testcraft/` 时，`testpace full` 先跑 `modwall check`、`testcraft checklist`，再跑 `full` 和全部测试：检查便宜，有一段没过就不往下跑、不算整组通过，合并门照常拦。它们随插件一起装，不在仓库里也不在本机配置里登记；分支上删掉 `.modwall/`、`.testcraft/` 躲不过（默认分支上有就算接入）。
 - **用户确认**（确认工具 `confirm_with_user`）：要你同意的改动，检查把它们按编号存好，agent 调这个工具弹窗给你看，你点了同意才记下；agent 自己说"用户同意了"不算。同意按项记（哪项检查的、改之前是什么、改成什么、你看到的文字），同意过的那一项没再变就不再问。
 - **停止门**（agent 的 Stop hook）：启用了 modwall 的仓库里，这个会话改了代码或配置、当前内容却没有 `modwall check` 的通过记录，同一份内容拦一次（架构要严：越界在分支上就查出来，不等到合并）。这个会话起的整组（按 agent 给命令带的会话号认，别的会话和终端里起的不算）还在跑，或这个会话还没看过结果（`testpace status`，或在前台等到了 `testpace full` 的输出，通过、失败都算），拦一次。每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里。本地默认分支或 `origin` 上的默认分支在会话里有了没有通过记录的提交时，提示用户。会话从仓库外开始的，也查它碰过的仓库。
-- **改文件之前**（agent 的 hook，只在 Claude Code 里）：启用了 modwall 的仓库里，agent 要新建或修改一个没有归属的代码文件时直接拒绝，附上该放哪。只看路径；用命令行改文件绕得过这一步，结束前和合并前的 `modwall check` 照样查出来。
+- **改文件之前**（agent 的 hook，只在 Claude Code 里）：启用了 modwall 的仓库里，agent 要新建或修改一个没有归属的代码文件时直接拒绝，附上该放哪；要写进文件的新文字里用相对路径直接引用了别的模块的内部文件（TypeScript、JavaScript），也直接拒绝，附上改法。只看路径；用命令行改文件绕得过这一步，结束前和合并前的 `modwall check` 照样查出来。
 - **软提示**（agent 的 hook）：会话开始时说明测试节奏（上一节），会话从仓库外开始的，第一次在仓库里执行命令时补说，压缩、恢复后再说一次；agent 直接跑 `full` 配置的命令时，提示它只是整组的一部分、不留记录，改用 `testpace full`。
 
 记录放在仓库的 `.git/testpace/`（所有 worktree、Claude Code 和 Codex 共用）：`runs.jsonl` 每次运行一行（记着哪个 agent、哪一版 testpace 跑的），`logs/` 是完整输出，`running/` 是每个工作区正在跑的命令（或借用着它的工具），`sessions/` 是各会话的状态，`flaky/` 是时好时坏的测试名单（一个测试一份），`rounds/` 是各工作区里测试连着几轮没过，`confirm/` 是等你确认的和你同意过的，`craft/` 是 testcraft 的证明、放水检查记录，`wall/` 是 modwall 的通过记录。

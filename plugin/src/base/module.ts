@@ -61,9 +61,10 @@ export interface Module {
   beforeCommand?(command: string, cwd: string): string | undefined
   /**
    * 改文件之前：agent 要用改文件的工具新建或修改这个仓库里的 path（相对仓库根目录）。返回原因就拒绝这次改动，
-   * 话里要说清怎么改。每次改文件都会问，只做看路径就能判断的事。
+   * 话里要说清怎么改。每次改文件都会问，只做看路径、看要写的文字就能判断的事。text 是这次要写进文件的新文字
+   *（整份内容，或替换进去的那几段），拿不到时没有。
    */
-  beforeEdit?(repo: Repo, path: string): string | undefined
+  beforeEdit?(repo: Repo, path: string, text?: string): string | undefined
 
   /**
    * 停止门：这个会话在这个仓库里还有没处理完的事。keys 是这几件事各自的记号，底座记下拦过的，每件只拦一次
