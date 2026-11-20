@@ -11,7 +11,7 @@ import { HOOK_COMMAND } from '../src/base/gate.ts'
 import { handle } from '../src/base/hook.ts'
 import { byRunner } from '../src/pace/report.ts'
 import type { PaceRun } from '../src/pace/record.ts'
-import { compareVersions, VERSION } from '../src/base/version.ts'
+import { compareVersions, PLUGIN_NAME, VERSION } from '../src/base/version.ts'
 import { BIN_DIR, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
 
 const PLUGIN = fileURLToPath(new URL('..', import.meta.url))
@@ -222,23 +222,23 @@ describe('固定命令入口', () => {
     assert.match(testpace(repo, ['status'], env).out, /固定命令入口（.+）：已放好/)
 
     const fake = (base: string, version: string, complete = true): void => {
-      const bin = join(base, 'testpace', version, 'bin')
+      const bin = join(base, PLUGIN_NAME, version, 'bin')
       mkdirSync(bin, { recursive: true })
       writeFileSync(join(bin, 'testpace'), `#!/bin/sh\necho "${base.includes('.codex') ? 'codex' : 'claude'} ${version} $*"\n`, { mode: 0o755 })
       if (complete) {
-        mkdirSync(join(base, 'testpace', version, 'src'), { recursive: true })
-        writeFileSync(join(base, 'testpace', version, 'src', 'cli.ts'), '')
+        mkdirSync(join(base, PLUGIN_NAME, version, 'src'), { recursive: true })
+        writeFileSync(join(base, PLUGIN_NAME, version, 'src', 'cli.ts'), '')
       }
     }
     const run = (extra: NodeJS.ProcessEnv = {}) => spawnSync(entry, ['status'], { env: { ...env, ...extra }, encoding: 'utf8' })
     const none = run()
     assert.equal(none.status, 2, '找不到装着的插件：退出码 2（配置问题）')
-    assert.match(none.stderr, /没找到装着的、完整的 testpace 插件/)
+    assert.match(none.stderr, /没找到装着的、完整的 gatelight 插件/)
     // Claude Code 只认安装记录里的：卸载、降级后缓存里留下的旧目录不算
     const claudeCache = join(home, '.claude', 'plugins', 'cache', 'm')
     const record = join(home, '.claude', 'plugins', 'installed_plugins.json')
     const claudeInstalls = (version: string): void =>
-      writeFileSync(record, JSON.stringify({ version: 2, plugins: { 'testpace@m': [{ scope: 'user', installPath: join(claudeCache, 'testpace', version), version }] } }, null, 2))
+      writeFileSync(record, JSON.stringify({ version: 2, plugins: { [`${PLUGIN_NAME}@m`]: [{ scope: 'user', installPath: join(claudeCache, PLUGIN_NAME, version), version }] } }, null, 2))
     fake(claudeCache, '0.9.0')
     fake(claudeCache, '0.10.0')
     assert.equal(run().status, 2, '没有安装记录：缓存里有也算没装')
@@ -262,14 +262,54 @@ describe('固定命令入口', () => {
     assert.equal(readFileSync(entry, 'utf8'), '#!/bin/sh\necho 别的工具\n')
   })
 
-  test('两份插件清单版本一致；Codex 的 marketplace 指向 plugin 目录', () => {
+  test('会话开始时：旧版本放的入口换成这一版的；没放过的不放；同名的别的文件不动', () => {
+    const home = tempDir('testpace-home-')
+    const entry = join(home, '.local', 'bin', 'testpace')
+    const current = readFileSync(join(PLUGIN, 'entry', 'testpace'), 'utf8')
+    withEnv({ CLAUDE_PLUGIN_DATA: tempDir('testpace-data-'), HOME: home, GIT_CONFIG_GLOBAL: globalGitConfig() }, () => {
+      const repo = sampleRepo()
+      const start = (session: string): unknown => handle({ hook_event_name: 'SessionStart', session_id: session, cwd: repo }, Date.now(), 'claude')
+      start('e1')
+      assert.equal(existsSync(entry), false, '没放过：放是全局安装，要用户同意后跑 testpace install')
+
+      // 改名之前的版本放的：按旧名字找插件，找不到装着的那份
+      mkdirSync(join(home, '.local', 'bin'), { recursive: true })
+      writeFileSync(entry, '#!/bin/sh\n# testpace 固定入口：旧版本放的\nexit 2\n', { mode: 0o755 })
+      start('e2')
+      assert.equal(readFileSync(entry, 'utf8'), current)
+      // 会话不在接入了的仓库里也更新：入口是这台机器的，不是哪个仓库的
+      writeFileSync(entry, '#!/bin/sh\n# testpace 固定入口：旧版本放的\nexit 2\n', { mode: 0o755 })
+      handle({ hook_event_name: 'SessionStart', session_id: 'e3', cwd: home }, Date.now(), 'claude')
+      assert.equal(readFileSync(entry, 'utf8'), current)
+
+      writeFileSync(entry, '#!/bin/sh\necho 别的工具\n')
+      start('e4')
+      assert.equal(readFileSync(entry, 'utf8'), '#!/bin/sh\necho 别的工具\n')
+
+      // 写不进去（只读）：入口还是旧的，会话说明照常给
+      rmSync(entry)
+      writeFileSync(entry, '#!/bin/sh\n# testpace 固定入口：旧版本放的\nexit 2\n', { mode: 0o555 })
+      const told = start('e5') as Output
+      assert.match(String(told?.hookSpecificOutput?.additionalContext), /用 testpace 管测试节奏/)
+      assert.match(readFileSync(entry, 'utf8'), /旧版本放的/)
+    })
+  })
+
+  test('两份插件清单版本一致；插件的名字各处一样（两份市场清单、确认工具所在的服务）；Codex 的 marketplace 指向 plugin 目录', () => {
     const claude = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8'))
     const codex = JSON.parse(readFileSync(join(PLUGIN, '.codex-plugin', 'plugin.json'), 'utf8'))
     assert.equal(codex.version, claude.version)
+    assert.equal(claude.name, 'gatelight')
     assert.equal(codex.name, claude.name)
+    assert.equal(PLUGIN_NAME, claude.name)
+    // agent 看到的确认工具全名里带着插件名和服务名：服务名和插件名一样，提示里说"调用 <插件名> 的工具"才对得上
+    const mcp = JSON.parse(readFileSync(join(PLUGIN, '.mcp.json'), 'utf8'))
+    assert.deepEqual(Object.keys(mcp.mcpServers), [claude.name])
+    const claudeMarket = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'marketplace.json'), 'utf8'))
+    assert.deepEqual(claudeMarket.plugins.map((p: { name: string; source: unknown }) => [p.name, p.source]), [[claude.name, './plugin']])
     assert.equal(codex.hooks, './hooks/codex.json')
     assert.equal(codex.skills, './skills/')
     const market = JSON.parse(readFileSync(join(ROOT, '.agents', 'plugins', 'marketplace.json'), 'utf8'))
-    assert.deepEqual(market.plugins.map((p: { name: string; source: unknown }) => [p.name, p.source]), [['testpace', { source: 'local', path: './plugin' }]])
+    assert.deepEqual(market.plugins.map((p: { name: string; source: unknown }) => [p.name, p.source]), [[claude.name, { source: 'local', path: './plugin' }]])
   })
 })

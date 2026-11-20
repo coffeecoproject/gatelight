@@ -1,17 +1,17 @@
 {
-  "name": "testpace",
-  "version": "0.9.0",
-  "description": "Test pacing for coding agents: run the tests a change reaches while working, prove the full suite passed before landing, and record where test time goes",
+  "name": "gatelight",
+  "version": "0.10.0",
+  "description": "Three gates for coding agents: tests actually ran before code lands, tests actually catch mistakes, and code stays inside its module boundaries",
   "author": {
     "name": "coffeecoproject"
   },
   "license": "MIT",
-  "keywords": ["testing", "test selection", "merge gate", "coding agent"],
+  "keywords": ["testing", "test selection", "merge gate", "test quality", "module boundaries", "coding agent"],
   "hooks": "./hooks/codex.json",
   "skills": "./skills/",
   "interface": {
-    "displayName": "testpace",
-    "shortDescription": "Test pacing and a merge gate for coding agents",
+    "displayName": "gatelight",
+    "shortDescription": "Three gates for coding agents: tests ran, tests catch mistakes, code stays in bounds",
     "developerName": "coffeecoproject",
     "category": "Developer Tools"
   }

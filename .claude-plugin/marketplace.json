@@ -1,14 +1,14 @@
 {
-  "name": "testpace",
-  "description": "testpace：agent 开发时按改动选测试、落地前程序确认整组通过、记录测试耗时",
+  "name": "gatelight",
+  "description": "gatelight：agent 写代码时查三件事：测试跑了没有、测试是不是真的在查、代码有没有越界",
   "owner": {
     "name": "coffeecoproject"
   },
   "plugins": [
     {
-      "name": "testpace",
+      "name": "gatelight",
       "source": "./plugin",
-      "description": "agent 开发时按改动选测试、落地前确认整组通过、记录测试耗时"
+      "description": "agent 写代码时查三件事：测试跑了没有、测试是不是真的在查、代码有没有越界"
     }
   ]
 }

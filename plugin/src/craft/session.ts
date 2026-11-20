@@ -19,10 +19,10 @@ import { behaviorUnits, staticSignals, testFingerprint, weakenKey } from './weak
 export function guide(label = '这个仓库'): string[] {
   return [
     `${label}用 testcraft 管测试的写法（.testcraft/）：`,
-    '1. 小改动（文字、样式、注释、显示用的配置）不写测试。改到规则（钱、权限、数据、业务判断）时照 testpace:write-tests 技能写：每个测试守一条规则，测试名用白话写这条规则；钱、权限、数据测透，别的点到为止；修 bug 先写能重现它的测试。还在试的规则不写正式测试。',
+    '1. 小改动（文字、样式、注释、显示用的配置）不写测试。改到规则（钱、权限、数据、业务判断）时照 gatelight:write-tests 技能写：每个测试守一条规则，测试名用白话写这条规则；钱、权限、数据测透，别的点到为止；修 bug 先写能重现它的测试。还在试的规则不写正式测试。',
     '2. 新增的测试，跑 testcraft prove 证明它能抓错。',
     `3. 删测试、跳过测试、改期望值或断言、改测试配置或测试约定，在 .testcraft/changes/<分支名>.md 的"## 放水理由"写明理由，跑 testcraft weaken。改已定的业务规则先用白话问用户；其中删测试、让测试不跑、程序的做法变了、删改清单条目这几处，还要在"## 给用户过目"按文件写一行白话（原来守什么、现在守什么、为什么改），合并前用户在 ${CONFIRM_TOOL} 工具的弹窗里过目同意（编号和文字照 testcraft check 输出的填）。`,
-    '4. 测试改完，用 testpace:review-tests 技能请检查员复查，只挑糊弄的、多余的测试和对不上改动的放水理由。',
+    '4. 测试改完，用 gatelight:review-tests 技能请检查员复查，只挑糊弄的、多余的测试和对不上改动的放水理由。',
     '5. 改动命中 .testcraft/checklist/ 里条目的触发条件时（testcraft checklist 列出），按条目查一遍，在改动记录的"## 清单"写一行怎么查的、结论。修 bug 时，写不成测试、又能从改动看出来的坑，加一条清单。',
   ]
 }

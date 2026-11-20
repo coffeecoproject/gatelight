@@ -90,7 +90,7 @@ const or = (items: string[]): string => (items.length ? items.join('、') : '没
 
 const CHECK_LINES = [
   '- 代码文件要放在模块、共享层或装配层里：没有归属的，新建和修改都会被拦。LayerMap 不读的目录（vendor、node_modules、.claude 这类，不分大小写）里不放项目代码：modwall 查不到它引用了谁，没写进 outside 的都算没有归属。',
-  `- 改完代码用 Bash 跑 modwall check，按输出的改法改到通过。要放宽规则（加例外、扩大共享层等）必须用户在 ${CONFIRM_TOOL} 工具的弹窗里同意（编号和文字照 modwall check 输出的填），你说"用户同意了"不算。写法见 testpace:modular 技能。`,
+  `- 改完代码用 Bash 跑 modwall check，按输出的改法改到通过。要放宽规则（加例外、扩大共享层等）必须用户在 ${CONFIRM_TOOL} 工具的弹窗里同意（编号和文字照 modwall check 输出的填），你说"用户同意了"不算。写法见 gatelight:modular 技能。`,
 ]
 
 /** 写了 database 的应用：数据库按模块分 schema 的约定。 */

@@ -1,6 +1,16 @@
-# testpace
+# gatelight
 
-给 agent 开发用的测试节奏插件（Claude Code、Codex）：开发中只跑和改动相关的测试，代码落到默认分支前由程序确认整组通过，并记录测试时间花在哪。
+给 agent 写代码把关的插件（Claude Code、Codex）。门口的一盏灯：三件事都过了才变绿，代码才能落到默认分支。
+
+| 查什么 | 怎么查 | 命令 |
+|---|---|---|
+| 测试跑了没有 | 开发中只跑和改动相关的测试；代码落到默认分支前，由程序确认全部测试通过，并记录测试时间花在哪 | `testpace` |
+| 测试是不是真的在查 | 新测试要证明能抓错；删测试、跳过、改松断言要写理由，要紧的要你同意 | `testcraft` |
+| 代码有没有越界 | 项目分成模块，要别的模块的能力只能走它的入口；放宽规则要你同意 | `modwall` |
+
+第一项是底子，接入了它（仓库根目录有 `testpace.json`）另外两项才起作用；后两项各自按仓库启用（见下面"测试写法""模块边界"两节）。
+
+它原来叫 testpace（另两项原来是单独的 testcraft、modwall 插件）。改的是插件的名字和技能的前缀（`gatelight:`）；三条命令、`testpace.json`、`.testcraft/`、`.modwall/`、`.git/` 下的记录都没改，已接入的项目不用动。从 testpace 换过来要做的见"换成这一版要做的"。
 
 把关只管 agent 执行的命令：合并门是配在全局 git 配置里的 git 钩子，只检查带着 agent 环境变量（Claude Code 的 `CLAUDECODE`、Codex 的 `CODEX_THREAD_ID` 等，见 `plugin/src/base/agent.ts`）的 git 命令；停止门是 agent 的 Stop hook。两边共用同一份记录：Claude 里测过的代码，Codex 合并时不用重跑。
 
@@ -11,8 +21,8 @@
 合并门要 git 2.54 以上：它用 git 在配置里声明钩子的功能（实测 2.54 支持，2.49 不支持）。git 太旧时 `testpace status` 和会话开始时的说明会讲出来。
 
 ```bash
-claude plugin marketplace add coffeecoproject/testpace
-claude plugin install testpace@testpace
+claude plugin marketplace add coffeecoproject/gatelight
+claude plugin install gatelight@gatelight
 ```
 
 建议同时装上 [layermap](https://github.com/coffeecoproject/layermap)，`testpace focused` 靠它按改动选测试：
@@ -25,26 +35,26 @@ claude plugin install layermap@layermap
 ### Codex
 
 ```bash
-codex plugin marketplace add coffeecoproject/testpace
-codex plugin add testpace@testpace
+codex plugin marketplace add coffeecoproject/gatelight
+codex plugin add gatelight@gatelight
 ```
 
 第一次用时 Codex 会要求信任插件的 hook。Codex 下的前提：
 
-- **固定命令入口**：Codex 不把插件的 `bin/` 放进命令的 PATH，合并门的钩子也靠 PATH 找 `testpace`。`testpace install` 会放一个 `~/.local/bin/testpace`，它运行时转给这台机器上装着的、完整的最高版本的 testpace（Claude Code、Codex 装的都算；缓存只复制了一部分的那份不算），插件升级不用重放。没放之前，会话开始时会给出插件里 `testpace` 的完整路径，合并门在 Codex 里不检查。
+- **固定命令入口**：Codex 不把插件的 `bin/` 放进命令的 PATH，合并门的钩子也靠 PATH 找 `testpace`。`testpace install` 会放一个 `~/.local/bin/testpace`，它运行时转给这台机器上装着的、完整的最高版本的插件（Claude Code、Codex 装的都算；缓存只复制了一部分的那份不算），插件升级不用重放；入口文件本身变了的那几版（比如插件改名），会话开始时自动把放过的旧入口换成新的。没放之前，会话开始时会给出插件里 `testpace` 的完整路径，合并门在 Codex 里不检查。
 - **在沙箱外跑**：testpace 要写 `.git/testpace/`，项目的测试常要开端口、用网络，Codex 的沙箱里都跑不了。testpace 发现自己在 Codex 沙箱里（`CODEX_SANDBOX`）就不跑测试、也不跑 `status`（它要记下看过结果），说明要提权。可以每次提权交给自动审查；也可以在 `~/.codex/rules/default.rules` 里放行 `testpace`，但那等于放行 `testpace.json` 里的任何命令。
 
 ### 之后
 
 装好后开新会话。新建的项目（提交很少、还没有 `testpace.json` 的仓库），会话开始时 testpace 会提出接入，Claude 按接入说明配好，落地前跑全部检查和全部测试，不用你回答。老项目说"给这个项目接入 testpace"，Claude 先把它改造成新项目的样子再接入，只在有测试找不到办法跑、全部测试太久要取舍、要改业务代码时问你。合并门的钩子配在全局 git 配置里：会话开始时自动配上，只告诉你一声；你删掉后不会再自动配回去（要的话用 `testpace install`）。别的项目、新的 worktree 都不用再配，升级插件也不用重配。升级插件后，在已接入的项目里跑一次 `testpace verify <测试文件>...`，确认项目的命令还守着新的约定。
 
-只装 testpace 也能把关：合并门、停止门和其余命令都不依赖 layermap。但开发中没法按改动选测试，`focused` 每次都会建议跑整组。装上 layermap 后只跑和改动相关的测试。在一个整组要跑约 11 分钟的项目里，相关测试每次在 1 分钟以内到 5 分钟之间（只是这一个项目的实测）。
+只装 gatelight 也能把关：合并门、停止门和其余命令都不依赖 layermap。但开发中没法按改动选测试，`focused` 每次都会建议跑整组。装上 layermap 后只跑和改动相关的测试。在一个整组要跑约 11 分钟的项目里，相关测试每次在 1 分钟以内到 5 分钟之间（只是这一个项目的实测）。
 
 `focused` 调的是 `layermap check --json`（layermap 0.1.48 起），PATH 里要有 `layermap` 命令，装上 layermap 插件并开新会话就有。
 
 ## 项目约定
 
-仓库根目录放 `testpace.json`，进版本库。字段、三条命令要做到什么、默认加上的测试检查（不留 `.only`、每个测试有断言）、接入步骤见 [plugin/skills/setup/SKILL.md](plugin/skills/setup/SKILL.md)：它随插件安装，是 `testpace:setup` 技能；没有 `testpace.json` 时，命令的报错也指向这个文件。
+仓库根目录放 `testpace.json`，进版本库。字段、三条命令要做到什么、默认加上的测试检查（不留 `.only`、每个测试有断言）、接入步骤见 [plugin/skills/setup/SKILL.md](plugin/skills/setup/SKILL.md)：它随插件安装，是 `gatelight:setup` 技能；没有 `testpace.json` 时，命令的报错也指向这个文件。
 
 `examples/sample` 是按约定建的最小示例项目。
 
@@ -52,7 +62,7 @@ codex plugin add testpace@testpace
 
 同一个插件里的另一项检查，管 agent 怎么写测试：新测试要证明能抓错（`testcraft prove`），删测试、跳过、改松断言要写理由（`testcraft weaken`），其中删测试、让测试不跑、程序的做法变了、删改清单条目要你在弹窗里同意，写不成测试的坑记成清单（`testcraft checklist`）。
 
-仓库里有 `.testcraft/` 目录才启用，没有的仓库里它不出声、不加检查。启用后 `testpace full` 在测试之前跑一次 `testcraft check`，不用另外登记。接入步骤见 [plugin/skills/setup-testcraft/SKILL.md](plugin/skills/setup-testcraft/SKILL.md)（`testpace:setup-testcraft` 技能），写测试的约定见 `testpace:write-tests`，复查见 `testpace:review-tests`。`examples/craft-sample` 是它的示例项目。
+仓库里有 `.testcraft/` 目录才启用，没有的仓库里它不出声、不加检查。启用后 `testpace full` 在测试之前跑一次 `testcraft check`，不用另外登记。接入步骤见 [plugin/skills/setup-testcraft/SKILL.md](plugin/skills/setup-testcraft/SKILL.md)（`gatelight:setup-testcraft` 技能），写测试的约定见 `gatelight:write-tests`，复查见 `gatelight:review-tests`。`examples/craft-sample` 是它的示例项目。
 
 它原来是单独的 testcraft 插件，换成这一版时把旧插件卸掉（`claude plugin uninstall testcraft@testcraft`）。旧插件记在 `.git/testcraft/` 下的证明、放水检查、用户同意的记录不带过来：新测试要重新证明一次，同意过的放水要重新同意一次。
 
@@ -60,7 +70,7 @@ codex plugin add testpace@testpace
 
 同一个插件里的第三项检查，管代码有没有越界：项目分成模块、共享层和装配层，要别的模块的能力只能走它的入口，模块之间不能成环，依赖方向不能反，代码文件要有归属；用 Postgres 的项目，数据库也按模块分 schema。代码里的 import 和调用来自 [layermap](https://github.com/coffeecoproject/layermap)（0.1.48 以上），没有它检查算没做完、不算通过。
 
-仓库里有 `.modwall/` 目录才启用。启用后会话开始时说明模块列表和写法约定，agent 改没有归属的代码文件之前就被拦下，`testpace full` 在最前面跑一次 `modwall check`，不用另外登记。放宽规则（加例外、扩大共享层、删模块根目录、删配置等）要你在弹窗里同意，同意按项记。库里的现状由项目在整组里跑完迁移后用 `modwall db check --psql "<执行 SQL 的命令>"` 查。接入步骤见 [plugin/skills/setup-modwall/SKILL.md](plugin/skills/setup-modwall/SKILL.md)（`testpace:setup-modwall` 技能），写法约定见 `testpace:modular`。`examples/wall-sample` 是它的示例项目。
+仓库里有 `.modwall/` 目录才启用。启用后会话开始时说明模块列表和写法约定，agent 改没有归属的代码文件之前就被拦下，`testpace full` 在最前面跑一次 `modwall check`，不用另外登记。放宽规则（加例外、扩大共享层、删模块根目录、删配置等）要你在弹窗里同意，同意按项记。库里的现状由项目在整组里跑完迁移后用 `modwall db check --psql "<执行 SQL 的命令>"` 查。接入步骤见 [plugin/skills/setup-modwall/SKILL.md](plugin/skills/setup-modwall/SKILL.md)（`gatelight:setup-modwall` 技能），写法约定见 `gatelight:modular`。`examples/wall-sample` 是它的示例项目。
 
 它原来是单独的 modwall 插件，换成这一版时把旧插件卸掉：
 
@@ -72,6 +82,22 @@ claude plugin uninstall modwall@modwall
 
 ## 换成这一版要做的
 
+**从 testpace 插件换成 gatelight**（0.10.0 起）。插件换了名字，要卸掉旧的、装上新的：
+
+```bash
+claude plugin uninstall testpace@testpace
+claude plugin marketplace remove testpace
+claude plugin marketplace add coffeecoproject/gatelight
+claude plugin install gatelight@gatelight
+```
+
+装好后开新会话。要知道的几处：
+
+- 放过固定命令入口（`~/.local/bin/testpace`）的机器：旧入口按旧名字找插件，找不到。新会话一开始会自动换成新的；在那之前命令行的 `testpace` 用不了，合并门不检查。
+- 技能的前缀从 `testpace:` 变成 `gatelight:`（`gatelight:merge`、`gatelight:setup` 等）。自己的说明文件（`CLAUDE.md`、`AGENTS.md`）里写了旧名字的，改一下。
+- 确认工具还叫 `confirm_with_user`，但带插件名的完整名字变了（`mcp__plugin_gatelight_gatelight__confirm_with_user`）。权限设置里放行过旧名字的，换成新的。
+- 各仓库 `.git/testpace/` 下的记录（整组通过记录、证明、同意过的项）都还在，不用重来。会话碰过哪些仓库的记录在插件自己的数据目录里，不带过来，新会话重新记。
+
 整组里的检查现在随插件一起装，不再靠在本机登记（全局 git 配置 `testpace.check`）。这一版不读那项配置，留着也不起作用；旧的 testcraft、modwall 插件登记过的，可以清掉：
 
 ```bash
@@ -82,7 +108,7 @@ git config --global --unset-all testpace.check
 
 - 每个任务在自己的分支上做，最好是自己的 worktree，不和别的会话挤在同一个目录里。
 - 开发中只跑 `testpace focused`，失败了用 `testpace files 文件:行号` 只重跑失败的测试。分支上不跑整组。
-- 整组在合回默认分支时跑：做完的几个分支一起合到一个临时的合并分支上，跑一次 `testpace full`，通过了再快进默认分支。步骤见 [plugin/skills/merge/SKILL.md](plugin/skills/merge/SKILL.md)（`testpace:merge` 技能）。
+- 整组在合回默认分支时跑：做完的几个分支一起合到一个临时的合并分支上，跑一次 `testpace full`，通过了再快进默认分支。步骤见 [plugin/skills/merge/SKILL.md](plugin/skills/merge/SKILL.md)（`gatelight:merge` 技能）。
 - 紧急修复可以单独合，只为它跑一次整组。
 - 测试时好时坏，不靠重跑过关：testpace 认出来点名、记进名单，按 testcraft 写测试技能里"测试时好时坏"一节找原因修，修好后用 `testpace files --repeat 10` 连跑证明（见下面的时好时坏的测试）。
 

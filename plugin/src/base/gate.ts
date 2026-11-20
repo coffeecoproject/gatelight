@@ -193,7 +193,7 @@ export function checkRefUpdates(cwd: string, input: string): string | undefined 
         : worktree !== tree && coverageOf(repo, ignore, worktree).kind !== 'none'
         ? ['工作区的整组通过了，但要落地的内容和工作区不一样：还有没提交的改动或未跟踪的文件。把它们一起提交，或者删掉、加进 .gitignore 后重跑整组。']
         : [
-            '先在要落地的这份代码上跑 testpace full，通过后再落地；几个分支一起合用 testpace:merge 技能，在合并分支上测过再快进。',
+            '先在要落地的这份代码上跑 testpace full，通过后再落地；几个分支一起合用 gatelight:merge 技能，在合并分支上测过再快进。',
             ...(hasRemote(root) ? [`只是同步远程的 ${branch} 的话：先 git fetch <远程>，再把 ${branch} 快进到 <远程>/${branch}。`] : []),
           ]
     return [

@@ -17,7 +17,7 @@ describe('放宽规则要用户在弹窗里同意', () => {
     let r = modwall(repo, ['check'])
     assert.equal(r.code, 1, r.out)
     assert.match(r.out, /放宽规则 1 项（和分叉点上的配置比），要用户同意/)
-    assert.match(r.out, /这 1 项还没经用户确认。用户不会看命令输出，要调用 testpace 的 confirm_with_user 工具/)
+    assert.match(r.out, /这 1 项还没经用户确认。用户不会看命令输出，要调用 gatelight 的 confirm_with_user 工具/)
     const asked = pendingOf(r.out)
     assert.match(asked.text, /^这次改动里放宽模块边界规则的地方，要你确认的有 1 项：\n/)
     assert.equal(asked.items.length, 1)

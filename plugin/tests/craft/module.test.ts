@@ -47,7 +47,7 @@ describe('放水给用户过目：交给底座的确认，一个文件一项', (
     let r = testcraft(repo, ['check'])
     assert.equal(r.code, 1, r.out)
     assert.match(r.out, /放水检查通过/)
-    assert.match(r.out, /这 1 项还没经用户确认。用户不会看命令输出，要调用 testpace 的 confirm_with_user 工具/)
+    assert.match(r.out, /这 1 项还没经用户确认。用户不会看命令输出，要调用 gatelight 的 confirm_with_user 工具/)
     const { id, text } = pendingOf(r.out)
     assert.equal(
       text,

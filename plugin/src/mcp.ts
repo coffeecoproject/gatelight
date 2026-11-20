@@ -5,7 +5,7 @@
 
 import { createInterface } from 'node:readline'
 import { confirm, CONFIRM_TOOL } from './base/confirm.ts'
-import { VERSION } from './base/version.ts'
+import { PLUGIN_NAME, VERSION } from './base/version.ts'
 
 const TOOL = {
   name: CONFIRM_TOOL,
@@ -44,7 +44,7 @@ function handle(request: Request): void {
         result: {
           protocolVersion: typeof params.protocolVersion === 'string' ? params.protocolVersion : '2025-06-18',
           capabilities: { tools: {} },
-          serverInfo: { name: 'testpace', version: VERSION },
+          serverInfo: { name: PLUGIN_NAME, version: VERSION },
         },
       })
     case 'ping':
