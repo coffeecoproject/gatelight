@@ -3,5 +3,5 @@
   "files": "testpace run node-test",
   "full": "npm run -s check",
   "tests": ["plugin/tests/*.test.ts", "plugin/tests/craft/*.test.ts"],
-  "ignore": ["README.md", "LICENSE", "Codex适配方案.md"]
+  "ignore": ["README.md", "LICENSE", "Codex适配方案.md", "*.md"]
 }
