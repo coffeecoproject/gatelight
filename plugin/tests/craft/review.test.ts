@@ -71,6 +71,26 @@ describe('复查', () => {
     assert.match(stop(repo) ?? '', /还缺：testcraft prove.*tests\/member\.test\.mjs/)
   })
 
+  test('一次复查只提醒一次：复查中接着再改测试不再提醒；结束后另开一次复查，再改测试才再提醒一次', () => {
+    const repo = withNewTest()
+    assert.equal(testcraft(repo, ['prove']).code, 0)
+    assert.equal(testcraft(repo, ['review', 'start']).code, 0)
+
+    appendFileSync(join(repo, 'tests/member.test.mjs'), silverTest)
+    assert.match(stop(repo) ?? '', /testcraft review done/)
+    // 检查员又提了一条，接着再改：还是这次复查，不再拦
+    appendFileSync(join(repo, 'tests/member.test.mjs'), "test('没有等级的不打折', () => assert.equal(memberPrice(50, {}), 50))\n")
+    assert.equal(stop(repo), undefined)
+
+    assert.equal(testcraft(repo, ['review', 'done']).code, 0)
+    assert.equal(testcraft(repo, ['prove']).code, 0)
+    assert.equal(testcraft(repo, ['review', 'start']).code, 0)
+    appendFileSync(join(repo, 'tests/member.test.mjs'), "test('金卡 200 元付 180', () => assert.equal(memberPrice(200, { level: 'gold' }), 180))\n")
+    const again = stop(repo)
+    assert.match(again ?? '', /testcraft review done/)
+    assert.doesNotMatch(again ?? '', /还缺/)
+  })
+
   test('复查中没改测试，结束时不要求重跑', () => {
     const repo = withNewTest()
     assert.equal(testcraft(repo, ['prove']).code, 0)
