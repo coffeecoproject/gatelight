@@ -55,6 +55,14 @@ export class ModuleRecords<T extends { at: number }> {
     writeWhole(this.file, `${JSON.stringify(all, null, 1)}\n`)
   }
 
+  /** 去掉一条：记的是一个状态（比如开着的复查），状态结束了。 */
+  remove(key: string): void {
+    const all = this.read()
+    if (!Object.hasOwn(all, key)) return
+    delete all[key]
+    writeWhole(this.file, `${JSON.stringify(all, null, 1)}\n`)
+  }
+
   /**
    * 记下按内容得出的结论。key 是开始跑之前算的内容标识，current 现在再算一次：和 key 不一样（跑的过程中内容改过）就不记，返回 false。
    */
