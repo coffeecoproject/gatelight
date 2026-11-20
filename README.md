@@ -60,7 +60,7 @@ codex plugin add gatelight@gatelight
 
 ## 测试写法（testcraft）
 
-同一个插件里的另一部分，管 agent 怎么写测试。它不检查、不拦路，只做两件事：会话开始时把写测试的约定说给 agent（改到规则才写测试，一个测试守一条规则，修 bug 先复现；要改已定的业务规则先问你，别的不问）；写不成测试的坑记成清单（`.testcraft/checklist/`），改动碰到了提醒 agent 按条目查一遍（`testcraft checklist`）。它没有"证明测试能抓错"、放水检查、改动记录、另一个 agent 复查这些环节：2026-11-20 全部删了，原因见 [测试写法方案.md](测试写法方案.md) 开头。
+同一个插件里的另一部分，管 agent 怎么写测试。它不检查、不拦路，只做两件事：会话开始时把写测试的约定说给 agent（分支上开发时不写新测试、不改已有的测试，你说要合并时才写、交给一个子代理写；改到规则才写，修已定规则的 bug 先复现；要改已定的业务规则先问你，别的不问）；写不成测试的坑记成清单（`.testcraft/checklist/`），改动碰到了提醒 agent 按条目查一遍（`testcraft checklist`）。它没有"证明测试能抓错"、放水检查、改动记录、另一个 agent 复查这些环节：2026-11-20 全部删了，原因见 [测试写法方案.md](测试写法方案.md) 开头。
 
 仓库里有 `.testcraft/` 目录才启用，没有的仓库里它不出声、不加检查。启用后 `testpace full` 在测试之前跑一次 `testcraft checklist`（只读文件，不跑测试），不用另外登记。接入步骤见 [plugin/skills/setup-testcraft/SKILL.md](plugin/skills/setup-testcraft/SKILL.md)（`gatelight:setup-testcraft` 技能），写测试的约定见 `gatelight:write-tests`。`examples/craft-sample` 是它的示例项目。
 
@@ -107,9 +107,8 @@ git config --global --unset-all testpace.check
 ## 开发节奏
 
 - 每个任务在自己的分支上做，最好是自己的 worktree，不和别的会话挤在同一个目录里。
-- 开发中只跑 `testpace focused`，失败了用 `testpace files 文件:行号` 只重跑失败的测试。分支上不跑整组。
-- 整组在合回默认分支时跑：做完的几个分支一起合到一个临时的合并分支上，跑一次 `testpace full`，通过了再快进默认分支。步骤见 [plugin/skills/merge/SKILL.md](plugin/skills/merge/SKILL.md)（`gatelight:merge` 技能）。
-- 紧急修复可以单独合，只为它跑一次整组。
+- 开发中每做完一轮跑一次 `testpace focused`，只看不追：因为你这次改了需求才不过的测试留到合并时改；和这次需求无关的（这次的改动弄坏了别的功能）当场改这次写的代码，用 `testpace files 文件:行号` 只重跑那几个。分支上不跑整组。
+- 整组在合回默认分支时跑：你说合，agent 先把这次的测试写上（接入了 testcraft 的），再把分支合到一个临时的合并分支上，跑一次 `testpace full`，通过了再快进默认分支。一个分支合一次，不攒。步骤见 [plugin/skills/merge/SKILL.md](plugin/skills/merge/SKILL.md)（`gatelight:merge` 技能）。
 - 测试时好时坏，不靠重跑过关：testpace 认出来点名、记进名单，按 testcraft 写测试技能里"测试时好时坏"一节找原因修，修好后用 `testpace files --repeat 3` 连跑证明（见下面的时好时坏的测试）。
 
 ## 命令

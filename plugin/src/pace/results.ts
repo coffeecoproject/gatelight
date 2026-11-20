@@ -204,7 +204,7 @@ export function noteResults(repo: Repo, input: ResultsInput): string[] {
   }
   if (changed) saveRounds(repo.store, record.worktree, rounds)
   if (stuck.length > 0) {
-    notes.push(...stuck, '先别接着试：回头读失败输出和它测的代码，找到原因再改；不要改测试凑通过。查出来是业务规则本身说不清或要变的，才问用户。')
+    notes.push(...stuck, '因为用户这次改了需求才不过、留到合并时再改的不用管。其余的先别接着试：回头读失败输出和它测的代码，找到原因再改；不要改测试凑通过。查出来是业务规则本身说不清或要变的，才问用户。')
   }
   return notes
 }

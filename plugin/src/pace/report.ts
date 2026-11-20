@@ -178,7 +178,7 @@ export function weekly(runs: PaceRun[], landingList: Landing[], since: number, n
 }
 
 /**
- * 平均每次落地花在测试上的时间和整组次数：看工作方式（比如攒几个分支一起合）有没有降下测试成本。
+ * 平均每次落地花在测试上的时间和整组次数：看工作方式（比如几个分支一起合、还是一个分支合一次）有没有降下测试成本。
  * 落地从这段时间里 testpace 第一次运行算起，接入前的落地不摊；分支上跑了、还没落地的也算在里面。
  */
 export function landingCost(runs: PaceRun[], landings: Landing[], branch: string | undefined): string | undefined {
