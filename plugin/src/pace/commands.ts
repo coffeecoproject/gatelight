@@ -10,7 +10,7 @@ import { gateProblem } from '../base/gate.ts'
 import { currentBranch, defaultBranch, forkPoint, landings, workTreeId } from '../base/git.ts'
 import { busyText, failureText, ignoredBy } from '../base/repo.ts'
 import { commandExists, COMMAND_KEYS, loadConfig } from './config.ts'
-import { askLayermap, fullReasons, INDIRECT_RANK, LAYERMAP_HINT, NEARBY_RANK, outsideNote } from './focused.ts'
+import { askLayermap, BRANCH_CAP, fullReasons, INDIRECT_RANK, LAYERMAP_HINT, NEARBY_RANK, outsideNote } from './focused.ts'
 import { paceRuns, runRecorded } from './record.ts'
 import { renderReport } from './report.ts'
 import { PROVE_RUNS, provenFixed, type TestResult } from './results.ts'
@@ -57,8 +57,8 @@ export async function focused(args: string[], usage: string): Promise<number> {
   const onBranch = branch !== undefined && currentBranch(ctx.root) !== branch
   const base = at !== -1 ? args[at + 1]! : (forkPoint(ctx.root).commit ?? 'HEAD')
   const isIgnored = ignoredBy(config.ignore)
-  // 在分支上只跑直接相关的测试，范围更宽的留给合并时的整组
-  const selection = askLayermap(ctx.root, base, isIgnored, new Set(findTests(ctx.root, config.tests)), testMatcher(config.tests), onBranch ? NEARBY_RANK : INDIRECT_RANK)
+  // 在分支上只跑这次改到的测试，加上最相关的几个；其余留给合并时的整组
+  const selection = askLayermap(ctx.root, base, isIgnored, new Set(findTests(ctx.root, config.tests)), testMatcher(config.tests), onBranch ? NEARBY_RANK : INDIRECT_RANK, onBranch ? BRANCH_CAP : Infinity)
   const reasons = fullReasons(selection)
 
   let code: number = EXIT.ok
@@ -69,7 +69,7 @@ export async function focused(args: string[], usage: string): Promise<number> {
   } else if (selection.kind === 'selected' && selection.tests.length > 0) {
     const shown = selection.tests.slice(0, 10).map(test => `  ${test}`)
     if (selection.tests.length > 10) shown.push(`  等 ${selection.tests.length} 个`)
-    const indirect = selection.indirect ? (onBranch ? `；另有 ${selection.indirect} 个只是同模块或间接相关，留给合并时的整组` : `；另有 ${selection.indirect} 个只是间接导入改动，没选`) : ''
+    const indirect = selection.indirect ? (onBranch ? `；另有 ${selection.indirect} 个相关的留给合并时的整组` : `；另有 ${selection.indirect} 个只是间接导入改动，没选`) : ''
     lines.push(`相关测试 ${selection.tests.length} 个（对比 ${short(base)}${indirect}）：`, ...shown)
     const related = await runRecorded(ctx, 'files', config.files, selection.tests, tree)
     if ('busy' in related) {

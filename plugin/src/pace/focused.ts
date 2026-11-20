@@ -10,10 +10,13 @@ import { layermap, type LayermapFailure, tooOld } from '../base/layermap.ts'
  * 3.5 可能通过测试支持文件或类型不明的对象用到，4 间接导入。
  * 在默认分支上 4 以下都跑（INDIRECT_RANK）。在分支上只跑直接相关的，3 以下（NEARBY_RANK）：同模块、同目录、
  * 可能经支持文件用到的那些常常是小半个整组，留给合回默认分支时的整组——开发要轻，合并兜底。
+ * 在分支上还有个数上限（BRANCH_CAP）：这次改到的测试都跑，其余相关的按 rank 从近到远最多再跑这么多个文件。
+ * 测试都经接口、页面去测的项目里，"请求了改动波及的接口"的测试很多只是拿那个接口造数据，一次能选中大半个整组。
  * 选得准不准不看 rank，看选出的测试跑不跑得到每处改动（untested）。
  */
 export const INDIRECT_RANK = 4
 export const NEARBY_RANK = 3
+export const BRANCH_CAP = 8
 
 /** layermap check --json 里 testpace 用到的部分。 */
 export interface LayermapCheck {
@@ -39,7 +42,7 @@ export type Selection =
       /** 改动只涉及 ignore 路径和整组不跑的测试（规则外的、删掉的），也没有整组的测试和它们相关：不用跑测试。 */
       nothingToTest: boolean
       tests: string[]
-      /** 整组里和改动有关、却没选上的测试文件数（间接导入的；在分支上还有同模块、同目录、可能经支持文件用到的）。 */
+      /** 整组里和改动有关、却没选上的测试文件数（间接导入的；在分支上还有同模块、同目录的，和超出个数上限的）。 */
       indirect: number
       /** layermap 认为相关、但不在 tests 规则里的测试文件，没选。 */
       outside: string[]
@@ -70,6 +73,7 @@ export function parseUntested(value: unknown): Untested | undefined {
  * inRules 判断路径在不在 tests 规则里（删掉的文件不在 suite 里，用它认出删掉的是不是整组的测试）。
  * 选 layermap 给的相关测试里在整组的，再加上这次改到、在整组里的测试文件（不按惯例命名的 layermap 认不出）。
  * limit 是选到哪一档为止（不含）：默认分支上是 INDIRECT_RANK，分支上是 NEARBY_RANK。
+ * cap 是这次改到的测试以外最多再选几个文件（按 rank 从近到远）：默认分支上不限，分支上是 BRANCH_CAP。
  */
 export function select(
   check: LayermapCheck,
@@ -77,10 +81,18 @@ export function select(
   suite: ReadonlySet<string>,
   inRules: (path: string) => boolean,
   limit: number = INDIRECT_RANK,
+  cap: number = Infinity,
 ): Selection {
   const changed = check.files.map(file => file.path)
   const related = check.tests.filter(test => test.rank < limit).map(test => test.path)
-  const tests = [...new Set([...related, ...changed])].filter(path => suite.has(path))
+  // 这次改到的测试都跑；其余相关的按 rank 从近到远（同一档照 layermap 给的顺序），最多 cap 个
+  const mine = new Set(changed.filter(path => suite.has(path)))
+  const nearest = [...check.tests]
+    .filter(test => test.rank < limit && suite.has(test.path) && !mine.has(test.path))
+    .sort((a, b) => a.rank - b.rank)
+    .map(test => test.path)
+  const kept = new Set([...mine, ...[...new Set(nearest)].slice(0, cap)])
+  const tests = [...new Set([...related, ...changed])].filter(path => kept.has(path))
   const outside = [...new Set(related.filter(path => !suite.has(path)))]
   // 整组不跑的测试的改动，和 ignore 路径一样不用测：layermap 当成测试、规则又不收的（规则排除的测试、练习脚本），
   // 和删掉的整组测试（layermap 不列删掉的文件）
@@ -93,7 +105,7 @@ export function select(
     changed,
     nothingToTest: tests.length === 0 && changed.every(path => isIgnored(path) || notRun.has(path)),
     tests,
-    indirect: new Set(check.tests.filter(test => test.rank >= limit && suite.has(test.path) && !tests.includes(test.path)).map(test => test.path)).size,
+    indirect: new Set(check.tests.filter(test => suite.has(test.path) && !kept.has(test.path)).map(test => test.path)).size,
     outside,
     // ignore 里的文件约定不影响测试，地图跟不到它们也无妨
     unmapped: check.unmapped.filter(file => !isIgnored(file.path)),
@@ -153,6 +165,7 @@ export function askLayermap(
   suite: ReadonlySet<string>,
   inRules: (path: string) => boolean,
   limit: number = INDIRECT_RANK,
+  cap: number = Infinity,
 ): Selection {
   const unavailable = (failure: LayermapFailure): Selection =>
     failure.kind === 'missing' ? { kind: 'unavailable', reason: '找不到 layermap 命令，没法按改动选测试', missing: true } : { kind: 'unavailable', reason: failure.problem }
@@ -161,7 +174,7 @@ export function askLayermap(
   if (!first.ok) return unavailable(first)
   const check = parseCheck(first.value)
   if (!check) return unavailable(tooOld())
-  const selection = select(check, isIgnored, suite, inRules, limit)
+  const selection = select(check, isIgnored, suite, inRules, limit, cap)
   if (selection.kind === 'selected' && selection.tests.length > 0) {
     const second = layermap(root, [...args, ...selection.tests])
     if (!second.ok) return unavailable(second)

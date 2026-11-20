@@ -43,9 +43,9 @@ describe('hooks', () => {
     assert.match(told, /用 testcraft 管测试的写法/)
     assert.match(told, /要改已定的业务规则（包括为此删测试、让测试不跑、改期望值），先用白话问用户/)
     assert.match(told, /测试上别的调整.*自己定，不问用户/)
-    assert.match(told, /必须写的只有三类，写在接口层：钱、权限、状态与数据/)
-    assert.match(told, /界面行为、在页面上重复验证接口层守着的规则、默认值和分组这类一般业务不写/)
-    assert.match(told, /超过 5 分钟时，加页面测试之前先删/)
+    assert.match(told, /必跑层：钱、权限、状态与数据/)
+    assert.match(told, /细节层：界面细节、样式、提示文字这类人容易漏看的，也值得写/)
+    assert.doesNotMatch(told, /超过 5 分钟|先删/)
     assert.doesNotMatch(told, /testcraft prove|testcraft weaken|testcraft review|检查员|放水|证明/)
     // 没接入"测试写法"的仓库：只说 testpace 的测试节奏，不说写测试的约定
     const outside = sampleRepo(dir => rmSync(join(dir, '.testcraft'), { recursive: true }))

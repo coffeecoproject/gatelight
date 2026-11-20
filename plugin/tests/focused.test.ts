@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { fullReasons, type LayermapCheck, NEARBY_RANK, outsideNote, parseCheck, parseUntested, select, type Untested } from '../src/pace/focused.ts'
+import { BRANCH_CAP, fullReasons, type LayermapCheck, NEARBY_RANK, outsideNote, parseCheck, parseUntested, select, type Untested } from '../src/pace/focused.ts'
 import { matcher } from '../src/base/glob.ts'
 import { commit, ENV, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
 
@@ -39,6 +39,41 @@ describe('选测', () => {
     if (selection.kind !== 'selected') return
     assert.deepEqual([...selection.tests].sort(), ['t/a.test.ts', 't/c.test.ts', 'tests/a.test.ts'])
     assert.equal(selection.indirect, 2)
+  })
+
+  test('在分支上有个数上限：这次改到的测试都跑，其余相关的按远近最多再跑 8 个文件，超出的记成留给合并的', () => {
+    assert.equal(BRANCH_CAP, 8)
+    const many = Array.from({ length: 12 }, (_, i) => `t/r${String(i).padStart(2, '0')}.test.ts`)
+    const big = new Set([...many, 't/mine.test.ts', 't/near.test.ts'])
+    const selection = select(
+      check({
+        files: [
+          { path: 'src/a.ts', status: 'MODIFIED' },
+          { path: 't/mine.test.ts', status: 'MODIFIED' },
+        ],
+        tests: [
+          // 只是请求了改动波及的接口的那一档排在后面给，调用改动的排在最后给：照样按远近取
+          ...many.map(path => ({ path, rank: 2, why: 'requests "POST /api/a"' })),
+          { path: 't/mine.test.ts', rank: 1, why: 'changed in this diff' },
+          { path: 't/near.test.ts', rank: 0, why: 'calls a' },
+        ],
+      }),
+      () => false,
+      big,
+      inRules,
+      NEARBY_RANK,
+      BRANCH_CAP,
+    )
+    assert.equal(selection.kind, 'selected')
+    if (selection.kind !== 'selected') return
+    assert.equal(selection.tests.length, 9)
+    assert.ok(selection.tests.includes('t/mine.test.ts'), '这次改到的测试不占名额')
+    assert.ok(selection.tests.includes('t/near.test.ts'), '最近的先取')
+    assert.deepEqual(selection.tests.filter(path => many.includes(path)).sort(), many.slice(0, 7))
+    assert.equal(selection.indirect, 5)
+    // 默认分支上不设上限
+    const onMain = select(check({ files: [{ path: 'src/a.ts', status: 'MODIFIED' }], tests: many.map(path => ({ path, rank: 2, why: 'requests' })) }), () => false, big, inRules)
+    assert.equal(onMain.kind === 'selected' && onMain.tests.length, 12)
   })
 
   test('选 rank 4 以下（含 3.5）而且在整组里的测试文件', () => {
@@ -372,7 +407,7 @@ describe('testpace focused', () => {
     sh(repo, 'git checkout -qb feature')
     const r = testpace(repo, ['focused'], fakeLayermap(nearby).env)
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /相关测试 1 个（对比 [0-9a-f]{10}；另有 1 个只是同模块或间接相关，留给合并时的整组）：\n {2}tests\/format\.test\.mjs\n相关测试通过/)
+    assert.match(r.out, /相关测试 1 个（对比 [0-9a-f]{10}；另有 1 个相关的留给合并时的整组）：\n {2}tests\/format\.test\.mjs\n相关测试通过/)
     assert.deepEqual(runs(repo).at(-1)!.files, ['tests/format.test.mjs'])
   })
 
