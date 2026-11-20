@@ -42,7 +42,9 @@ const HOOK_BODY = [
   'testpace_gate() {',
   `[ "$1" = prepared ] && [ -n "${AGENT_MARKERS.map(name => `$${name}`).join('')}" ] || return 0;`,
   `testpace_refs=$(cat); case $testpace_refs in *' refs/heads/'*) ;; *) return 0 ;; esac;`,
-  `testpace_msg=$(printf '%s\\n' "$testpace_refs" | testpace gate 2>&1); testpace_code=$?;`,
+  // printf 自己的报错不外露：testpace 起不来（找不到命令）时没人接这些内容，git 起钩子时又忽略 SIGPIPE，
+  // printf 交不出去就会报一行 write error: Broken pipe，排在下面那句说明的前面
+  `testpace_msg=$(printf '%s\\n' "$testpace_refs" 2>/dev/null | testpace gate 2>&1); testpace_code=$?;`,
   `[ "$testpace_code" != 0 ] || return 0;`,
   `if [ "$testpace_code" = ${GATE_REJECT} ]; then printf '%s\\n' "$testpace_msg" >&2; return 1; fi;`,
   `[ -f testpace.json ] || return 0;`,
