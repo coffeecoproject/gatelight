@@ -268,6 +268,19 @@ describe('合并门（git 钩子）', () => {
     assert.match(agent(plain, 'git commit -q --allow-empty -m m', { PATH: NO_TESTPACE_PATH }).out, /testpace 没有给出检查结论/)
   })
 
+  test('钩子找不到 testpace 命令时只说那一句：要交给它的内容交不出去，也不在前面多出别的报错', () => {
+    const repo = gatedRepo()
+    // 一次动几百个分支：要交给 testpace 的内容比管道一次装得下的多，对面没人接，一定交不完
+    // （内容少时只有交的一方慢了半拍才交不出去，时有时无）
+    const updates = Array.from({ length: 400 }, (_, i) => `create refs/heads/many/${'x'.repeat(180)}-${i} ${head(repo)}\n`)
+    const file = join(tempDir('testpace-refs-'), 'updates')
+    writeFileSync(file, updates.join(''))
+    const r = agent(repo, `git update-ref --stdin < '${file}'`, { PATH: NO_TESTPACE_PATH })
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /^testpace 合并门：testpace 没有给出检查结论（退出码 127），这次没有检查。/)
+    assert.equal(sh(repo, 'git for-each-ref refs/heads/many').trim().split('\n').length, 400)
+  })
+
   test('没有分支要动（只是远程跟踪分支）时钩子不调用 testpace', () => {
     const repo = gatedRepo()
     const fake = tempDir('testpace-fake-')

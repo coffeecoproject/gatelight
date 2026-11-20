@@ -27,8 +27,12 @@ function breakSample(repo: string): void {
 /** 最近一次 modwall check 的日志（和底座的日志放在一起：.git/testpace/logs/）。 */
 function lastLog(repo: string): Record<string, any> {
   const logs = join(repo, sh(repo, 'git rev-parse --git-common-dir').trim(), 'testpace/logs')
-  const last = readdirSync(logs).filter(file => file.endsWith('-modwall-check.log')).sort().at(-1) as string
-  return JSON.parse(readFileSync(join(logs, last), 'utf8'))
+  // 按记录里写的时间取最近一份，不按文件名：文件名里的时间只到秒，同一秒的两份靠进程号分先后，
+  // 进程号位数变了（9999 → 10000）或转回小号时，按名字排就反了
+  const entries = readdirSync(logs)
+    .filter(file => file.endsWith('-modwall-check.log'))
+    .map(file => JSON.parse(readFileSync(join(logs, file), 'utf8')) as Record<string, any>)
+  return entries.sort((a, b) => a.at - b.at).at(-1) as Record<string, any>
 }
 
 describe('modwall check', () => {
