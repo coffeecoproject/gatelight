@@ -14,6 +14,14 @@ describe('选测', () => {
   // 整组的测试：tests 规则在工作区里找到的，已删除的不在里面
   const suite = new Set(['t/a.test.ts', 't/b.test.ts', 't/s.test.ts', 't/c.test.ts', 'tests/a.test.ts'])
   const inRules = (path: string): boolean => /^(t|tests)\/.*\.test\.ts$/.test(path)
+  // t/<前缀>-01.test.ts 起的 n 个测试文件名
+  const named = (prefix: string, n: number): string[] => Array.from({ length: n }, (_, i) => `t/${prefix}-${String(i + 1).padStart(2, '0')}.test.ts`)
+  // 在分支上选测：改了 src/a.ts，候选的相关测试都在整组里
+  const onBranch = (tests: LayermapCheck['tests']) => {
+    const selection = select(check({ files: [{ path: 'src/a.ts', status: 'MODIFIED' }], tests }), () => false, new Set(tests.map(test => test.path)), inRules, NEARBY_RANK, BRANCH_CAP)
+    assert.ok(selection.kind === 'selected')
+    return selection
+  }
 
   test('在分支上只选直接相关的（rank 3 以下）：同目录、可能经支持文件用到、间接导入的不选，记成留给合并的；这次改到的测试文件照样选', () => {
     const selection = select(
@@ -41,9 +49,9 @@ describe('选测', () => {
     assert.equal(selection.indirect, 2)
   })
 
-  test('在分支上有个数上限：这次改到的测试都跑，其余相关的按远近最多再跑 8 个文件，超出的记成留给合并的', () => {
+  test('在分支上有个数上限：这次改到的测试都跑，其余相关的按远近最多再跑 8 个文件，超出的记成留给合并的；默认分支上不限', () => {
     assert.equal(BRANCH_CAP, 8)
-    const many = Array.from({ length: 12 }, (_, i) => `t/r${String(i).padStart(2, '0')}.test.ts`)
+    const many = named('r', 12)
     const big = new Set([...many, 't/mine.test.ts', 't/near.test.ts'])
     const selection = select(
       check({
@@ -52,8 +60,8 @@ describe('选测', () => {
           { path: 't/mine.test.ts', status: 'MODIFIED' },
         ],
         tests: [
-          // 只是请求了改动波及的接口的那一档排在后面给，调用改动的排在最后给：照样按远近取
-          ...many.map(path => ({ path, rank: 2, why: 'requests "POST /api/a"' })),
+          // 理由各不相同（不牵涉共用多少）；远的那一档排在前面给，调用改动的排在最后给：照样按远近取
+          ...many.map((path, i) => ({ path, rank: 2, why: `requests "POST /api/r${i}"` })),
           { path: 't/mine.test.ts', rank: 1, why: 'changed in this diff' },
           { path: 't/near.test.ts', rank: 0, why: 'calls a' },
         ],
@@ -66,14 +74,51 @@ describe('选测', () => {
     )
     assert.equal(selection.kind, 'selected')
     if (selection.kind !== 'selected') return
-    assert.equal(selection.tests.length, 9)
-    assert.ok(selection.tests.includes('t/mine.test.ts'), '这次改到的测试不占名额')
-    assert.ok(selection.tests.includes('t/near.test.ts'), '最近的先取')
-    assert.deepEqual(selection.tests.filter(path => many.includes(path)).sort(), many.slice(0, 7))
+    // 这次改到的不占名额，最近的先取，剩下 7 个名额给远的那一档
+    assert.deepEqual([...selection.tests].sort(), ['t/mine.test.ts', 't/near.test.ts', ...many.slice(0, 7)])
     assert.equal(selection.indirect, 5)
-    // 默认分支上不设上限
-    const onMain = select(check({ files: [{ path: 'src/a.ts', status: 'MODIFIED' }], tests: many.map(path => ({ path, rank: 2, why: 'requests' })) }), () => false, big, inRules)
+    // 默认分支上不设上限：12 个共用同一条理由，也全取
+    const onMain = select(check({ files: [{ path: 'src/a.ts', status: 'MODIFIED' }], tests: many.map(path => ({ path, rank: 2, why: 'requests "POST /api/a"' })) }), () => false, big, inRules)
     assert.equal(onMain.kind === 'selected' && onMain.tests.length, 12)
+  })
+
+  test('在分支上同一档里，每条理由先各取一个、共用的测试少的理由先取，再取各条理由的第二个、第三个，和文件名顺序无关；刚好 8 个测试共用的理由不算太多，名额够就接着取', () => {
+    // 按文件名排在前面的 8 个都只是拿"新建人员"造数据；专门测"改组织节点"的只有 1 个，排在最后
+    const people = named('a-people', 8)
+    const status = named('b-status', 3)
+    const selection = onBranch([
+      ...people.map(path => ({ path, rank: 2, why: 'requests "POST /api/people"' })),
+      ...status.map(path => ({ path, rank: 2, why: 'requests "POST /api/org/nodes/:id/biz-status"' })),
+      { path: 't/z-patch.test.ts', rank: 2, why: 'requests "PATCH /api/org/nodes/:id"' },
+    ])
+    // 第一轮：z-patch、b-status-01、a-people-01；第二轮各条的第二个；第三轮；第四轮只剩 a-people-04 补满 8 个
+    assert.deepEqual([...selection.tests].sort(), [...people.slice(0, 4), ...status, 't/z-patch.test.ts'])
+    assert.equal(selection.indirect, 4)
+  })
+
+  test('在分支上一条理由被超过 8 个测试共用时只留一个代表（layermap 给的第一个），名额凑不满也不拿它们填，其余留给合并；选出的照 layermap 给的顺序列出', () => {
+    const people = named('a-people', 10)
+    const leaders = named('b-leader', 9)
+    const status = named('x-status', 2)
+    const selection = onBranch([
+      ...people.map(path => ({ path, rank: 2, why: 'requests "POST /api/people"' })),
+      ...leaders.map(path => ({ path, rank: 2, why: 'requests "PUT /api/people/leaders/:orgId"' })),
+      ...status.map(path => ({ path, rank: 2, why: 'requests "POST /api/org/nodes/:id/biz-status"' })),
+      { path: 't/y-patch.test.ts', rank: 2, why: 'requests "PATCH /api/org/nodes/:id"' },
+    ])
+    // 不排序：取的先后是 y-patch、x-status-01、b-leader-01、a-people-01、x-status-02，列出来照 layermap 的顺序
+    assert.deepEqual(selection.tests, ['t/a-people-01.test.ts', 't/b-leader-01.test.ts', ...status, 't/y-patch.test.ts'])
+    assert.equal(selection.indirect, 17)
+  })
+
+  test('在分支上调用改动的测试（rank 1 以下）不受只留一个代表的限制：超过 8 个共用同一条理由也按远近取满 8 个', () => {
+    const callers = named('c', 10)
+    const selection = onBranch([
+      ...callers.map(path => ({ path, rank: 0.5, why: 'calls a' })),
+      { path: 't/z-request.test.ts', rank: 2, why: 'requests "PATCH /api/a"' },
+    ])
+    assert.deepEqual(selection.tests, callers.slice(0, 8))
+    assert.equal(selection.indirect, 3)
   })
 
   test('选 rank 4 以下（含 3.5）而且在整组里的测试文件', () => {
