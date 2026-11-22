@@ -1,10 +1,10 @@
 // "模块边界"说给 agent 的话，经整个插件共用的那个钩子入口出去：会话说明、改文件之前、停止门。
 
 import assert from 'node:assert/strict'
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { hook, modwall, sampleRepo, sh, write } from './helpers.ts'
+import { ENV, hook, modwall, sampleRepo, sh, tempDir, write } from './helpers.ts'
 
 const edit = (repo: string, path: string, tool = 'Write'): Record<string, any> | undefined =>
   hook(repo, 'PreToolUse', { tool_name: tool, tool_input: { file_path: join(repo, path) } })
@@ -245,6 +245,60 @@ describe('结束之前', () => {
     assert.equal(modwall(repo, ['check']).code, 0)
     sh(repo, 'git add -A && git commit -qm entry')
     assert.match(blocked(repo, 'main1') as string, /modwall check/)
+  })
+
+  test('同一个仓库两个工作区、两个会话：只进去看过别人工作区的会话不为那边的改动被拦；自己也动手改了那边，照常拦', () => {
+    const env = { ...ENV, CLAUDE_PLUGIN_DATA: tempDir('modwall-data-') }
+    const at = (cwd: string, event: string, extra: Record<string, unknown>): Record<string, any> | undefined => hook(cwd, event, extra, env)
+    const stopIn = (cwd: string, session: string): string | undefined => {
+      const out = at(cwd, 'Stop', { session_id: session })
+      return out?.decision === 'block' ? (out.reason as string) : undefined
+    }
+    const mine = sampleRepo()
+    const theirs = join(mine, '..', 'theirs')
+    sh(mine, `git worktree add -q '${theirs}' -b theirs feature`)
+    at(mine, 'SessionStart', { session_id: 'reader' })
+    at(theirs, 'SessionStart', { session_id: 'writer' })
+
+    // reader 在自己的目录里，用一条 cd 进去的命令只看了一眼别人的工作区
+    at(mine, 'PreToolUse', { session_id: 'reader', tool_name: 'Bash', tool_input: { command: `cd '${theirs}' && modwall check` } })
+    // writer 在自己的工作区里改代码（用改文件的工具，和命令里直接写）
+    const file = join(theirs, 'src/modules/billing/index.ts')
+    at(theirs, 'PreToolUse', { session_id: 'writer', tool_name: 'Edit', tool_input: { file_path: file } })
+    appendFileSync(file, '\nexport const fee = 1\n')
+
+    assert.equal(stopIn(mine, 'reader'), undefined)
+    assert.match(stopIn(theirs, 'writer') as string, /改了代码或 modwall 的配置/)
+
+    // reader 后来也用改文件的工具改了那边：它要为那边的内容负责（从它第一次碰到那里算起）
+    at(mine, 'PreToolUse', { session_id: 'reader', tool_name: 'Edit', tool_input: { file_path: file } })
+    appendFileSync(file, '\nexport const fee2 = 1\n')
+    const reason = stopIn(mine, 'reader') ?? ''
+    assert.ok(reason.includes(`这个会话在 ${realpathSync(theirs)} 改了代码或 modwall 的配置`), reason)
+  })
+
+  test('Codex 的 apply_patch 也算改文件：会话在自己的目录里，用补丁改了别的工作区，收尾时为那边拦', () => {
+    const env = { ...ENV, CLAUDE_PLUGIN_DATA: tempDir('modwall-data-') }
+    const mine = sampleRepo()
+    const theirs = join(mine, '..', 'theirs')
+    sh(mine, `git worktree add -q '${theirs}' -b theirs feature`)
+    hook(mine, 'SessionStart', { session_id: 'cx' }, env, 'codex')
+    // 补丁里的路径相对会话所在目录，也可以写绝对路径；一段补丁里可以有几个文件
+    const patch = [
+      '*** Begin Patch',
+      '*** Add File: notes.md',
+      '+说明',
+      `*** Update File: ${join(theirs, 'src/modules/billing/index.ts')}`,
+      '@@',
+      '+export const fee = 1',
+      '*** End Patch',
+      '',
+    ].join('\n')
+    assert.equal(hook(mine, 'PreToolUse', { session_id: 'cx', tool_name: 'apply_patch', tool_input: { command: patch } }, env, 'codex'), undefined)
+    appendFileSync(join(theirs, 'src/modules/billing/index.ts'), '\nexport const fee = 1\n')
+    const out = hook(mine, 'Stop', { session_id: 'cx' }, env, 'codex')
+    assert.equal(out?.decision, 'block')
+    assert.ok(String(out?.reason).includes(`这个会话在 ${realpathSync(theirs)} 改了代码或 modwall 的配置`), String(out?.reason))
   })
 
   test('没接入的仓库不出声', () => {

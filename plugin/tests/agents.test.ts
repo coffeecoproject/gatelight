@@ -167,7 +167,7 @@ describe('Codex 的 hook', () => {
       hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ type: string; command: string }> }>>
     }
     const registered = Object.fromEntries(Object.entries(hooks).map(([event, entries]) => [event, entries.map(entry => entry.matcher ?? '')]))
-    assert.deepEqual(registered, { SessionStart: [''], PreToolUse: ['^Bash$'], PostToolUse: ['^Bash$'], Stop: [''] }, '工具事件只看执行命令的 Bash')
+    assert.deepEqual(registered, { SessionStart: [''], PreToolUse: ['^(Bash|apply_patch)$'], PostToolUse: ['^Bash$'], Stop: [''] }, '工具调用前看执行命令的 Bash 和改文件的 apply_patch，调用后只看 Bash')
     for (const entries of Object.values(hooks)) assert.equal(entries[0]!.hooks[0]!.command, 'sh "${PLUGIN_ROOT}/hooks/codex.sh"')
   })
 })
