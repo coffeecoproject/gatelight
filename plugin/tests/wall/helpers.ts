@@ -70,11 +70,17 @@ export function withoutLayermap(): NodeJS.ProcessEnv {
   return { ...ENV, PATH: [...new Set([keep('git'), keep('node'), '/usr/bin', '/bin'])].join(':') }
 }
 
-/** 跑一次钩子（当成 Claude Code 发来的）：返回它输出的 JSON（没输出为 undefined）。 */
-export function hook(cwd: string, event: string, extra: Record<string, unknown> = {}): Record<string, any> | undefined {
-  const r = spawnSync('node', ['--disable-warning=ExperimentalWarning', HOOK, 'claude'], {
+/** 跑一次钩子（默认当成 Claude Code 发来的）：返回它输出的 JSON（没输出为 undefined）。env 里给了 CLAUDE_PLUGIN_DATA 才记会话碰过哪些仓库。 */
+export function hook(
+  cwd: string,
+  event: string,
+  extra: Record<string, unknown> = {},
+  env: NodeJS.ProcessEnv = ENV,
+  agent: 'claude' | 'codex' = 'claude',
+): Record<string, any> | undefined {
+  const r = spawnSync('node', ['--disable-warning=ExperimentalWarning', HOOK, agent], {
     input: JSON.stringify({ hook_event_name: event, cwd, ...extra }),
-    env: ENV,
+    env,
     encoding: 'utf8',
   })
   if (r.status !== 0) throw new Error(r.stderr)

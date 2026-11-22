@@ -1,5 +1,6 @@
 // 停止门：agent 要结束这一轮时，这个会话起的整组还在跑、或跑完还没看结果，就拦一次。
-// 各模块在这个会话里还没处理完的事（module.ts 的 unfinished，比如改了代码还没有 modwall check 的通过记录），每件也拦一次。
+// 各模块在这个会话里还没处理完的事（module.ts 的 unfinished，比如改了代码还没有 modwall check 的通过记录），每件也拦一次；
+// 只问会话干活的工作区（所在目录的、用改文件的工具改过的），只在命令里 cd 进去看过的别人的工作区不问。
 // 每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里，不靠 agent 给的 stop_hook_active：
 // 有的 agent 不给或总是 false，靠它会反复拦。
 // 谁起的整组看记录里的会话号（testpace full 从命令环境里 agent 的会话号记下，见 agent.ts）；
@@ -56,9 +57,11 @@ export function stopCheck(input: StopInput): StopResult {
     result.block = `这个会话${input.named ? `在 ${repo.root} ` : ''}${verb}的整组已经结束（${outcome}），还没看结果。先跑 testpace status 看结果，再收尾。`
   }
 
-  // 各模块在这个会话里还没处理完的事（比如认出的时好时坏测试）：每件拦一次，免得一句带过
+  // 各模块在这个会话里还没处理完的事（比如改了代码还没有 modwall check 的通过记录）：每件拦一次，免得一句带过。
+  // 只问这个会话干活的工作区（会话所在目录的、用改文件的工具改过的，见 SessionState.worked）：只 cd 进去看过的，那里后来的改动是别的会话的
+  const works = input.named !== true || session.worked?.includes(repo.root) === true
   const moduleProblems: string[] = []
-  for (const module of modules()) {
+  for (const module of works ? modules() : []) {
     if (result.block) break
     let left: ReturnType<NonNullable<typeof module.unfinished>>
     try {

@@ -52,6 +52,16 @@ function noteSession(repo: Repo, sessionId: string): void {
   }
 }
 
+/**
+ * 这个会话在这个工作区干活（会话所在目录的工作区，或用改文件的工具改了那里的文件）：记进会话状态，停止门只为这些工作区问各模块（stop.ts）。
+ * 起点照样在会话第一次碰到工作区时记（命令里 cd 进去也记）：会话后来在那里动手改了，它进去之后命令里写的东西也算它的。
+ */
+function noteWorking(repo: Repo, sessionId: string, now: number): void {
+  const state = repo.store.session(sessionId, now, () => defaultTips(repo))
+  if (state.worked?.includes(repo.root)) return
+  repo.store.saveSession(sessionId, { ...state, worked: [...(state.worked ?? []), repo.root] })
+}
+
 /** 新仓库最多这么多个提交：还没接入时，会话开始就提出接入。老仓库要先改造，不在这里提。 */
 export const NEW_REPO_COMMITS = 20
 
@@ -108,13 +118,17 @@ function contractRepos(dirs: Iterable<string>): Repo[] {
 /**
  * 这条命令碰到的接入仓库（会话所在目录和命令里 cd 进去的目录；同一条命令里多数调用在同一个目录，按目录去重）。
  * 每个仓库都记下会话，插件数据目录里记下会话碰过它；每个工作区都让各模块记下会话在那里的起点（节奏按仓库说一次，起点按工作区各记一份：
- * 同一个仓库的另一个工作区不会再说节奏，起点照样要记）。返回还没给这个会话说过节奏的。
+ * 同一个仓库的另一个工作区不会再说节奏，起点照样要记）。会话所在目录的工作区记成它干活的地方；cd 进去的不算（noteWorking）。
+ * 返回还没给这个会话说过节奏的。
  * 已知的缺口：会话没进某个工作区、从外面按路径往里写了文件（cp、重定向这类），这里看不到，那个工作区的起点要到会话进去时才记，
  * 已经带着它写的东西；停止门不提醒这一部分，合并前的整组照样查（整体设计方案 9.4）。
  */
 function untoldRepos(command: string, cwd: string, sessionId: string, now: number): Array<{ repo: Repo; state: SessionState }> {
   const repos = contractRepos([cwd, ...invocations(command, cwd).map(call => call.cwd)])
   noteSessionRepos(sessionId, repos.map(repo => repo.root), now)
+  const here = openRepo(cwd)?.root
+  const home = repos.find(repo => repo.root === here)
+  if (home) noteWorking(home, sessionId, now)
   const untold: Array<{ repo: Repo; state: SessionState }> = []
   for (const repo of repos) {
     const state = repo.store.session(sessionId, now, () => defaultTips(repo))
@@ -124,8 +138,26 @@ function untoldRepos(command: string, cwd: string, sessionId: string, now: numbe
   return untold
 }
 
-/** 改文件的工具（Claude Code 的，和 hooks.json 里的 matcher 一样）。Codex 的 apply_patch 把几个文件的改动放在一段补丁里，不在这里管。 */
+/** 改文件的工具（Claude Code 的，和 hooks.json 里的 matcher 一样）。Codex 的 apply_patch 另算（patchFiles）。 */
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
+
+/**
+ * Codex 的 apply_patch 补丁（tool_input.command 是补丁正文）要改的文件：新建、修改、删除的，和改名后的新路径。
+ * 路径相对会话所在目录，也可以是绝对路径。
+ */
+function patchFiles(patch: string): string[] {
+  return patch.split('\n').flatMap(line => /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)\s*$/.exec(line)?.[1] ?? [])
+}
+
+/**
+ * 会话要用改文件的工具改这个工作区的文件：改之前先记起点（先用改文件的工具改、后来才在这个工作区跑命令的，起点也得是改之前的样子），
+ * 记下会话碰过它（改的可以是会话所在目录以外的工作区，停止门才查得到那里），记成会话干活的工作区。
+ */
+function noteEditing(repo: Repo, sessionId: string, now: number): void {
+  noteSession(repo, sessionId)
+  noteSessionRepos(sessionId, [repo.root], now)
+  noteWorking(repo, sessionId, now)
+}
 
 /**
  * 要改的文件在哪个接入了的仓库里、相对仓库根目录的路径。目标可以不在会话所在的仓库里，按它自己所在的仓库算；
@@ -194,6 +226,7 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
       const state = repo.store.session(sessionId, now, () => defaultTips(repo))
       repo.store.saveSession(sessionId, { ...state, rhythm: true })
       noteSession(repo, sessionId)
+      if (repo.root === here) noteWorking(repo, sessionId, now)
     }
     noteSessionRepos(sessionId, repos.map(repo => repo.root), now)
     const context = [
@@ -209,13 +242,20 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
   if (event === 'PreToolUse' && EDIT_TOOLS.has(input.tool_name ?? '')) {
     const target = editTarget(cwd, input.tool_input?.file_path)
     if (!target) return undefined
-    // 改之前先记起点：先用改文件的工具改、后来才在这个工作区跑命令的，起点也得是改之前的样子
-    noteSession(target.repo, sessionId)
+    noteEditing(target.repo, sessionId, now)
     const reason = editRefusal(target, writtenText(input.tool_input))
     return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : undefined
   }
 
   const command = typeof input.tool_input?.command === 'string' ? input.tool_input.command : undefined
+  // Codex 的 apply_patch：只记下改到的工作区（起点、碰过、干活的地方）。改文件之前的检查（beforeEdit）不接：一段补丁里有几个文件，修改的部分只有差异
+  if (event === 'PreToolUse' && input.tool_name?.toLowerCase() === 'apply_patch' && command) {
+    for (const path of patchFiles(command)) {
+      const target = editTarget(cwd, path)
+      if (target) noteEditing(target.repo, sessionId, now)
+    }
+    return undefined
+  }
   if (event === 'PreToolUse' && shell && command) {
     // 记下会话第一次出现的时间：停止门只管这之后起的整组。会话不在仓库里开始（SessionStart 没说节奏）时，
     // 第一次碰到接入的仓库就补说一次。

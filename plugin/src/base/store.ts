@@ -96,6 +96,11 @@ export interface SessionState {
   rhythm?: boolean
   /** 这个会话在各工作区最近一次看到整组结果的时间（跑了 testpace status，或在前台等到了 testpace full）。 */
   read?: Record<string, number>
+  /**
+   * 这个会话在哪些工作区干活：会话所在目录的工作区，和用改文件的工具（Claude Code 的 Edit、Write、MultiEdit，Codex 的 apply_patch）改过文件的工作区。停止门只为这些工作区问各模块还有什么没处理完（stop.ts）；
+   * 只在命令里 cd 进去看过的工作区不算，那里后来的改动是别的会话的。
+   */
+  worked?: string[]
   /** 停止门拦过的：running:<运行 id>（还在跑时拦过）、unread:<运行 id>（跑完没看结果时拦过）、flaky:<testKey>（认出的时好时坏测试）。每种只拦一次。 */
   blocked?: string[]
 }
