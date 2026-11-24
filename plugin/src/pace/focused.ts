@@ -3,7 +3,7 @@
 // layermap 按命名惯例认测试，和项目的 tests 规则不一定一致：规则排除的、规则外的练习脚本它也会给，
 // 规则里不按惯例命名的它认不出。哪些算测试以 tests 规则为准，和整组一致。
 
-import { layermap, type LayermapFailure, tooOld } from '../base/layermap.ts'
+import { layermap, LAYERMAP_COMMAND, type LayermapFailure, tooOld } from '../base/layermap.ts'
 
 /**
  * layermap 的 rank：0 到 1 以下调用改动，1 是改动里的测试，2 直接导入改动，3 同模块或同目录，
@@ -140,7 +140,7 @@ export function select(
  * 找不到 layermap 时告诉 agent 怎么补上。只在命令输出里说：插件的 bin/ 只在 Bash 工具的 PATH 里，
  * hook 进程查不到，会话开始时没法准确判断装没装。
  */
-export const LAYERMAP_HINT = '装上 layermap 插件并开新会话（或把 layermap 命令加进 PATH），focused 就会只跑和改动相关的测试。'
+export const LAYERMAP_HINT = `装上 layermap 插件并开新会话（${LAYERMAP_COMMAND}），focused 就会只跑和改动相关的测试。`
 
 /** 列出前几个，多的说一共几个：a、b、c 等 5 个。 */
 export function someOf(items: string[], unit: string, shown = 3): string {

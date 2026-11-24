@@ -357,7 +357,7 @@ describe('调 LayerMap', () => {
     const silent = fake('process.exit(3)')
     assert.deepEqual(ask(silent, ['check', '--json']), { ok: false, kind: 'failed', problem: 'layermap 出错了（退出码 3）' })
 
-    const old = { ok: false, kind: 'old', problem: `layermap 版本太旧，要 ${LAYERMAP_MINIMUM} 以上：升级 layermap 插件（claude plugin update layermap@layermap），开新会话后再跑` }
+    const old = { ok: false, kind: 'old', problem: `layermap 版本太旧，要 ${LAYERMAP_MINIMUM} 以上：升级 layermap 插件（Claude Code 里是 claude plugin update layermap@layermap），开新会话后再跑` }
     // 旧版不认识的命令只打印用法
     assert.deepEqual(ask(fake('console.error("Usage: layermap <command>"); process.exit(2)'), ['imports', '--json']), old)
     // 输出不是 JSON

@@ -98,4 +98,4 @@ testpace 不管测试的写法风格（分几层、怎么组织、写多细）�
 - 整组在合回默认分支时跑：做完的几个分支一起合，跑一次 `testpace full`，通过了再落地（`gatelight:merge` 技能）。
 - 同一个工作区一次只跑一轮测试：已经有 testpace 的命令在跑时，再起一个会直接退出（退出码 3），等它结束再跑。
 
-`focused` 靠 layermap 按改动选测试：PATH 里要有 `layermap` 命令（装上 layermap 插件并开新会话就有）。没有时 `focused` 只跑 `fast`，然后建议跑整组；其余命令和合并门照常。
+`focused` 靠 layermap 按改动选测试：PATH 里要有 `layermap` 命令（装上 layermap 插件并开新会话就有；Codex 和终端里还要跑一次 `npx layermap setup command`，在 `~/.local/bin` 放上它）。没有时 `focused` 只跑 `fast`，然后建议跑整组；其余命令和合并门照常。
