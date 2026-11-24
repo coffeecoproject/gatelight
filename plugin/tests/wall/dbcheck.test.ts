@@ -9,8 +9,8 @@ import { modwall, sampleRepo, tempDir, write } from './helpers.ts'
 
 const DATABASE = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' }
 
-function database(): NonNullable<Layout['databases'][number]> {
-  const parsed = parseConfig(JSON.stringify({ roots: ['src/modules'], entry: ['index.ts'], database: DATABASE }))
+function database(extra: Record<string, unknown> = {}): NonNullable<Layout['databases'][number]> {
+  const parsed = parseConfig(JSON.stringify({ roots: ['src/modules'], entry: ['index.ts'], database: { ...DATABASE, ...extra } }))
   const layout = new Layout(parsed.config as Config, ['src/modules/orders/index.ts', 'src/modules/billing/index.ts'])
   return layout.databases[0] as NonNullable<Layout['databases'][number]>
 }
@@ -171,6 +171,64 @@ describe('db check 的比对', () => {
     ])
   })
 
+  test('没写运行角色模板：<module>_app 这类角色和别的角色一样，能用模块的内部 schema 就拦', () => {
+    const r = found({
+      roles: [...EMPTY.roles, role('orders_app', false)],
+      privileges: [...EMPTY.privileges, { schema: 'orders', role: 'orders_app', usage: true, create: false }],
+    })
+    assert.deepEqual(r, ['角色 orders_app 能使用（USAGE） orders 模块的内部 schema orders'])
+  })
+
+  test('写了运行角色模板：模块的运行角色能用本模块的内部 schema；用别的模块的内部 schema、建对象、拥有对象、有建库建角色这类特权照样拦；库里没有的不管', () => {
+    const runtime = (catalog: Partial<Catalog>): string[] =>
+      catalogViolations(database({ runtime: '<module>_app' }), { ...EMPTY, ...catalog }).map(v => v.where[0] as string)
+    const roles = [...EMPTY.roles, role('orders_app', false), role('billing_app', false)]
+    const own = [
+      ...EMPTY.privileges,
+      { schema: 'orders', role: 'orders_app', usage: true, create: false },
+      { schema: 'orders_api', role: 'orders_app', usage: true, create: false },
+      { schema: 'billing', role: 'billing_app', usage: true, create: false },
+      { schema: 'shared', role: 'billing_app', usage: true, create: false },
+    ]
+    assert.deepEqual(runtime({ roles, privileges: own }), [])
+    // 没建运行角色的模块不报
+    assert.deepEqual(runtime({ roles: EMPTY.roles }), [])
+
+    const r = runtime({
+      roles: [
+        ...EMPTY.roles,
+        role('orders_app', false, { ownsObjects: true, createSchema: true }),
+        role('billing_app', false, { superuser: true, createRole: true, createDb: true }),
+      ],
+      privileges: [
+        ...own,
+        { schema: 'billing', role: 'orders_app', usage: true, create: false },
+        { schema: 'orders', role: 'billing_app', usage: true, create: true },
+        { schema: 'billing', role: 'billing_app', usage: true, create: true },
+        { schema: 'orders_api', role: 'orders_app', usage: true, create: true },
+        { schema: 'shared', role: 'orders_app', usage: true, create: true },
+        { schema: 'public', role: 'orders_app', usage: true, create: true },
+      ],
+    })
+    assert.deepEqual(r, [
+      'billing 模块的运行角色 billing_app 是超级用户、能建角色、能建库',
+      'orders 模块的运行角色 orders_app 能在库里建 schema、能在 public 里建对象、拥有对象',
+      '角色 orders_app 能使用（USAGE） billing 模块的内部 schema billing',
+      '角色 billing_app 能使用（USAGE）、建对象（CREATE） orders 模块的内部 schema orders',
+      'billing 模块的运行角色 billing_app 能在内部 schema billing 里建对象（CREATE）',
+      '角色 orders_app 能在 orders 模块的入口 schema orders_api 里建对象（CREATE）',
+      '角色 orders_app 能在 共享层的 schema shared 里建对象（CREATE）',
+    ])
+  })
+
+  test('写了运行角色模板：模块的角色本身照旧（运行角色的规矩不套到它身上），登录账号能用内部 schema 照样拦', () => {
+    const r = catalogViolations(database({ runtime: '<module>_app' }), {
+      ...EMPTY,
+      privileges: [...EMPTY.privileges, { schema: 'orders', role: 'app', usage: true, create: false }],
+    }).map(v => v.where[0])
+    assert.deepEqual(r, ['角色 app 能使用（USAGE） orders 模块的内部 schema orders'])
+  })
+
   test('模块和共享层的函数、过程都要 SECURITY DEFINER（函数里就切不了身份），聚合函数不管；入口视图不能设 security_invoker，内部 schema 里的不管', () => {
     const path = ['search_path=orders, pg_temp']
     const r = found({
@@ -244,6 +302,17 @@ describe('modwall db check', () => {
     assert.match(sent, /^\\set QUIET on/)
     assert.match(sent, /\\set ON_ERROR_STOP on/)
     assert.match(sent, /FROM pg_namespace/)
+  })
+
+  test('配置写了运行角色模板：模块的运行角色用本模块的内部 schema 通过，用别的模块的拦', () => {
+    const repo = dbRepo({ database: { ...DATABASE, runtime: '<module>_app' } })
+    const catalog = (privileges: Catalog['privileges']): string =>
+      `modwall-db:${JSON.stringify({ ...SAMPLE, roles: [...SAMPLE.roles, role('booking_app', false)], privileges })}`
+    const own = modwall(repo, ['db', 'check', '--psql', fakePsql([catalog([{ schema: 'booking', role: 'booking_app', usage: true, create: false }])]).command])
+    assert.equal(own.code, 0, own.out)
+    const other = modwall(repo, ['db', 'check', '--psql', fakePsql([catalog([{ schema: 'billing', role: 'booking_app', usage: true, create: false }])]).command])
+    assert.equal(other.code, 1, other.out)
+    assert.match(other.out, /✗ 角色 booking_app 能使用（USAGE） billing 模块的内部 schema billing/)
   })
 
   test('有越界：列出来，退出码 1', () => {

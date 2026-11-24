@@ -39,6 +39,7 @@ modwall 让 agent 默认按模块开发，越界由程序拦。它不自己解�
    - 入口 schema 的使用权、入口视图的读权限授给各模块的角色（比如一个所有模块角色都是成员的组角色，配上 `ALTER DEFAULT PRIVILEGES`）；内部 schema 不授权给别的角色，模块的 schema 和 `shared` 不授 `CREATE` 给别人；Postgres 14 要 `REVOKE CREATE ON SCHEMA public FROM PUBLIC`。
    - 建库那一步 `REVOKE CONNECT ON DATABASE <库> FROM PUBLIC`，再把 `CONNECT` 授给登录账号和迁移账号：角色是整个实例共用的，同一个实例上别的项目有同名模块时，它的登录账号能连进来切成这个模块的角色。开发、测试的库也一样。
    - 开发、测试也用登录账号连库，不用超级用户。
+   - 可选：项目要让模块的代码运行时改不了表结构的，每个模块再建一个运行角色（比如 `<模块>_app`，`NOLOGIN`），本模块的迁移只授给它本模块内部 schema 的 `USAGE` 和表上的 `SELECT`、`INSERT`、`UPDATE`、`DELETE`；它不拥有对象、没有 `CREATE`，不是模块角色的继承成员；登录账号是它的成员（同样 `NOINHERIT`），事务开头切成它而不是模块的角色。这样做的，配置里写上 `database.runtime`（下面第 2 步）。
 2. **生成配置**：`modwall init` 按搬好的目录生成 `.modwall/config.json` 草稿，并列出还没有归属的代码文件。核对草稿：
 
    ```json
@@ -55,6 +56,7 @@ modwall 让 agent 默认按模块开发，越界由程序拦。它不自己解�
    ```
 
    - `database` 只有用 Postgres 的项目写：`migrations` 是每个模块放迁移的子目录名，`shared` 是共享层的迁移目录（从仓库根目录写起），`login` 是程序连库用的登录账号，`migrator` 是跑迁移用的账号。`modwall init` 不起草它，按搬好的目录和建好的账号手动补。
+   - 建了模块运行角色的，`database` 里再加 `"runtime": "<module>_app"`（照项目的命名写，`<module>` 换成模块的内部 schema 名）。写了它，`modwall db check` 认这个运行角色能用本模块的内部 schema；它用别的模块的内部 schema、拥有对象、能建对象（包括在本模块的内部 schema 里）、是超级用户或能建角色、建库、建 schema，照样报。没建运行角色的不写，写了检查就和没有这一项一样。
    - `roots` 写目录，下面每个子目录自动是一个模块；`shared`、`app`、`outside`、`map` 的键写路径规则（`**` 跨目录，`*` 不跨目录，结尾 `/` 表示整个目录）。
    - 各项的路径不能重叠，一个代码文件只能属于其中一项。唯一的例外：直接放在模块根目录下、又要保留的文件（Python 包的 `__init__.py`、汇总各模块的 `index.ts`），在 `app` 里写到这个文件、不用通配（比如 `"app/modules/__init__.py"`），它就归装配层，不算重叠。用通配的 `app` 条目、`shared`、`outside` 都不能这样认领。`modwall init` 会把模块根目录下名字是入口文件名的文件自动写进草稿的 `app`。
    - Python 的根目录 `__init__.py` 归了装配层之后，模块不能再引用它：`from app.modules import booking`、`from .. import booking` 要改成 `from app.modules.booking import …`、`from ..booking import …`，`modwall check` 会按 R3 报出来。
