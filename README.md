@@ -42,7 +42,7 @@ codex plugin add gatelight@gatelight
 第一次用时 Codex 会要求信任插件的 hook。Codex 下的前提：
 
 - **固定命令入口**：Codex 不把插件的 `bin/` 放进命令的 PATH，合并门的钩子也靠 PATH 找 `testpace`。`testpace install` 会在 `~/.local/bin` 给插件的每条命令放一个入口（`testpace`、`modwall`、`testcraft`，内容一样，按被叫的名字转），运行时转给这台机器上装着的、完整的最高版本的插件里同名的命令（Claude Code、Codex 装的都算；缓存只复制了一部分的那份不算），插件升级不用重放；入口文件本身变了的那几版（比如插件改名），会话开始时自动把放过的旧入口换成新的，没放过的那几条不自动放（0.17.4 起多了 `modwall`、`testcraft`，升级后再跑一次 `testpace install`）。没放之前，会话开始时会说是哪几条没放、给出插件里放命令的目录，`testpace` 没放时合并门在 Codex 里不检查。`~/.local/bin` 在 PATH 里排在插件的 `bin/` 前面时，Claude Code 里这几条命令也走入口（用装着的最高版本）。
-- **LayerMap 的命令**：`testpace focused` 按改动选测试、`modwall check` 都靠 PATH 上的 `layermap` 命令。LayerMap 的 Codex 插件只带 MCP 服务、不带命令（0.1.53 实测），所以 Codex 里现在找不到它：`focused` 没法选测试，`modwall check` 不通过。要等 LayerMap 那边给 Codex 补上命令，或自己把 `layermap` 放进 PATH。
+- **LayerMap 的命令**：`testpace focused` 按改动选测试、`modwall check` 都靠 PATH 上的 `layermap` 命令。LayerMap 的 Codex 插件只带 MCP 服务、不带命令，所以装好 LayerMap 的插件、开过一次会话后，还要跑一次 `npx layermap setup command`（LayerMap 0.1.55 起）：它在 `~/.local/bin` 放一个 `layermap` 命令，运行这台机器上各 agent 的 LayerMap 插件装着的最高版本，插件升级不用重放。这个入口是 LayerMap 放的、归它管，gatelight 不替它放；没放时 `focused` 没法选测试，`modwall check` 不通过，输出里会说这一句。
 - **在沙箱外跑**：testpace 要写 `.git/testpace/`，项目的测试常要开端口、用网络，Codex 的沙箱里都跑不了。testpace 发现自己在 Codex 沙箱里（`CODEX_SANDBOX`）就不跑测试、也不跑 `status`（它要记下看过结果），说明要提权。可以每次提权交给自动审查；也可以在 `~/.codex/rules/default.rules` 里放行 `testpace`，但那等于放行 `testpace.json` 里的任何命令。
 
 ### 之后
@@ -51,7 +51,7 @@ codex plugin add gatelight@gatelight
 
 只装 gatelight 也能把关：合并门、停止门和其余命令都不依赖 layermap。但开发中没法按改动选测试，`focused` 每次都会建议跑整组。装上 layermap 后只跑和改动相关的测试。在一个整组要跑约 11 分钟的项目里，相关测试每次在 1 分钟以内到 5 分钟之间（只是这一个项目的实测）。
 
-`focused` 调的是 `layermap check --json`（layermap 0.1.48 起），PATH 里要有 `layermap` 命令，装上 layermap 插件并开新会话就有。
+`focused` 调的是 `layermap check --json`（layermap 0.1.48 起），PATH 里要有 `layermap` 命令：Claude Code 里装上 layermap 插件并开新会话就有；Codex 和终端里还要跑一次 `npx layermap setup command`（见上面 Codex 的前提）。
 
 ## 项目约定
 

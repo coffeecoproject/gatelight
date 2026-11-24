@@ -7,7 +7,7 @@ import { CONTRACT_FILE, loadContract } from '../base/contract.ts'
 import { EXIT } from '../base/exit.ts'
 import { filesNow } from '../base/git.ts'
 import { matchesAny } from '../base/glob.ts'
-import { LAYERMAP_MINIMUM, layermapVersion } from '../base/layermap.ts'
+import { LAYERMAP_COMMAND, LAYERMAP_MINIMUM, layermapVersion } from '../base/layermap.ts'
 import { openRepo, type Repo } from '../base/repo.ts'
 import { analyze, exitCode, formatReport, logCheck, prepare, type Report, violationLines } from './check.ts'
 import { CONFIG_PATH, MODWALL_DIR, schemeOf } from './config.ts'
@@ -198,7 +198,7 @@ function status(): number {
   lines.push(
     version
       ? `LayerMap：${version}${report.layermapProblem ? `，用不了：${report.layermapProblem}` : report.changesProblem ? `，layermap check 没跑成：${report.changesProblem}` : '，能用'}（最低 ${LAYERMAP_MINIMUM}）`
-      : `LayerMap：没找到 layermap 命令，要装 LayerMap 插件（${LAYERMAP_MINIMUM} 以上）`,
+      : `LayerMap：没找到 layermap 命令，要装 LayerMap 插件（${LAYERMAP_MINIMUM} 以上）；${LAYERMAP_COMMAND}`,
   )
   lines.push(...testpaceStatus(project, report.layout !== undefined && report.layout.databases.length > 0))
   console.log(lines.join('\n'))

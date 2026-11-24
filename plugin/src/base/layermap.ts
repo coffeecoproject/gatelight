@@ -11,6 +11,13 @@ import { spawnSync } from 'node:child_process'
 
 export const LAYERMAP_MINIMUM = '0.1.48'
 
+/**
+ * 插件不把命令放进 PATH 的地方怎么有 layermap 命令：Claude Code 把 LayerMap 插件的命令放进它跑命令的 PATH，
+ * Codex 的命令、终端、git 钩子里没有，要用 LayerMap 自己放的固定入口（LayerMap 0.1.55 起，它运行装着的最高版本）。
+ * 入口由 LayerMap 放、归它管，这里只说怎么放；各处"找不到命令"的提示都接这一句。
+ */
+export const LAYERMAP_COMMAND = 'Codex 和终端里还要跑一次 npx layermap setup command，在 ~/.local/bin 放上 layermap 命令'
+
 export type LayermapFailure = {
   ok: false
   /** missing：PATH 里没有 layermap 命令；old：版本太旧；failed：它跑了但没跑成。 */
@@ -25,7 +32,7 @@ export function tooOld(): LayermapFailure {
   return {
     ok: false,
     kind: 'old',
-    problem: `layermap 版本太旧，要 ${LAYERMAP_MINIMUM} 以上：升级 layermap 插件（claude plugin update layermap@layermap），开新会话后再跑`,
+    problem: `layermap 版本太旧，要 ${LAYERMAP_MINIMUM} 以上：升级 layermap 插件（Claude Code 里是 claude plugin update layermap@layermap），开新会话后再跑`,
   }
 }
 

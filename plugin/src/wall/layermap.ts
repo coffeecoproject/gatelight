@@ -2,10 +2,10 @@
 // 找命令、版本下限、出了问题怎么说都在那一处；这里读不到要的字段，就按版本太旧说。
 // LayerMap 用不了时检查算没做完，不算通过（check.ts）。
 
-import { layermap, LAYERMAP_MINIMUM, tooOld } from '../base/layermap.ts'
+import { layermap, LAYERMAP_COMMAND, LAYERMAP_MINIMUM, tooOld } from '../base/layermap.ts'
 
 const TOO_OLD = tooOld().problem
-const MISSING = `没找到 layermap 命令：modwall 用 LayerMap 读代码里的 import，要装 LayerMap 插件（${LAYERMAP_MINIMUM} 以上），开新会话后在 Bash 里再跑`
+const MISSING = `没找到 layermap 命令：modwall 用 LayerMap 读代码里的 import，要装 LayerMap 插件（${LAYERMAP_MINIMUM} 以上），开新会话后在 Bash 里再跑；${LAYERMAP_COMMAND}`
 
 /** 一条对上了项目文件的 import。 */
 export interface ImportFact {
