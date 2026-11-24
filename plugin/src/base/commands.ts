@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 import { AGENTS, currentAgent } from './agent.ts'
 import { entryPath, installEntry } from './entry.ts'
 import { EXIT } from './exit.ts'
-import { checkRefUpdates, GATE_REJECT, gateProblem, installGate } from './gate.ts'
+import { checkRefUpdates, GATE_REJECT, GATE_UNCHECKED, gateProblem, installGate } from './gate.ts'
 import { borrow, giveBack, openRepo, type Repo, runningText } from './repo.ts'
 import { processAlive } from './store.ts'
 
@@ -89,13 +89,18 @@ export function install(): number {
 
 /**
  * git 的 reference-transaction 钩子调用：标准输入是要更新的引用。放行退出码 0；拒绝退出码 GATE_REJECT，
- * 钩子只认它，git 就取消这次更新。检查时出错也拒绝：已经在检查了，确认不了要落地的代码测过就不放。
+ * git 就取消这次更新；这次没有检查、要当场说一句的退出码 GATE_UNCHECKED，钩子放行并转达。
+ * 检查时出错也拒绝：已经在检查了，确认不了要落地的代码测过就不放。
  */
 export function gate(): number {
   try {
-    const reason = checkRefUpdates(process.cwd(), readFileSync(0, 'utf8'))
-    if (!reason) return EXIT.ok
-    console.error(reason)
+    const answer = checkRefUpdates(process.cwd(), readFileSync(0, 'utf8'))
+    if (!answer) return EXIT.ok
+    if ('unchecked' in answer) {
+      console.error(answer.unchecked)
+      return GATE_UNCHECKED
+    }
+    console.error(answer.reject)
   } catch (error) {
     console.error(`testpace 合并门：没能确认要落地的代码测过（${(error as Error).message.split('\n')[0]}），这次不更新。`)
   }
