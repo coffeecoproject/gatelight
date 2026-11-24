@@ -88,6 +88,29 @@ describe('数据库的 schema 和迁移文件（配置）', () => {
       'database.migrator 的账号 shared 和共享层的角色同名：登录、迁移账号本身没有权限，只能切成模块的角色，换个名字',
     ])
   })
+
+  test('运行角色模板（database.runtime，可选）：带一个 <module>、换完是普通的角色名；不能只写 <module>', () => {
+    const parsed = (runtime: unknown) => parseConfig(JSON.stringify({ roots: ['src/modules'], entry: ['index.ts'], database: { ...DATABASE, runtime } }))
+    assert.deepEqual(parsed('<module>_app').problems, [])
+    assert.equal((parsed('<module>_app').config as { database?: { runtime?: string } }).database?.runtime, '<module>_app')
+    assert.deepEqual(parsed(undefined).problems, [])
+    assert.equal((parsed(undefined).config as { database?: object }).database && 'runtime' in (parsed(undefined).config as { database: object }).database, false)
+    const wrong = '.modwall/config.json 的 "database.runtime" 要写模块运行角色的名字模板：带一个 <module>（换成模块的内部 schema 名），其余是小写字母、数字和下划线，比如 "<module>_app"；不能只写 <module>（那是模块的角色本身）'
+    for (const bad of ['<module>', 'app', '<module>-app', '<module>_<module>', '1<module>', 3]) assert.deepEqual(parsed(bad).problems, [wrong], String(bad))
+  })
+
+  test('运行角色和模块的角色、shared、登录账号、迁移账号同名：配置错误', () => {
+    const problems = (runtime: string, files: Record<string, string> = {}, database = {}): string[] =>
+      project(files, { database: { ...DATABASE, ...database, runtime } }).layout.problems
+    assert.deepEqual(problems('<module>_app'), [])
+    assert.deepEqual(problems('<module>_app', { 'src/modules/orders-app/index.ts': '' }), [
+      'orders 模块的运行角色 orders_app（database.runtime 是 <module>_app）和orders-app 模块的角色同名：运行角色只有本模块的读写授权，换个模板',
+    ])
+    assert.deepEqual(problems('<module>_app', {}, { login: 'billing_app', migrator: 'orders_app' }), [
+      'billing 模块的运行角色 billing_app（database.runtime 是 <module>_app）和程序的登录账号（database.login）同名：运行角色只有本模块的读写授权，换个模板',
+      'orders 模块的运行角色 orders_app（database.runtime 是 <module>_app）和跑迁移的账号（database.migrator）同名：运行角色只有本模块的读写授权，换个模板',
+    ])
+  })
 })
 
 describe('R6 迁移文件', () => {

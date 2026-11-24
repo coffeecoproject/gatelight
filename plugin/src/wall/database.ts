@@ -2,11 +2,12 @@
 //   每个模块两个 schema：内部（模块目录名转成小写加下划线，adminAccess → admin_access）和入口（<内部>_api，只放视图和函数）；
 //   共享层用 shared；public 里不放对象（扩展自带的除外）。
 //   每个模块一个角色，名字就是它的内部 schema 名；共享层的角色叫 shared。程序的登录账号、跑迁移的账号不能和它们同名。
+//   配置写了运行角色模板（database.runtime）的，每个模块还有一个运行角色（模板里的 <module> 换成内部 schema 名），不能和上面这些角色、账号同名。
 //   迁移放在每个模块目录下的 database.migrations 子目录、共享层的 database.shared 目录，文件名以 14 位的时间戳开头，不能重复（迁移只写正向，一个时间戳一个文件）。
 // 这里只管划分：每个应用的库有哪些 schema、各归谁，迁移文件各归谁，以及这些算出来的配置错误。只看路径，layout.ts 用它。
 // R6 的判定在 dbrules.ts（迁移文件那部分，modwall check）和 dbcheck.ts（库里的现状，modwall db check）。
 
-import { type App, PLAIN_NAME } from './config.ts'
+import { type App, MODULE_PLACEHOLDER, PLAIN_NAME } from './config.ts'
 import type { Module } from './layout.ts'
 
 export const API_SUFFIX = '_api'
@@ -41,6 +42,8 @@ export interface Database {
 
 export const internalOf = (module: Module): string => schemaName(module.name)
 export const apiOf = (module: Module): string => `${schemaName(module.name)}${API_SUFFIX}`
+/** 模块的运行角色：配置的模板里的 <module> 换成模块的内部 schema 名。 */
+export const runtimeOf = (module: Module, template: string): string => template.replace(MODULE_PLACEHOLDER, internalOf(module))
 
 /** 这个 schema 归谁的说法，比如 orders 模块的内部 schema。 */
 export function schemaLabel(schema: string, owner: SchemaOwner): string {
@@ -85,6 +88,18 @@ export function databasesOf(apps: readonly App[], modules: readonly Module[], fi
       if (owner && owner.kind !== 'api') {
         const role = owner.kind === 'shared' ? '共享层的角色' : `${owner.module.id} 模块的角色`
         problems.push(`${where}database.${key} 的账号 ${config[key]} 和${role}同名：登录、迁移账号本身没有权限，只能切成模块的角色，换个名字`)
+      }
+    }
+    if (config.runtime !== undefined) {
+      for (const module of own) {
+        const runtime = runtimeOf(module, config.runtime)
+        const owner = schemas.get(runtime)
+        const clash =
+          owner && owner.kind !== 'api' ? (owner.kind === 'shared' ? '共享层的角色' : `${owner.module.id} 模块的角色`)
+          : runtime === config.login ? '程序的登录账号（database.login）'
+          : runtime === config.migrator ? '跑迁移的账号（database.migrator）'
+          : undefined
+        if (clash) problems.push(`${where}${module.id} 模块的运行角色 ${runtime}（database.runtime 是 ${config.runtime}）和${clash}同名：运行角色只有本模块的读写授权，换个模板`)
       }
     }
 

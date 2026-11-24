@@ -78,6 +78,10 @@ export const FIXES = {
     `跑迁移的工具发现一个模块目录，就建同名的角色和它的两个 schema（共享层是 shared 角色和 shared schema），已有就跳过：CREATE ROLE ${role} NOLOGIN。`,
   roleAttributes: (role: string) =>
     `模块和共享层的角色只用来切身份，本身不能登录、没有特权：ALTER ROLE ${role} NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB；能在库里建 schema 的，REVOKE CREATE ON DATABASE … FROM ${role}（授给 PUBLIC 的也要收回）。`,
+  runtimeRole: (role: string, owner: string) =>
+    `运行角色只用来跑模块的代码：本身没有特权，只有本模块内部 schema 的使用权和表上的读写授权（SELECT、INSERT、UPDATE、DELETE），不拥有对象、不能建对象，建表、改表结构归模块的角色 ${owner}，在迁移里做：ALTER ROLE ${role} NOSUPERUSER NOCREATEROLE NOCREATEDB；能在库里、public 里建对象的，REVOKE CREATE ON DATABASE … FROM ${role}、REVOKE CREATE ON SCHEMA public FROM ${role}（授给 PUBLIC 的也收回）；它拥有的对象用 ALTER … OWNER TO ${owner} 改归模块的角色。`,
+  runtimeCreate: (schema: string, role: string, owner: string) =>
+    `运行角色不建对象，建表、改表结构归模块的角色 ${owner}，在迁移里做：REVOKE CREATE ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是 ${role} 经成员关系从 ${owner} 继承来的，把成员关系去掉，只授本模块表上的读写。`,
   publicCreate: 'public 里不放对象：REVOKE CREATE ON SCHEMA public FROM PUBLIC（Postgres 14 默认授给所有角色），授给这个角色的也收回。',
   owner: (role: string) =>
     `模块的两个 schema 和里面的对象归模块的角色，shared 的归 shared 角色：迁移切成这个角色执行，建出来的就归它；已有的用 ALTER … OWNER TO ${role} 改，再查迁移工具有没有切身份。`,

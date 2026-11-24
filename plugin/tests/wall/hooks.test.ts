@@ -36,12 +36,17 @@ describe('会话开始', () => {
 
   test('写了 database：加上数据库按模块分 schema 的约定；没写不提', () => {
     assert.doesNotMatch(hook(sampleRepo(), 'SessionStart')?.hookSpecificOutput.additionalContext as string, /schema/)
-    const repo = sampleRepo(dir => {
-      const file = join(dir, '.modwall/config.json')
-      writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), database: { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' } }))
-    })
-    const text = hook(repo, 'SessionStart')?.hookSpecificOutput.additionalContext as string
-    assert.match(text, /数据库（Postgres）也按模块分：.*入口 schema（<内部 schema>_api，不放表）.*模块之间不建外键（只存 id）.*迁移放在模块目录下的 migrations\/（共享层的在 src\/shared\/migrations\/）.*SET search_path = <本模块的内部 schema>, pg_temp.*SECURITY DEFINER.*不自己切身份/)
+    const withDb = (extra: Record<string, unknown> = {}): string =>
+      sampleRepo(dir => {
+        const file = join(dir, '.modwall/config.json')
+        const database = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator', ...extra }
+        writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), database }))
+      })
+    const text = hook(withDb(), 'SessionStart')?.hookSpecificOutput.additionalContext as string
+    assert.match(text, /数据库（Postgres）也按模块分：.*入口 schema（<内部 schema>_api，不放表）.*模块之间不建外键（只存 id）.*迁移放在模块目录下的 migrations\/（共享层的在 src\/shared\/migrations\/）.*SET search_path = <本模块的内部 schema>, pg_temp.*SECURITY DEFINER.*程序每个事务开头切成模块的角色.*不自己切身份/)
+    // 写了运行角色模板：程序切成模块的运行角色
+    const runtime = hook(withDb({ runtime: '<module>_app' }), 'SessionStart')?.hookSpecificOutput.additionalContext as string
+    assert.match(runtime, /和一个运行角色（<module>_app，只有本模块的读写授权，不拥有对象、不建对象），程序每个事务开头切成模块的运行角色/)
   })
 
   test('模块多时只列模块名和 MODULE.md 的头两句：中文、英文、中英混排都能断句', () => {

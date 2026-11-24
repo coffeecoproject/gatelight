@@ -9,10 +9,12 @@
 //   模块两个 schema 和里面的对象归模块的角色，shared 的归 shared 角色；除了超级用户和 schema 的主人，没有角色（包括经继承）能用模块的内部 schema、
 //   能在模块的两个 schema 和 shared 里建对象；函数都是 SECURITY DEFINER（函数里也就切不了身份），入口视图没有设 security_invoker；
 //   登录账号、迁移账号存在、能登录、不是超级用户、不拥有任何对象。
+//   配置写了运行角色模板（database.runtime）的：模块的运行角色可以用本模块的内部 schema（别的模块的照样不行），
+//   不是超级用户、不能建角色和库、不能在库里建 schema、不能在任何 schema 里建对象（本模块的内部 schema 也不行）、不拥有任何对象。库里没有的运行角色不管。
 // 扩展自带的 schema 和对象不算。
 
 import { spawnSync } from 'node:child_process'
-import { type Database, internalOf, PUBLIC_SCHEMA, SHARED_SCHEMA, type SchemaOwner, schemaLabel } from './database.ts'
+import { type Database, internalOf, PUBLIC_SCHEMA, runtimeOf, SHARED_SCHEMA, type SchemaOwner, schemaLabel } from './database.ts'
 import { crossing, expectedSearchPath, FIXES, nameClashes, searchPathOk, writtenApis } from './dbrules.ts'
 import type { Module } from './layout.ts'
 import type { Violation } from './rules.ts'
@@ -285,7 +287,7 @@ export function catalogViolations(database: Database, catalog: Catalog): Violati
   return [...violations.values()]
 }
 
-/** 按模块的数据库角色：角色的属性、对象的归属、内部 schema 的权限、入口函数和视图以谁的身份执行、库的 CONNECT、登录和迁移账号。 */
+/** 按模块的数据库角色：角色（和运行角色）的属性、对象的归属、内部 schema 的权限、入口函数和视图以谁的身份执行、库的 CONNECT、登录和迁移账号。 */
 function roleViolations(database: Database, catalog: Catalog, add: (what: string, where: string, fix: string) => void): void {
   const config = database.app.database as NonNullable<Database['app']['database']>
   const roles = new Map(catalog.roles.map(role => [role.name, role]))
@@ -312,6 +314,23 @@ function roleViolations(database: Database, catalog: Catalog, add: (what: string
     if (publicCreate) add(`角色 ${name} 在 public 建对象`, `${who}的角色 ${name} 能在 public 里建对象`, FIXES.publicCreate)
   }
 
+  // 模块的运行角色（配置写了模板时）：只读写本模块，不拥有对象、不能做 DDL。在别的 schema 里建对象由下面查权限的地方报
+  const runtimes = new Map<string, Module>()
+  if (config.runtime !== undefined) for (const { module } of owners) if (module) runtimes.set(runtimeOf(module, config.runtime), module)
+  for (const [name, module] of runtimes) {
+    const role = roles.get(name)
+    if (!role) continue
+    const wrong = [
+      role.superuser && '是超级用户',
+      role.createRole && '能建角色',
+      role.createDb && '能建库',
+      role.createSchema && '能在库里建 schema',
+      catalog.privileges.some(item => item.schema === PUBLIC_SCHEMA && item.role === name && item.create) && '能在 public 里建对象',
+      role.ownsObjects && '拥有对象',
+    ].filter(Boolean)
+    if (wrong.length) add(`运行角色 ${name} 属性`, `${module.id} 模块的运行角色 ${name} ${wrong.join('、')}`, FIXES.runtimeRole(name, internalOf(module)))
+  }
+
   /** schema 归谁的角色：模块的两个 schema 归模块的角色，shared 归 shared 角色。 */
   const expectedOwner = (schema: string): string | undefined => {
     const at = database.schemas.get(schema)
@@ -328,12 +347,14 @@ function roleViolations(database: Database, catalog: Catalog, add: (what: string
   for (const type of catalog.types) owned(`类型 ${type.schema}.${type.name}`, type.schema, type.owner)
   for (const fn of catalog.functions) owned(`函数 ${fn.schema}.${fn.name}(${fn.args})`, fn.schema, fn.owner)
 
-  // 内部 schema 只有它的主人（模块的角色）能用；模块的两个 schema 和 shared 只有主人能建对象
+  // 内部 schema 只有它的主人（模块的角色）和本模块的运行角色能用，运行角色不能建对象；模块的两个 schema 和 shared 只有主人能建对象
   for (const item of catalog.privileges) {
     const at = database.schemas.get(item.schema)
     const expected = expectedOwner(item.schema)
     if (!at || expected === undefined || item.role === expected) continue
-    if (at.kind === 'internal' && (item.usage || item.create)) {
+    if (at.kind === 'internal' && runtimes.get(item.role)?.id === at.module.id) {
+      if (item.create) add(`权限 ${item.schema} ${item.role}`, `${at.module.id} 模块的运行角色 ${item.role} 能在内部 schema ${item.schema} 里建对象（CREATE）`, FIXES.runtimeCreate(item.schema, item.role, expected))
+    } else if (at.kind === 'internal' && (item.usage || item.create)) {
       const what = [item.usage && '使用（USAGE）', item.create && '建对象（CREATE）'].filter(Boolean).join('、')
       add(`权限 ${item.schema} ${item.role}`, `角色 ${item.role} 能${what} ${at.module.id} 模块的内部 schema ${item.schema}`, FIXES.internalPrivilege(item.schema, item.role))
     } else if (item.create) {
