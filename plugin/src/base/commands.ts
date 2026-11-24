@@ -2,26 +2,11 @@
 // 命令行入口（src/cli.ts）分发到这里；各模块的命令在各自的目录里。
 
 import { readFileSync } from 'node:fs'
-import { AGENTS, currentAgent } from './agent.ts'
 import { ENTRY_COMMANDS, entryDir, entryPath, installEntries } from './entry.ts'
 import { EXIT } from './exit.ts'
 import { checkRefUpdates, GATE_REJECT, GATE_UNCHECKED, gateProblem, installGate } from './gate.ts'
 import { borrow, giveBack, openRepo, type Repo, runningText } from './repo.ts'
 import { processAlive } from './store.ts'
-
-/** 跑这条命令的 agent：会话号、在不在沙箱里。用户在终端里跑的没有。 */
-export const AGENT = currentAgent()
-
-/**
- * 在 agent 的沙箱里不跑：测试会因为端口、网络被拒跑出假失败，记进去后 report 会当成测试不稳定；
- * status 要记下这个会话看过结果，写不进 .git 时停止门还会再拦。
- * 仓库在沙箱放行的位置（比如 /tmp）时记录目录也写得进去，所以不能只靠写不写得进去判断。
- */
-export function sandboxRefusal(): number | undefined {
-  if (!AGENT?.sandboxed) return undefined
-  console.error(`testpace 要在 ${AGENTS[AGENT.kind].name} 的沙箱外跑：它要写 .git/testpace/ 的记录，测试还常要开端口和网络，在沙箱里会被拒、结果不准。申请提权（在沙箱外）重新运行这条命令。`)
-  return EXIT.usage
-}
 
 /** 命令所在的仓库；不在 git 仓库里时说一句。 */
 export function context(): Repo | undefined {

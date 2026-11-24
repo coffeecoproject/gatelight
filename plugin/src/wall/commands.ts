@@ -236,6 +236,24 @@ function testpaceStatus(project: Project, hasDatabase: boolean): string[] {
   return lines
 }
 
+/**
+ * 在 agent 的沙箱里跑不了的子命令和它要做的事（见 base/commandline.ts）。
+ * check、status 要 LayerMap 的地图：它存在项目外面，沙箱里更新不了，R1–R4 查不成，check 会给出假的"没通过"。
+ * db check 跑的是项目给的命令，要连数据库。init 只读写项目里的文件，不在里面。
+ */
+export function outside(argv: string[]): string | undefined {
+  switch (argv[0]) {
+    case 'check':
+      return '让 LayerMap 更新它的地图（存在项目外面）、写 .git/testpace/ 的记录'
+    case 'status':
+      return '让 LayerMap 更新它的地图（存在项目外面）'
+    case 'db':
+      return argv[1] === 'check' ? '跑 --psql 给的命令连数据库' : undefined
+    default:
+      return undefined
+  }
+}
+
 export function main(argv: string[]): number {
   switch (argv[0]) {
     case 'init':
