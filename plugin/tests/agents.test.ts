@@ -181,6 +181,16 @@ describe('合并门在两个 agent 之间', () => {
     assert.match(r.stderr, /testpace 合并门：这次要把 main 更新到/)
   })
 
+  test('Claude Code 往终端面板里打的 git 命令也拦：它开的标签带着 CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS，没有 CLAUDECODE', () => {
+    const terminal = { CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS: 's' }
+    assert.deepEqual(currentAgent(terminal), { kind: 'claude', sandboxed: false }, '算 Claude Code 的命令；会话号不在这个变量里取')
+    const repo = gatedRepo()
+    change(repo)
+    const r = spawnSync('/bin/sh', ['-c', 'git commit -qam m'], { cwd: repo, env: { ...ENV, ...terminal, PATH: `${BIN_DIR}:${ENV.PATH}` }, encoding: 'utf8' })
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /testpace 合并门：这次要把 main 更新到/)
+  })
+
   test('更新的版本配的钩子：会话开始不改回去、status 不报问题；更旧的照常更新；正文没变只是版本旧的不重配', () => {
     const global = globalGitConfig()
     withEnv({ GIT_CONFIG_GLOBAL: global }, () => {

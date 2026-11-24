@@ -12,7 +12,7 @@
 
 它原来叫 testpace（另两项原来是单独的 testcraft、modwall 插件）。改的是插件的名字和技能的前缀（`gatelight:`）；三条命令、`testpace.json`、`.testcraft/`、`.modwall/`、`.git/` 下的记录都没改，已接入的项目不用动。从 testpace 换过来要做的见"换成这一版要做的"。
 
-把关只管 agent 执行的命令：合并门是配在全局 git 配置里的 git 钩子，只检查带着 agent 环境变量（Claude Code 的 `CLAUDECODE`、Codex 的 `CODEX_THREAD_ID` 等，见 `plugin/src/base/agent.ts`）的 git 命令；停止门是 agent 的 Stop hook。两边共用同一份记录：Claude 里测过的代码，Codex 合并时不用重跑。
+把关只管 agent 执行的命令：合并门是配在全局 git 配置里的 git 钩子，只检查带着 agent 环境变量（Claude Code 的 `CLAUDECODE`，桌面版里它往终端面板打的命令带 `CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS`；Codex 的 `CODEX_THREAD_ID` 等，见 `plugin/src/base/agent.ts`）的 git 命令；停止门是 agent 的 Stop hook。两边共用同一份记录：Claude 里测过的代码，Codex 合并时不用重跑。
 
 ## 安装
 
