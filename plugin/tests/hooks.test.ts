@@ -422,6 +422,31 @@ describe('合并门（git 钩子）', () => {
     sh(lost, 'git branch -m main work && git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone')
     assert.match(testpace(lost, ['status']).out, /合并门：找不到默认分支（origin\/HEAD 指着不存在的分支 gone，本地和 origin 上也没有 main、master），合并门没有生效。/)
   })
+
+  test('认不出默认分支时建出 main（没有远程，main 删了再建）：不拦，当场说这次没有检查；那份代码测过的不说', () => {
+    const repo = gatedRepo()
+    sh(repo, 'git checkout -qb work')
+    change(repo)
+    commit(repo, 'work')
+    sh(repo, 'git branch -qD main')
+    const created = agent(repo, 'git branch main work')
+    assert.equal(created.code, 0, '不拦')
+    assert.equal(head(repo), head(repo, 'work'))
+    assert.match(
+      created.out,
+      /^testpace 合并门：这次建出了 main，建之前认不出默认分支（没有 origin\/HEAD，本地和 origin 上也没有 main、master），这次没有检查。它指向的代码（[0-9a-f]{10}）没有整组通过记录：在这份代码上跑 testpace full。\n$/,
+    )
+
+    // 那份代码有整组通过记录：没有要说的
+    sh(repo, 'git branch -qD main')
+    assert.equal(testpace(repo, ['full']).code, 0)
+    assert.equal(agent(repo, 'git branch main work').out, '')
+
+    // 建别的分支不说：认不出默认分支的仓库里，平时的提交、开分支不打扰
+    sh(repo, 'git branch -qD main')
+    change(repo, '// 又改\n')
+    assert.equal(agent(repo, 'git commit -qam 又改 && git branch other').out, '')
+  })
 })
 
 describe('会话开始', () => {

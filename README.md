@@ -165,7 +165,7 @@ git config --global --unset-all testpace.check
   - 钩子在所有仓库里都跑：没有分支要动（只是远程跟踪分支、`HEAD`）时什么都不做；有分支要动时调用一次 `testpace gate`，没接入 testpace 的仓库直接放行。
   - 只有 `testpace gate` 明确拒绝才拦。没得到检查结论的都不挡：会话里找不到 `testpace` 命令（插件没启用、Codex 里没放固定命令入口）、插件没装全、找不到够新的 node、会话里是旧版本的 testpace，在接入了 testpace 的仓库里说一句，附上 testpace 的输出。插件更新后，开着的会话要重开才换成新版本。`gate` 已经在检查、却确认不了要落地的代码测过时照样拦。
   - 钩子命令里记着是哪一版 testpace 配的。Claude Code 和 Codex 装的版本不同时，会话开始的自动更新只升不降，不来回覆盖。
-  - 合并门没配、配的命令是更旧版本的、被仓库自己的配置关掉（`hook.testpace.enabled = false`）、git 太旧，或找不到默认分支（没有 `origin/HEAD`，本地和 origin 上也没有 `main`、`master`）时，`testpace status` 和会话开始时的说明会讲出来。
+  - 合并门没配、配的命令是更旧版本的、被仓库自己的配置关掉（`hook.testpace.enabled = false`）、git 太旧，或找不到默认分支（没有 `origin/HEAD`，本地和 origin 上也没有 `main`、`master`）时，`testpace status` 和会话开始时的说明会讲出来。找不到默认分支时，agent 的命令建出了 `main` 或 `master`（比如没有远程的仓库把 `main` 删了再建）、那份代码又没有整组通过记录的，不拦，当场说一句这次没有检查。
 - **整组跑全部测试**：测试由 testpace 按 `tests` 规则自己找，交给 `files` 跑，不靠谁记得把新测试加进整组。放松整组的办法（改 `full`、`tests` 规则）要你同意，见上面。
 - **整组里的检查**：仓库里有 `.modwall/`、`.testcraft/` 时，`testpace full` 先跑 `modwall check`、`testcraft checklist`，再跑 `full` 和全部测试：检查便宜，有一段没过就不往下跑、不算整组通过，合并门照常拦。它们随插件一起装，不在仓库里也不在本机配置里登记；分支上删掉 `.modwall/`、`.testcraft/` 躲不过（默认分支上有就算接入）。
 - **用户确认**（确认工具 `confirm_with_user`）：要你同意的改动，检查把它们按编号存好，agent 调这个工具弹窗给你看，你点了同意才记下；agent 自己说"用户同意了"不算。同意按项记（哪项检查的、改之前是什么、改成什么、你看到的文字），同意过的那一项没再变就不再问。

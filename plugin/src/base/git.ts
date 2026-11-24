@@ -118,6 +118,9 @@ export type DefaultBranch =
     }
   | { branch?: undefined; problem: string }
 
+/** 没有可信的 origin/HEAD 时，按这几个名字认默认分支。 */
+export const FALLBACK_BRANCHES = ['main', 'master'] as const
+
 /**
  * 默认分支，认不出时说明原因。只在这里认，合并门、停止门、选测试的对比、报告都用这一个结果。
  * origin/HEAD 指的分支在 origin 上确实有才信它：指着不存在的分支时照没有 origin/HEAD 认，
@@ -128,7 +131,7 @@ export function findDefaultBranch(root: string): DefaultBranch {
   const head = gitOr(root, ['symbolic-ref', '--quiet', `${ORIGIN}HEAD`])
   const target = head?.startsWith(ORIGIN) ? head.slice(ORIGIN.length) : head
   if (target && head?.startsWith(ORIGIN) && refExists(root, head)) return { branch: target }
-  for (const name of ['main', 'master']) {
+  for (const name of FALLBACK_BRANCHES) {
     if (refExists(root, `refs/heads/${name}`) || refExists(root, `${ORIGIN}${name}`)) return { branch: name, ...(target ? { dangling: target } : {}) }
   }
   return {

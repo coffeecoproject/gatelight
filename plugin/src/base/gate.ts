@@ -10,8 +10,8 @@
 import { AGENT_MARKERS } from './agent.ts'
 import { contractAt, CONTRACT_FILE, effectiveIgnore } from './contract.ts'
 import { short } from './format.ts'
-import { commitOf, configuredHooks, configValue, defaultBranch, findDefaultBranch, git, hasFile, hasRemote, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
-import { coverageOf, openRepo } from './repo.ts'
+import { commitOf, configuredHooks, configValue, FALLBACK_BRANCHES, findDefaultBranch, git, hasFile, hasRemote, isAncestor, onRemoteBranch, treeOf, workTreeId } from './git.ts'
+import { coverageOf, openRepo, type Repo } from './repo.ts'
 import { compareVersions, VERSION } from './version.ts'
 
 /** 合并门在 git 配置里的钩子：hook.testpace.event、hook.testpace.command。 */
@@ -25,6 +25,12 @@ const EVENT = 'reference-transaction'
  */
 export const GATE_REJECT = 20
 
+/**
+ * testpace gate 说"这次没有检查"时的退出码：认不出默认分支，这次更新却建出了 main、master（见 uncheckedNote）。
+ * 钩子放行，原样转达它的话。和 GATE_REJECT 一样不和 node、sh 自己出错时的退出码重合。
+ */
+export const GATE_UNCHECKED = 21
+
 const NOT_CHECKED = 'testpace 合并门：testpace 没有给出检查结论（退出码 %s），这次没有检查。可能是找不到 testpace 命令、插件没装全、找不到能运行它的 node，或会话里的 testpace 是旧版本（插件更新后，开着的会话要重开才换成新版本）。'
 
 /**
@@ -35,8 +41,8 @@ const NOT_CHECKED = 'testpace 合并门：testpace 没有给出检查结论（�
  *   不来回覆盖。正文没变时不看这一句，发版不用重配。
  * - 只管 agent 的命令（命令环境里有已接入的 agent 的标记变量，见 agent.ts 的 AGENTS），用户自己在终端里的操作不管。
  * - 没有分支要动（只是远程跟踪分支、HEAD）的不调用 testpace：agent 每次更新引用都会经过这里，不用每次启动 node。
- * - 只有 testpace gate 明确拒绝（退出码 GATE_REJECT）才拦。别的都是没检查：放行，仓库里有 testpace.json
- *   （钩子在工作区根目录运行）才说一句、附上 testpace 的输出，别的仓库不打扰。
+ * - 只有 testpace gate 明确拒绝（退出码 GATE_REJECT）才拦。它自己说这次没有检查的（退出码 GATE_UNCHECKED）放行，原样转达。
+ *   别的都是没检查：放行，仓库里有 testpace.json（钩子在工作区根目录运行）才说一句、附上 testpace 的输出，别的仓库不打扰。
  */
 const HOOK_BODY = [
   'testpace_gate() {',
@@ -47,6 +53,7 @@ const HOOK_BODY = [
   `testpace_msg=$(printf '%s\\n' "$testpace_refs" 2>/dev/null | testpace gate 2>&1); testpace_code=$?;`,
   `[ "$testpace_code" != 0 ] || return 0;`,
   `if [ "$testpace_code" = ${GATE_REJECT} ]; then printf '%s\\n' "$testpace_msg" >&2; return 1; fi;`,
+  `if [ "$testpace_code" = ${GATE_UNCHECKED} ]; then printf '%s\\n' "$testpace_msg" >&2; return 0; fi;`,
   `[ -f testpace.json ] || return 0;`,
   `printf '${NOT_CHECKED}\\n' "$testpace_code" >&2;`,
   `[ -z "$testpace_msg" ] || printf '%s\\n' "$testpace_msg" >&2;`,
@@ -153,25 +160,59 @@ export function ensureGate(root: string): string | undefined {
   ].join('')
 }
 
+interface RefUpdate {
+  next: string
+  ref: string
+}
+
+/** 删除分支（新值全是 0）、符号引用：没有代码落地。 */
+function landsNothing(next: string): boolean {
+  return /^0+$/.test(next) || next.startsWith('ref:')
+}
+
+/**
+ * 认不出默认分支时合并门没法把关。多数时候不用说（status 和会话说明里有），只有一种要当场说：这次更新建出了 main 或
+ * master，建好以后它就是默认分支（比如没有远程的仓库把 main 删了再建），而那份代码接入了约定、又没有整组通过记录。
+ * 不拦：建之前确实不知道该守哪个分支。
+ */
+function uncheckedNote(repo: Repo, updates: RefUpdate[], problem: string): string | undefined {
+  for (const { next, ref } of updates) {
+    const name = FALLBACK_BRANCHES.find(branch => ref === `refs/heads/${branch}`)
+    if (!name || landsNothing(next)) continue
+    const incoming = contractAt(repo.root, next)
+    const tree = incoming && treeOf(repo.root, next)
+    if (!tree || coverageOf(repo, effectiveIgnore(incoming, undefined), tree).kind !== 'none') continue
+    return `testpace 合并门：这次建出了 ${name}，建之前认不出默认分支（${problem}），这次没有检查。它指向的代码（${short(tree)}）没有整组通过记录：在这份代码上跑 testpace full。`
+  }
+  return undefined
+}
+
+/** 合并门对一次引用更新的结论：reject 是拒绝的原因；unchecked 是这次没有检查、要当场说的话（放行）。 */
+export type GateAnswer = { reject: string } | { unchecked: string }
+
 /**
  * git 钩子交来的引用更新（每行 "<旧值> <新值> <引用>"）：要移动默认分支、而且落地的代码没有整组通过记录时，
- * 返回拒绝的原因。
+ * 返回拒绝的原因。没有要说的返回 undefined。
  */
-export function checkRefUpdates(cwd: string, input: string): string | undefined {
+export function checkRefUpdates(cwd: string, input: string): GateAnswer | undefined {
   const repo = openRepo(cwd)
-  const branch = repo && defaultBranch(repo.root)
-  if (!repo || !branch) return undefined
-  const root = repo.root
-  const updates = input.split('\n').map(line => {
+  if (!repo) return undefined
+  const updates: RefUpdate[] = input.split('\n').map(line => {
     const [, next = '', ref = ''] = line.split(' ')
     return { next, ref }
   })
+  const found = findDefaultBranch(repo.root)
+  if ('problem' in found) {
+    const unchecked = uncheckedNote(repo, updates, found.problem)
+    return unchecked ? { unchecked } : undefined
+  }
+  const { branch } = found
+  const root = repo.root
   // 同一次更新里远程默认分支（refs/remotes/<远程>/<分支>）的新位置：git fetch <远程> main:main 这类，
   // 本地分支和远程跟踪分支一起动，这时远程跟踪分支还没更新到位
   const fetched = updates.filter(({ ref }) => /^refs\/remotes\/[^/]+\/(.+)$/.exec(ref)?.[1] === branch).map(({ next }) => next)
   for (const { next, ref } of updates) {
-    // 删除分支（新值全是 0）、符号引用不管
-    if (ref !== `refs/heads/${branch}` || /^0+$/.test(next) || next.startsWith('ref:')) continue
+    if (ref !== `refs/heads/${branch}` || landsNothing(next)) continue
     // 接入了约定的仓库才管：默认分支现在的代码或要落地的代码里有 testpace.json
     const incoming = contractAt(root, next)
     if (!incoming && !hasFile(root, `refs/heads/${branch}`, CONTRACT_FILE)) continue
@@ -198,11 +239,13 @@ export function checkRefUpdates(cwd: string, input: string): string | undefined 
             '先在要落地的这份代码上跑 testpace full，通过后再落地；合并分支照 gatelight:merge 技能做，在合并分支上测过再快进。',
             ...(hasRemote(root) ? [`只是同步远程的 ${branch} 的话：先 git fetch <远程>，再把 ${branch} 快进到 <远程>/${branch}。`] : []),
           ]
-    return [
-      `testpace 合并门：这次要把 ${branch} 更新到 ${short(next)}，那份代码（${short(tree)}）没有整组通过记录，${branch} 没有更新。`,
-      ...notes,
-      '工作区和暂存区里可能留着这次操作带来的改动，用 git status 看；cherry-pick、rebase、revert 这类停在半路的操作先 --abort。',
-    ].join('\n')
+    return {
+      reject: [
+        `testpace 合并门：这次要把 ${branch} 更新到 ${short(next)}，那份代码（${short(tree)}）没有整组通过记录，${branch} 没有更新。`,
+        ...notes,
+        '工作区和暂存区里可能留着这次操作带来的改动，用 git status 看；cherry-pick、rebase、revert 这类停在半路的操作先 --abort。',
+      ].join('\n'),
+    }
   }
   return undefined
 }
