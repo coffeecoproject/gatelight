@@ -3,7 +3,8 @@
 // status 把底座和各模块的情况合在一起说，也放在这里。这个文件的路径不能变：bin/testpace 和固定入口都按它找。
 
 import './modules.ts'
-import { AGENT, context, gate, hold, install, release, sandboxRefusal } from './base/commands.ts'
+import { AGENT, runCommandLine } from './base/commandline.ts'
+import { context, gate, hold, install, release } from './base/commands.ts'
 import { CONTRACT_FILE, joined } from './base/contract.ts'
 import { ENTRY_COMMANDS, type EntryState, entryDir, entryState } from './base/entry.ts'
 import { EXIT } from './base/exit.ts'
@@ -126,7 +127,8 @@ function entryLine(): string {
 }
 
 /**
- * 在 agent 的沙箱里不跑的子命令：跑项目命令的，和记下会话看过结果的 status。
+ * 在 agent 的沙箱里不跑的子命令：跑项目命令的，和记下会话看过结果的 status（写不进 .git 时停止门还会再拦）。
+ * 测试在沙箱里会因为端口、网络被拒跑出假失败，记进去后 report 会当成测试不稳定。
  * gate 不在里面：它由 git 钩子调用，在这里拒绝不是检查结论，钩子会当成没检查而放行。
  */
 const OUTSIDE_SANDBOX = new Set(['focused', 'files', 'full', 'verify', 'status'])
@@ -137,24 +139,7 @@ async function runFull(): Promise<number> {
   return ctx ? full(ctx, AGENT?.session) : EXIT.usage
 }
 
-async function main(argv: string[]): Promise<number> {
-  const [command, ...rest] = argv
-  if (command && OUTSIDE_SANDBOX.has(command)) {
-    const refused = sandboxRefusal()
-    if (refused !== undefined) return refused
-  }
-  try {
-    return await dispatch(command, rest)
-  } catch (error) {
-    // 写不了记录目录（.git/testpace）：多半是在 agent 的沙箱里，说清楚，不只抛一句写入被拒
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== 'EPERM' && code !== 'EACCES' && code !== 'EROFS') throw error
-    console.error(`testpace 写不了 ${(error as NodeJS.ErrnoException).path ?? '记录目录'}（${code}）。在 agent 的沙箱里时，申请提权（在沙箱外）重新运行这条命令。`)
-    return EXIT.usage
-  }
-}
-
-async function dispatch(command: string | undefined, rest: string[]): Promise<number> {
+async function dispatch([command, ...rest]: string[]): Promise<number> {
   switch (command) {
     case 'focused':
       return focused(rest, USAGE)
@@ -190,4 +175,11 @@ async function dispatch(command: string | undefined, rest: string[]): Promise<nu
   }
 }
 
-process.exitCode = await main(process.argv.slice(2))
+process.exitCode = await runCommandLine(
+  {
+    name: 'testpace',
+    outside: ([command]) => (command && OUTSIDE_SANDBOX.has(command) ? '写 .git/testpace/ 的记录，测试还常要开端口和网络' : undefined),
+    run: dispatch,
+  },
+  process.argv.slice(2),
+)

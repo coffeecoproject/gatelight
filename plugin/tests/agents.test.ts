@@ -13,6 +13,8 @@ import { byRunner } from '../src/pace/report.ts'
 import type { PaceRun } from '../src/pace/record.ts'
 import { compareVersions, PLUGIN_NAME, VERSION } from '../src/base/version.ts'
 import { BIN_DIR, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
+import { sampleRepo as craftRepo, testcraft } from './craft/helpers.ts'
+import { modwall, ENV as WALL_ENV, sampleRepo as wallRepo } from './wall/helpers.ts'
 
 const PLUGIN = fileURLToPath(new URL('..', import.meta.url))
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
@@ -100,6 +102,63 @@ describe('Codex 的命令', () => {
       const r = testpace(repo, ['files', 'tests/price.test.mjs'])
       assert.equal(r.code, 2)
       assert.match(r.out, /^testpace 写不了 .+testpace.+（EACCES）。在 agent 的沙箱里时，申请提权（在沙箱外）重新运行这条命令。/)
+    } finally {
+      chmodSync(store, 0o755)
+    }
+  })
+
+  test('在 Codex 的沙箱里 modwall 不做检查（check、status、db check），什么都不记，说明要提权；提权后照常检查', () => {
+    const repo = wallRepo()
+    const ran = join(tempDir('modwall-psql-'), 'ran')
+    const sandboxed = { ...WALL_ENV, CODEX_THREAD_ID: 't', CODEX_SANDBOX: 'seatbelt' }
+    for (const args of [['check'], ['status'], ['db', 'check', '--psql', `touch '${ran}'`]]) {
+      const r = modwall(repo, args, sandboxed)
+      assert.equal(r.code, 2, `${args.join(' ')}\n${r.out}`)
+      assert.match(r.out, /^modwall 要在 Codex 的沙箱外跑：.+申请提权（在沙箱外）重新运行这条命令。/, args.join(' '))
+    }
+    assert.equal(existsSync(join(repo, '.git', 'testpace')), false, '不留日志、不留通过记录')
+    assert.equal(existsSync(ran), false, 'db check 没有跑 --psql 给的命令')
+
+    const escalated = { ...WALL_ENV, CODEX_THREAD_ID: 't' }
+    const r = modwall(repo, ['check'], escalated)
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /modwall check：通过/)
+    assert.match(modwall(repo, ['status'], escalated).out, /当前内容 modwall check 通过过/)
+  })
+
+  test('在 Codex 的沙箱里 modwall init、help 照常跑', () => {
+    const repo = wallRepo(dir => rmSync(join(dir, '.modwall'), { recursive: true }))
+    const sandboxed = { ...WALL_ENV, CODEX_THREAD_ID: 't', CODEX_SANDBOX: 'seatbelt' }
+    const init = modwall(repo, ['init'], sandboxed)
+    assert.equal(init.code, 0, init.out)
+    assert.ok(existsSync(join(repo, '.modwall', 'config.json')), '生成了配置草稿')
+    const help = modwall(repo, ['help'], sandboxed)
+    assert.equal(help.code, 0, help.out)
+    assert.equal(help.out, modwall(repo, ['help']).out, '和终端里一样')
+  })
+
+  test('在 Codex 的沙箱里 testcraft 照常跑（checklist、status），输出和终端里一样', () => {
+    const repo = craftRepo()
+    const sandboxed = { CODEX_THREAD_ID: 't', CODEX_SANDBOX: 'seatbelt' }
+    for (const args of [['checklist'], ['status']]) {
+      const r = testcraft(repo, args, sandboxed)
+      const terminal = testcraft(repo, args)
+      assert.equal(r.code, terminal.code, `${args.join(' ')}\n${r.out}`)
+      assert.notEqual(r.code, 2, `${args.join(' ')}\n${r.out}`)
+      assert.equal(r.out, terminal.out, args.join(' '))
+    }
+  })
+
+  test('modwall 写不了记录目录时说清楚，不崩出堆栈', () => {
+    const repo = wallRepo()
+    const store = join(repo, '.git', 'testpace')
+    mkdirSync(store)
+    chmodSync(store, 0o555)
+    try {
+      const r = modwall(repo, ['check'])
+      assert.equal(r.code, 2, r.out)
+      assert.match(r.out, /^modwall 写不了 .+testpace.*（EACCES）。在 agent 的沙箱里时，申请提权（在沙箱外）重新运行这条命令。$/m)
+      assert.doesNotMatch(r.out, /\n\s+at /, '没有 Node 堆栈')
     } finally {
       chmodSync(store, 0o755)
     }

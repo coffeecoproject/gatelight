@@ -275,3 +275,14 @@ testpace 的命令要在沙箱外跑：要写 `.git/testpace/`，项目的测试
 - 还没验证：`systemMessage` 在 Codex 交互界面里显不显示。
 - 过渡期提醒：更新前就开着的 Claude Code 会话还在跑 0.5.0，会话开始或压缩时可能把合并门改回只认 `CLAUDECODE` 的旧版；重开这些会话即可，之后任何 0.6.0 会话开始时也会改回新版。
 - dsh 接入暂缓。
+
+## 9. 沙箱判断挪到三条命令共用的一层（2026-11-24）
+
+实测发现：在 Codex 沙箱里跑 `modwall check`，LayerMap 更新不了它存在项目外面的地图，检查给出假的“没通过”；接着写 `.git/testpace/logs/` 被拒，直接崩出堆栈。`modwall status` 同样说 LayerMap 用不了、只查了 R5、R6。原因是沙箱里拒跑和写入被拒时的说明都写在 testpace 的入口（`cli.ts`）里，modwall、testcraft 的入口没有经过它。
+
+- 新加 `base/commandline.ts`：三条命令的入口都经过它。在沙箱里跑不了的子命令事先拒绝，写入被拒时说清楚，退出码都是 2。各命令只说哪些子命令跑不了、要做什么。
+- testpace 照旧：`focused`、`files`、`full`、`verify`、`status`，说的话不变。
+- modwall：`check`、`status`（要 LayerMap 的地图）、`db check`（跑项目给的命令连数据库）。`init` 只读写项目里的文件，不拒。
+- testcraft：没有要拒的，只读项目里的文件和 git。
+- 实测（`codex sandbox`，带上 `CODEX_THREAD_ID`）：上面几条都按预期拒绝或照常跑。`codex sandbox` 自己只带 `CODEX_SANDBOX`、不带 `CODEX_THREAD_ID`，这时认不出是 Codex、不事先拒绝，由写入被拒的说明兜住。
+- `modwall db check` 在沙箱里连不上数据库是按沙箱默认断网判断的，没有实测。
