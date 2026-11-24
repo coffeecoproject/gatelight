@@ -1,0 +1,22 @@
+#!/bin/sh
+# testpace 固定入口：testpace install 把这个文件放到 ~/.local/bin 下，gatelight 的每条命令放一份（testpace、modwall、testcraft），内容一样，
+# 运行时按被叫的名字转给插件里同名的命令（Codex 的命令和终端的 PATH 里都有这个目录）。放哪几条由 src/base/entry.ts 定，这里不列。
+# 插件（gatelight）的安装目录随版本变，不能写死，这里每次运行时找这台机器上装着的最高版本，Claude Code 和 Codex 装的都算。
+# 只认装着的：Claude Code 看它的安装记录（卸载、降级后缓存里留下的旧目录不算；没有记录就是没装）；
+# Codex 卸载插件时会删掉缓存，缓存里有的就是装着的。
+# 只认装全的：插件目录里要有 src/cli.ts（缓存可能只复制了一部分），残缺的那份不参与挑版本。
+# 找不到时退出码 2（配置问题）。
+name=$(basename -- "$0")
+installed="$HOME/.claude/plugins/installed_plugins.json"
+candidates() {
+  [ ! -f "$installed" ] || grep -o '"installPath": *"[^"]*/gatelight/[^"]*"' "$installed" | sed 's/.*"\([^"]*\)"$/\1/'
+  ls -d "${CODEX_HOME:-$HOME/.codex}"/plugins/cache/*/gatelight/* 2>/dev/null
+}
+tab=$(printf '\t')
+best=$(
+  candidates | while IFS= read -r plugin; do
+    [ -x "$plugin/bin/$name" ] && [ -f "$plugin/src/cli.ts" ] && printf '%s\t%s\n' "$(basename "$plugin")" "$plugin/bin/$name"
+  done | sort -t "$tab" -k1,1V | tail -n 1 | cut -f 2
+)
+[ -n "$best" ] || { echo "$name：这台机器上没找到装着的、完整的 gatelight 插件（Claude Code、Codex 里都没有）。" >&2; exit 2; }
+exec "$best" "$@"

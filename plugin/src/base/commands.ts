@@ -3,7 +3,7 @@
 
 import { readFileSync } from 'node:fs'
 import { AGENTS, currentAgent } from './agent.ts'
-import { entryPath, installEntry } from './entry.ts'
+import { ENTRY_COMMANDS, entryDir, entryPath, installEntries } from './entry.ts'
 import { EXIT } from './exit.ts'
 import { checkRefUpdates, GATE_REJECT, GATE_UNCHECKED, gateProblem, installGate } from './gate.ts'
 import { borrow, giveBack, openRepo, type Repo, runningText } from './repo.ts'
@@ -78,12 +78,13 @@ export function install(): number {
   console.log('合并门已配好：全局 git 配置里的 hook.testpace，这台机器上 agent 在所有仓库里移动默认分支时都检查（只管接入了 testpace 的仓库）。')
   const rest = gateProblem(ctx.root)
   if (rest) console.log(rest)
-  const entry = installEntry()
-  if (!entry.ok) {
-    console.error(`固定命令入口没放上：${entry.problem}`)
+  const { refused } = installEntries()
+  const placed = ENTRY_COMMANDS.filter(command => !refused.includes(command))
+  if (placed.length) console.log(`固定命令入口已放好：${entryDir()} 下的 ${placed.join('、')}，运行时转给这台机器上装着的最高版本的插件里同名的命令。`)
+  if (refused.length) {
+    console.error(`固定命令入口没放上：${refused.map(entryPath).join('、')} 已经有别的文件，没有覆盖。确认不要它后删掉，再跑 testpace install。`)
     return EXIT.usage
   }
-  console.log(`固定命令入口已放好：${entryPath()}，运行时转给这台机器上装着的最高版本的 testpace。`)
   return EXIT.ok
 }
 

@@ -26,7 +26,7 @@ export function globalGitConfig(): string {
 }
 process.env.GIT_CONFIG_GLOBAL = globalGitConfig()
 
-// 家目录也换成测试自己的：固定命令入口放在 ~/.local/bin/testpace（base/entry.ts），会话说明要看它在不在、是不是这一版放的。
+// 家目录也换成测试自己的：固定命令入口放在 ~/.local/bin 下（testpace、modwall、testcraft，base/entry.ts），会话说明要看它在不在、是不是这一版放的。
 // 测试不读也不改用户真实的那份；要测入口的测试另给一个家目录。测试起的命令（ENV）跟着用这个。
 // 这层隔离要比"会写家目录的代码"先落到默认分支（见 .testcraft/checklist/outside-repo-writes.md）。
 // npm 放在家目录里的两样（下载缓存、用户设置）接着用用户的：模块边界的测试真起 layermap，它在一个新的缓存目录里
