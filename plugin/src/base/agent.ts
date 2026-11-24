@@ -17,7 +17,7 @@ interface AgentProfile {
   session: string
   /** 有这个变量表示命令在 agent 的沙箱里跑：测试可能因为端口、网络被拒跑出假失败。没有沙箱的不填。 */
   sandbox?: string
-  /** 插件的 bin 目录不在命令的 PATH 上，要靠固定命令入口找到 testpace。 */
+  /** 插件的 bin 目录不在命令的 PATH 上，要靠固定命令入口找到插件的命令。 */
   needsEntry: boolean
 }
 

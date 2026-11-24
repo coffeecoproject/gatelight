@@ -10,7 +10,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { fileURLToPath } from 'node:url'
 import { AGENTS, type AgentKind } from './agent.ts'
 import { CONTRACT_FILE, joined, loadContract } from './contract.ts'
-import { entryPath, entryState, refreshEntry } from './entry.ts'
+import { entriesNotPlaced, entryDir, refreshEntries } from './entry.ts'
 import { ensureGate, gateProblem } from './gate.ts'
 import { git } from './git.ts'
 import { modules } from './module.ts'
@@ -79,18 +79,20 @@ export const NEW_REPO =
   '这是个新仓库，还没接入 testpace（根目录没有 testpace.json）。建项目时一起接入：照 gatelight:setup 技能配好 testpace.json 和三条命令，' +
   '落地前跑全部检查和全部测试，这是约定，不用问用户；配完跑 testpace verify 核对。'
 
-/** 这个插件里的 testpace 命令：没有固定入口时，插件 bin 目录不在 PATH 上的 agent 只能用完整路径。 */
-const PLUGIN_BIN = fileURLToPath(new URL('../../bin/testpace', import.meta.url))
+/** 这个插件放命令的目录：没有固定入口时，插件 bin 目录不在 PATH 上的 agent 只能用完整路径。 */
+const PLUGIN_BIN = fileURLToPath(new URL('../../bin', import.meta.url))
 
 /** 各 agent 自己的前提（AGENTS 表里的沙箱、固定入口）。 */
 function agentNotes(agent: AgentKind): string[] {
   const { name, sandbox, needsEntry } = AGENTS[agent]
   const notes: string[] = []
   if (sandbox) notes.push(`在 ${name} 里：testpace 的命令要写 .git/testpace/、项目的测试常要开端口和网络，在沙箱里跑不了，每次申请提权在沙箱外跑。`)
-  if (needsEntry && entryState() !== 'installed') {
+  const absent = needsEntry ? entriesNotPlaced() : []
+  if (absent.length) {
+    const gate = absent.includes('testpace') ? '合并门的 git 钩子也找不到 testpace（找不到就不检查）。' : ''
     notes.push(
-      `这台机器还没放 testpace 的固定命令入口（${entryPath()}），${name} 的命令里找不到 testpace，合并门的 git 钩子也找不到它（找不到就不检查）。` +
-        `这是全局安装，先问用户；同意后${sandbox ? '在沙箱外' : ''}跑 ${PLUGIN_BIN} install。在那之前用 ${PLUGIN_BIN} 代替 testpace。`,
+      `这台机器还没放 ${absent.join('、')} 的固定命令入口（放在 ${entryDir()}），${name} 的命令里找不到${absent.length > 1 ? '它们' : '它'}。${gate}` +
+        `这是全局安装，先问用户；同意后${sandbox ? '在沙箱外' : ''}跑 ${join(PLUGIN_BIN, 'testpace')} install。在那之前用 ${PLUGIN_BIN} 下的同名文件代替。`,
     )
   }
   return notes
@@ -212,8 +214,8 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
   const shell = input.tool_name?.toLowerCase() === 'bash'
 
   if (event === 'SessionStart') {
-    // 旧版本放的固定入口先换成这一版的：下面的会话说明、之后的命令和合并门的钩子都靠它找到 testpace
-    refreshEntry()
+    // 旧版本放的固定入口先换成这一版的：下面的会话说明、之后的命令和合并门的钩子都靠它们找到命令
+    refreshEntries()
     // 会话所在目录的仓库，加上会话之前碰过的仓库（压缩、恢复后重新开始时上下文里的节奏说明可能没了）。
     const hereRepo = openRepo(cwd)
     const here = hereRepo?.root

@@ -343,7 +343,7 @@ describe('合并门（git 钩子）', () => {
     assert.equal(
       installed.out,
       '合并门已配好：全局 git 配置里的 hook.testpace，这台机器上 agent 在所有仓库里移动默认分支时都检查（只管接入了 testpace 的仓库）。\n' +
-        `固定命令入口已放好：${join(env.HOME, '.local', 'bin', 'testpace')}，运行时转给这台机器上装着的最高版本的 testpace。\n`,
+        `固定命令入口已放好：${join(env.HOME, '.local', 'bin')} 下的 testpace、modwall、testcraft，运行时转给这台机器上装着的最高版本的插件里同名的命令。\n`,
     )
     assert.equal(sh(repo, `git config --file '${env.GIT_CONFIG_GLOBAL}' --get hook.testpace.command`).trim(), HOOK_COMMAND)
     assert.equal(sh(repo, 'git status --porcelain --untracked-files=all'), '', '仓库里什么都没写')

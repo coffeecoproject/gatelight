@@ -1,5 +1,6 @@
 #!/bin/sh
-# modwall 命令入口（"模块边界"模块的命令）。Claude Code 插件启用时这个目录在 Bash 工具的 PATH 里。
+# modwall 命令入口（"模块边界"模块的命令）。Claude Code 插件启用时这个目录在 Bash 工具的 PATH 里；
+# 别处（Codex 的命令）由固定入口 ~/.local/bin/modwall（entry/command）转过来。
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$dir/node.sh"
 # 找不到 node 时退出码 2（配置问题）

@@ -5,7 +5,7 @@
 import './modules.ts'
 import { AGENT, context, gate, hold, install, release, sandboxRefusal } from './base/commands.ts'
 import { CONTRACT_FILE, joined } from './base/contract.ts'
-import { entryPath, entryState } from './base/entry.ts'
+import { ENTRY_COMMANDS, type EntryState, entryDir, entryState } from './base/entry.ts'
 import { EXIT } from './base/exit.ts'
 import { duration, short, when } from './base/format.ts'
 import { full } from './base/full.ts'
@@ -38,7 +38,7 @@ const USAGE = `用法：
   testpace report [--days N]     计时诊断，默认最近 28 天
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
   testpace install               这台机器配一次：在全局 git 配置里配上合并门（agent 移动默认分支时，要求落地的代码有整组通过记录），
-                                 并放上固定命令入口 ~/.local/bin/testpace（Codex 的命令和合并门的钩子靠它找到 testpace）
+                                 并在 ~/.local/bin 放上 testpace、modwall、testcraft 的固定命令入口（Codex 的命令和合并门的钩子靠它们找到这几条命令）
   ${nodeTest.usage}
   ${vitest.usage}
   ${playwright.usage}
@@ -97,7 +97,7 @@ function status(): number {
   if (joined(ctx.root)) lines.push(`合并门：${gateProblem(ctx.root) ?? '已装上，agent 移动默认分支时检查'}`)
   const dangling = joined(ctx.root) ? danglingNote(ctx.root) : undefined
   if (dangling) lines.push(`  ${dangling}`)
-  lines.push(`固定命令入口（${entryPath()}）：${ENTRY_STATES[entryState()]}`)
+  lines.push(`固定命令入口（${entryDir()}）：${entryLine()}`)
   // 版本太旧不在这里查：focused 读输出时会说
   lines.push(`layermap：${commandExists(ctx.root, 'layermap') ? '找到' : `找不到，focused 没法按改动选测试，每次都会建议跑整组。${LAYERMAP_HINT}`}`)
 
@@ -111,9 +111,19 @@ function status(): number {
 const ENTRY_STATES = {
   installed: '已放好',
   outdated: '是旧版本放的，跑 testpace install 更新',
-  missing: '没放：Codex 的命令和合并门的钩子在插件的 bin 目录不在 PATH 上时找不到 testpace。用户同意后跑 testpace install 放上',
+  missing: '没放：插件的 bin 目录不在 PATH 上的地方（Codex 的命令、合并门的钩子）找不到。用户同意后跑 testpace install 放上',
   foreign: '那里是别的文件，没有放',
 } as const
+
+/** 各条命令的固定入口放得怎样，状态一样的并在一起说：testpace 已放好；modwall、testcraft 没放：…… */
+function entryLine(): string {
+  const states = Object.keys(ENTRY_STATES) as EntryState[]
+  return states
+    .map(state => ({ state, commands: ENTRY_COMMANDS.filter(command => entryState(command) === state) }))
+    .filter(({ commands }) => commands.length > 0)
+    .map(({ state, commands }) => `${commands.join('、')} ${ENTRY_STATES[state]}`)
+    .join('；')
+}
 
 /**
  * 在 agent 的沙箱里不跑的子命令：跑项目命令的，和记下会话看过结果的 status。
