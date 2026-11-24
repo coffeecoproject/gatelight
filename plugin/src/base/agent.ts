@@ -25,7 +25,9 @@ interface AgentProfile {
 export const AGENTS: Record<AgentKind, AgentProfile> = {
   codex: { name: 'Codex', markers: ['CODEX_THREAD_ID'], connected: true, session: 'CODEX_THREAD_ID', sandbox: 'CODEX_SANDBOX', needsEntry: true },
   dsh: { name: 'DeepSeek Harness', markers: ['DSH_SHELL'], connected: false, session: 'DSH_SESSION_ID', needsEntry: false },
-  claude: { name: 'Claude Code', markers: ['CLAUDECODE'], connected: true, session: 'CLAUDE_CODE_SESSION_ID', needsEntry: false },
+  // 桌面版里 Claude 往终端面板打的命令不带 CLAUDECODE，它开的标签带着 CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS（实测）。
+  // 这个变量放的是开标签的会话号，可能不止一个，不拿来当会话号。用户自己开的标签没有它；用户在 Claude 开的标签里打的命令也算 Claude 的。
+  claude: { name: 'Claude Code', markers: ['CLAUDECODE', 'CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS'], connected: true, session: 'CLAUDE_CODE_SESSION_ID', needsEntry: false },
 }
 
 const KINDS = Object.keys(AGENTS) as AgentKind[]
