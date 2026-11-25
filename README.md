@@ -46,6 +46,7 @@ Codex 用本机的 `npm` 从 npm 拿插件，要装着它。第一次用时 Code
 - **固定命令入口**：Codex 不把插件的 `bin/` 放进命令的 PATH，合并门的钩子也靠 PATH 找 `testpace`。`testpace install` 会在 `~/.local/bin` 给插件的每条命令放一个入口（`testpace`、`modwall`、`testcraft`，内容一样，按被叫的名字转），运行时转给这台机器上装着的、完整的最高版本的插件里同名的命令（Claude Code、Codex 装的都算；缓存只复制了一部分的那份不算），插件升级不用重放；入口文件本身变了的那几版（比如插件改名），会话开始时自动把放过的旧入口换成新的，没放过的那几条不自动放（0.17.4 起多了 `modwall`、`testcraft`，升级后再跑一次 `testpace install`）。没放之前，会话开始时会说是哪几条没放、给出插件里放命令的目录，`testpace` 没放时合并门在 Codex 里不检查。`~/.local/bin` 在 PATH 里排在插件的 `bin/` 前面时，Claude Code 里这几条命令也走入口（用装着的最高版本）。
 - **LayerMap 的命令**：`testpace focused` 按改动选测试、`modwall check` 都靠 PATH 上的 `layermap` 命令。LayerMap 的 Codex 插件只带 MCP 服务、不带命令，所以装好 LayerMap 的插件、开过一次会话后，还要跑一次 `npx layermap setup command`（LayerMap 0.1.55 起）：它在 `~/.local/bin` 放一个 `layermap` 命令，运行这台机器上各 agent 的 LayerMap 插件装着的最高版本，插件升级不用重放。这个入口是 LayerMap 放的、归它管，gatelight 不替它放；没放时 `focused` 没法选测试，`modwall check` 不通过，输出里会说这一句。
 - **在沙箱外跑**：testpace 要写 `.git/testpace/`，项目的测试常要开端口、用网络，Codex 的沙箱里都跑不了。testpace 发现自己在 Codex 沙箱里（`CODEX_SANDBOX`）就不跑测试、也不跑 `status`（它要记下看过结果），说明要提权。modwall 也一样：`modwall check`、`modwall status` 要 LayerMap 更新存在项目外面的地图，`modwall db check` 要连数据库，在沙箱里得出的是假的“没通过”，所以也不跑、说明要提权。testcraft 只读项目里的文件，沙箱里照常跑。可以每次提权交给自动审查；也可以在 `~/.codex/rules/default.rules` 里放行 `testpace`，但那等于放行 `testpace.json` 里的任何命令。
+- **确认工具**：要你同意的改动，确认服务自己向 Codex 发一张表单（MCP 的 elicitation）问你，内容是检查存下的原文，你点同意才记下；工具调用本身不用审批（插件里设成直接放行），开着自动审查（`approvals_reviewer = "auto_review"`）时表单也是到你面前、不交给审查。不能交互的 `codex exec` 弹不出表单，确认不了。
 
 ### Antigravity
 

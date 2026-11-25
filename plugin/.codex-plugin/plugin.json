@@ -1,6 +1,6 @@
 {
   "name": "gatelight",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "description": "Gates for coding agents: tests actually ran before code lands, code stays inside its module boundaries, plus test-writing conventions and a change-triggered checklist",
   "author": {
     "name": "coffeecoproject"
@@ -8,6 +8,7 @@
   "license": "MIT",
   "keywords": ["testing", "test selection", "merge gate", "test quality", "module boundaries", "coding agent"],
   "hooks": "./hooks/codex.json",
+  "mcpServers": "./.codex-plugin/mcp.json",
   "skills": "./skills/",
   "interface": {
     "displayName": "gatelight",

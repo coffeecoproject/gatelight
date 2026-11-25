@@ -1,13 +1,14 @@
 // 底座给检查模块的能力：分叉点、评判用的配置的两版、ignore 认哪些、用户确认（和确认工具）、模块的记录、调 LayerMap。
 
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createInterface } from 'node:readline'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { SessionBaselines } from '../src/base/baseline.ts'
-import { askUser, confirm, CONFIRM_TOOL, type ConfirmItem } from '../src/base/confirm.ts'
+import { askUser, check, CONFIRM_TOOL, type ConfirmItem } from '../src/base/confirm.ts'
 import { effectiveIgnore, parseContract } from '../src/base/contract.ts'
 import { forkPoint } from '../src/base/git.ts'
 import { judgingDir, judgingFile } from '../src/base/judging.ts'
@@ -15,7 +16,7 @@ import { layermap, LAYERMAP_MINIMUM } from '../src/base/layermap.ts'
 import { ModuleRecords } from '../src/base/records.ts'
 import { openRepo, type Repo } from '../src/base/repo.ts'
 import { PLUGIN_NAME } from '../src/base/version.ts'
-import { commit, ENV, sampleRepo, sh, tempDir } from './helpers.ts'
+import { commit, ENV, sampleRepo, sh, tempDir, userAgrees } from './helpers.ts'
 
 const head = (repo: string): string => sh(repo, 'git rev-parse HEAD').trim()
 
@@ -152,7 +153,10 @@ describe('用户确认', () => {
     // 没调工具，再检查一次还是没同意，编号不变
     assert.equal(askUser(repo, 'craft', HEADING, [skip, removed]).ask?.id, first.ask.id)
 
-    assert.deepEqual(confirm(repo.root, first.ask.id, first.ask.text), { ok: true, text: '已记下：用户确认并同意了这 2 项。再跑一次要求确认的那条检查。' })
+    const checked = check(repo.root, first.ask.id, first.ask.text)
+    assert.ok(checked.ok)
+    assert.equal(checked.popup, first.ask.text)
+    assert.deepEqual(checked.record(), { ok: true, text: '已记下：用户确认并同意了这 2 项。再跑一次要求确认的那条检查。' })
     assert.deepEqual(askUser(repo, 'craft', HEADING, [skip, removed]), { confirmed: [skip, removed], pending: [] })
   })
 
@@ -162,18 +166,32 @@ describe('用户确认', () => {
     assert.ok(ask)
     // agent 把一项删掉、改了说法，都不算
     for (const text of [ask.text.replace(/\n2\. .*\n/, '\n'), ask.text.replace('接口下线了', '不重要'), '']) {
-      assert.deepEqual(confirm(repo.root, ask.id, text), { ok: false, text: '传来的文字和检查给这个编号的不一致：照它输出的原样填，不要改写、增删。' })
+      assert.deepEqual(check(repo.root, ask.id, text), { ok: false, text: '传来的文字和检查给这个编号的不一致：照它输出的原样填，不要改写、增删。' })
     }
     assert.equal(askUser(repo, 'craft', HEADING, [skip, removed]).pending.length, 2)
     const reflowed = ask.text.split('\n').map(line => `  ${line.trim()}  `).join('\n\n')
-    assert.equal(confirm(repo.root, ask.id, reflowed).ok, true)
+    const checked = check(repo.root, ask.id, reflowed)
+    assert.ok(checked.ok)
+    // 给用户看的是存下的原文，不是传来的那份
+    assert.equal(checked.popup, ask.text)
+  })
+
+  test('核对通过只是核对：用户同意了记下（record）才算同意过', () => {
+    const repo = repoOf(sampleRepo())
+    const { ask } = askUser(repo, 'craft', HEADING, [skip, removed])
+    assert.ok(ask)
+    const checked = check(repo.root, ask.id, ask.text)
+    assert.ok(checked.ok)
+    assert.equal(askUser(repo, 'craft', HEADING, [skip, removed]).pending.length, 2)
+    checked.record()
+    assert.deepEqual(askUser(repo, 'craft', HEADING, [skip, removed]), { confirmed: [skip, removed], pending: [] })
   })
 
   test('按项记：同意过的那一项，别的条目增减不用重新确认', () => {
     const repo = repoOf(sampleRepo())
     const first = askUser(repo, 'craft', HEADING, [skip])
     assert.ok(first.ask)
-    assert.equal(confirm(repo.root, first.ask.id, first.ask.text).ok, true)
+    userAgrees(repo.root, first.ask.id, first.ask.text)
 
     // 几个分支合到一起，多了一项：只问新的那一项
     const merged = askUser(repo, 'craft', HEADING, [skip, removed])
@@ -192,7 +210,7 @@ describe('用户确认', () => {
     const repo = repoOf(sampleRepo())
     const first = askUser(repo, 'craft', HEADING, [skip])
     assert.ok(first.ask)
-    assert.equal(confirm(repo.root, first.ask.id, first.ask.text).ok, true)
+    userAgrees(repo.root, first.ask.id, first.ask.text)
     assert.equal(askUser(repo, 'craft', HEADING, [skip]).pending.length, 0)
 
     // 文字一样，改之前的内容不同：不能沿用那次同意
@@ -212,9 +230,9 @@ describe('用户确认', () => {
     assert.ok(old.ask && next.ask)
     assert.notEqual(next.ask.id, old.ask.id)
     // 旧编号配新文字：对不上
-    assert.equal(confirm(repo.root, old.ask.id, next.ask.text).ok, false)
+    assert.equal(check(repo.root, old.ask.id, next.ask.text).ok, false)
     // 旧编号配旧文字：记下的是旧的那一项
-    assert.equal(confirm(repo.root, old.ask.id, old.ask.text).ok, true)
+    userAgrees(repo.root, old.ask.id, old.ask.text)
     assert.deepEqual(askUser(repo, 'craft', HEADING, [changed]).pending, [changed])
   })
 
@@ -223,12 +241,12 @@ describe('用户确认', () => {
     const { ask } = askUser(repo, 'craft', HEADING, [skip])
     assert.ok(ask)
     const missing = { ok: false, text: '没有这个编号要确认的内容：重跑要求确认的那条检查，照它输出的编号和文字填。' }
-    assert.deepEqual(confirm(repo.root, '0'.repeat(32), ask.text), missing)
+    assert.deepEqual(check(repo.root, '0'.repeat(32), ask.text), missing)
     // 对象原型上的名字不能当编号
-    for (const id of ['constructor', '__proto__', 'toString', '']) assert.deepEqual(confirm(repo.root, id, ask.text), missing)
+    for (const id of ['constructor', '__proto__', 'toString', '']) assert.deepEqual(check(repo.root, id, ask.text), missing)
     const outside = tempDir('testpace-norepo-')
-    assert.deepEqual(confirm(outside, ask.id, ask.text), { ok: false, text: `${outside} 不在 git 仓库里` })
-    assert.deepEqual(confirm(join(outside, 'none'), ask.id, ask.text), { ok: false, text: `${join(outside, 'none')} 不在 git 仓库里` })
+    assert.deepEqual(check(outside, ask.id, ask.text), { ok: false, text: `${outside} 不在 git 仓库里` })
+    assert.deepEqual(check(join(outside, 'none'), ask.id, ask.text), { ok: false, text: `${join(outside, 'none')} 不在 git 仓库里` })
     assert.equal(askUser(repo, 'craft', HEADING, [skip]).pending.length, 1)
   })
 
@@ -238,9 +256,9 @@ describe('用户确认', () => {
     assert.ok(ask)
     const file = join(repo.root, '.git', 'testpace', 'confirm', 'pending.json')
     writeFileSync(file, JSON.stringify({ [ask.id]: { module: 'craft', text: ask.text, items: 'all', at: Date.now() } }))
-    assert.deepEqual(confirm(repo.root, ask.id, ask.text), { ok: false, text: '这个编号存下的内容坏了：重跑要求确认的那条检查，照它输出的编号和文字填。' })
+    assert.deepEqual(check(repo.root, ask.id, ask.text), { ok: false, text: '这个编号存下的内容坏了：重跑要求确认的那条检查，照它输出的编号和文字填。' })
     writeFileSync(file, 'not json')
-    assert.equal(confirm(repo.root, ask.id, ask.text).ok, false)
+    assert.equal(check(repo.root, ask.id, ask.text).ok, false)
     assert.equal(askUser(repo, 'craft', HEADING, [skip]).pending.length, 1)
   })
 
@@ -251,7 +269,7 @@ describe('用户确认', () => {
     const { ask } = askUser(repoOf(other), 'craft', HEADING, [skip])
     assert.ok(ask)
     // repo 给的是工作区里的子目录也认
-    assert.equal(confirm(join(other, 'src'), ask.id, ask.text).ok, true)
+    userAgrees(join(other, 'src'), ask.id, ask.text)
     assert.deepEqual(askUser(repoOf(main), 'craft', HEADING, [skip]), { confirmed: [skip], pending: [] })
   })
 
@@ -259,7 +277,7 @@ describe('用户确认', () => {
     const repo = repoOf(sampleRepo())
     const { ask } = askUser(repo, 'craft', HEADING, [skip, removed])
     assert.ok(ask)
-    assert.equal(confirm(repo.root, ask.id, ask.text).ok, true)
+    userAgrees(repo.root, ask.id, ask.text)
     const file = join(repo.root, '.git', 'testpace', 'confirm', 'confirmed.json')
     const all = JSON.parse(readFileSync(file, 'utf8')) as Record<string, { text: string; at: number }>
     assert.deepEqual(Object.values(all).map(record => record.text).sort(), [removed.text, skip.text].sort())
@@ -274,13 +292,87 @@ describe('用户确认', () => {
 
 describe('确认工具（MCP 服务）', () => {
   const SERVER = fileURLToPath(new URL('../src/mcp.ts', import.meta.url))
+  const HEADING = '这次放松的地方'
+  const DONE = '已记下：用户确认并同意了这 1 项。再跑一次要求确认的那条检查。'
+  const NO_FORM = '这个客户端不支持向用户弹表单（MCP elicitation），没法让用户本人确认，没有记下。升级客户端，或在 Claude Code 里确认。'
+  const DECLINED = '用户拒绝了，没有记下：照用户的意思改回去或换个做法。'
+  const NOT_CONFIRMED = '用户没有确认（表单取消了或弹不出来，比如不能交互的 codex exec），没有记下。'
 
-  /** 起一次服务，一行发一条，读回各条回复。 */
-  function serve(lines: Array<Record<string, unknown> | string>): Array<Record<string, any>> {
+  /** 起一次服务，一行发一条，读回各条消息。args 是启动参数（Codex 起的带 codex）。 */
+  function serve(lines: Array<Record<string, unknown> | string>, args: string[] = []): Array<Record<string, any>> {
     const input = lines.map(line => (typeof line === 'string' ? line : JSON.stringify({ jsonrpc: '2.0', ...line }))).join('\n')
-    const r = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', SERVER], { input: `${input}\n`, encoding: 'utf8', env: ENV })
+    const r = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', SERVER, ...args], { input: `${input}\n`, encoding: 'utf8', env: ENV })
     assert.equal(r.status, 0, r.stderr)
     return r.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+  }
+
+  /** 一个仓库里存好一项待确认的，返回仓库、这一项和检查给的编号、文字。 */
+  function pendingAsk(): { repo: Repo; item: ConfirmItem; id: string; text: string } {
+    const repo = openRepo(sampleRepo())
+    assert.ok(repo)
+    const item: ConfirmItem = { before: 'a', after: 'b', text: '把 a 改成了 b' }
+    const { ask } = askUser(repo, 'craft', HEADING, [item])
+    assert.ok(ask)
+    return { repo, item, id: ask.id, text: ask.text }
+  }
+
+  const call = (id: number, args: Record<string, unknown>): Record<string, unknown> => ({ id, method: 'tools/call', params: { name: 'confirm_with_user', arguments: args } })
+  const initialize = (capabilities?: Record<string, unknown>): Record<string, unknown> => ({
+    id: 1,
+    method: 'initialize',
+    params: { protocolVersion: '2025-06-18', ...(capabilities === undefined ? {} : { capabilities }) },
+  })
+  const toolText = (body: string, isError: boolean): Record<string, unknown> => ({ content: [{ type: 'text', text: body }], isError })
+
+  /**
+   * 带 codex 起服务，边发边读：next() 等服务发来的下一条消息（回复，或它向客户端发的表单请求），不靠等固定时间。
+   * end() 关掉输入，等服务退出，确认没有没读到的消息。
+   */
+  function codexServer(): { send: (message: Record<string, unknown>) => void; next: () => Promise<Record<string, any>>; end: () => Promise<void> } {
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', SERVER, 'codex'], { env: ENV, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stderr = ''
+    child.stderr.on('data', chunk => (stderr += chunk))
+    const unread: Array<Record<string, any>> = []
+    const readers: Array<{ resolve: (message: Record<string, any>) => void; reject: (error: Error) => void }> = []
+    createInterface({ input: child.stdout }).on('line', line => {
+      if (line.trim() === '') return
+      const message = JSON.parse(line) as Record<string, any>
+      const reader = readers.shift()
+      if (reader) reader.resolve(message)
+      else unread.push(message)
+    })
+    const exited = new Promise<number | null>(resolve =>
+      child.on('close', code => {
+        for (const reader of readers.splice(0)) reader.reject(new Error(`服务退出了（${code}），没等到消息：${stderr}`))
+        resolve(code)
+      }),
+    )
+    return {
+      send: message => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`),
+      next: () => {
+        const message = unread.shift()
+        if (message) return Promise.resolve(message)
+        return new Promise((resolve, reject) => readers.push({ resolve, reject }))
+      },
+      end: async () => {
+        child.stdin.end()
+        assert.equal(await exited, 0, stderr)
+        assert.deepEqual(unread, [])
+      },
+    }
+  }
+
+  /** 带 codex 起服务、说支持表单，调一次工具，读到服务发来的表单请求。 */
+  async function formAsked(
+    args: Record<string, unknown>,
+    capabilities: Record<string, unknown> = { elicitation: {} },
+  ): Promise<{ server: ReturnType<typeof codexServer>; form: Record<string, any> }> {
+    const server = codexServer()
+    server.send(initialize(capabilities))
+    assert.equal((await server.next()).id, 1)
+    server.send({ method: 'notifications/initialized' })
+    server.send(call(2, args))
+    return { server, form: await server.next() }
   }
 
   test('只有一个工具，标了每次都要用户在弹窗里同意', () => {
@@ -298,27 +390,115 @@ describe('确认工具（MCP 服务）', () => {
     assert.deepEqual(tools[0]?.inputSchema.required, ['repo', 'id', 'text'])
   })
 
-  test('调用时照编号核对文字、记下同意；文字不对回错误', () => {
-    const repo = openRepo(sampleRepo())
-    assert.ok(repo)
-    const item: ConfirmItem = { before: 'a', after: 'b', text: '把 a 改成了 b' }
-    const { ask } = askUser(repo, 'craft', '这次放松的地方', [item])
-    assert.ok(ask)
-    const call = (id: number, args: Record<string, unknown>): Record<string, unknown> => ({ id, method: 'tools/call', params: { name: 'confirm_with_user', arguments: args } })
-    const [wrong, missing, done, unknown, notJson] = serve([
-      call(1, { repo: repo.root, id: ask.id, text: '改写过的文字' }),
-      call(2, { repo: repo.root, id: ask.id }),
-      call(3, { repo: repo.root, id: ask.id, text: ask.text }),
+  test('不带 codex 起（Claude Code、Antigravity）：调用时照编号核对文字、直接记下同意，客户端支持表单也不发；文字不对回错误', () => {
+    const { repo, item, id, text } = pendingAsk()
+    const [initialized, wrong, missing, done, unknown, notJson, ...rest] = serve([
+      initialize({ elicitation: {} }),
+      call(1, { repo: repo.root, id, text: '改写过的文字' }),
+      call(2, { repo: repo.root, id }),
+      call(3, { repo: repo.root, id, text }),
       { id: 4, method: 'tools/call', params: { name: 'other', arguments: {} } },
       'not json',
     ])
+    assert.equal(initialized?.id, 1)
     assert.equal(wrong?.result.isError, true)
     assert.match(wrong?.result.content[0].text, /不一致/)
-    assert.deepEqual(missing?.result, { content: [{ type: 'text', text: 'repo、id、text 都要填文字' }], isError: true })
-    assert.deepEqual(done?.result, { content: [{ type: 'text', text: '已记下：用户确认并同意了这 1 项。再跑一次要求确认的那条检查。' }], isError: false })
+    assert.deepEqual(missing?.result, toolText('repo、id、text 都要填文字', true))
+    assert.deepEqual(done?.result, toolText(DONE, false))
     assert.equal(unknown?.error.code, -32602)
     assert.equal(notJson?.error.code, -32700)
-    assert.deepEqual(askUser(repo, 'craft', '这次放松的地方', [item]), { confirmed: [item], pending: [] })
+    assert.deepEqual(rest, [], '服务没向客户端发别的（表单）')
+    assert.deepEqual(askUser(repo, 'craft', HEADING, [item]), { confirmed: [item], pending: [] })
+  })
+
+  describe('带 codex 起（Codex）：核对通过后向客户端发表单，用户点同意才记下', () => {
+    test('客户端没说支持表单（没声明 elicitation，或只声明了 url 方式）：不发表单、不记，说明原因', () => {
+      for (const capabilities of [undefined, {}, { elicitation: { url: {} } }]) {
+        const { repo, item, id, text } = pendingAsk()
+        const messages = serve([initialize(capabilities), call(2, { repo: repo.root, id, text })], ['codex'])
+        assert.deepEqual(
+          messages.map(message => message.method),
+          [undefined, undefined],
+          `${JSON.stringify(capabilities)}：服务没发请求`,
+        )
+        assert.deepEqual(messages[1], { jsonrpc: '2.0', id: 2, result: toolText(NO_FORM, true) }, JSON.stringify(capabilities))
+        assert.deepEqual(askUser(repo, 'craft', HEADING, [item]).pending, [item], JSON.stringify(capabilities))
+      }
+    })
+
+    test('核对不过（文字不对、编号不存在、参数缺）：直接回错误，不发表单、不记', () => {
+      const { repo, item, id, text } = pendingAsk()
+      const messages = serve(
+        [
+          initialize({ elicitation: { form: {} } }),
+          call(2, { repo: repo.root, id, text: '改写过的文字' }),
+          call(3, { repo: repo.root, id: '0'.repeat(32), text }),
+          call(4, { repo: repo.root, id }),
+        ],
+        ['codex'],
+      )
+      assert.deepEqual(messages.map(message => [message.id, message.method]), [[1, undefined], [2, undefined], [3, undefined], [4, undefined]])
+      assert.deepEqual(messages[1]?.result, toolText('传来的文字和检查给这个编号的不一致：照它输出的原样填，不要改写、增删。', true))
+      assert.deepEqual(messages[2]?.result, toolText('没有这个编号要确认的内容：重跑要求确认的那条检查，照它输出的编号和文字填。', true))
+      assert.deepEqual(messages[3]?.result, toolText('repo、id、text 都要填文字', true))
+      assert.deepEqual(askUser(repo, 'craft', HEADING, [item]).pending, [item])
+    })
+
+    test('支持表单时（elicitation 写 {} 或带 form）：表单里是检查存下的原文，等用户回答后才回工具调用；同意了记下', async () => {
+      for (const capabilities of [{ elicitation: {} }, { elicitation: { form: {} } }, { elicitation: { form: {}, url: {} } }]) {
+        const { repo, item, id, text } = pendingAsk()
+        // 调用方传的文字排版不同（缩进、空行），核对算一样；表单里给用户看的是存下的那份
+        const reflowed = text.split('\n').map(line => `  ${line.trim()}  `).join('\n\n')
+        const { server, form } = await formAsked({ repo: repo.root, id, text: reflowed }, capabilities)
+        assert.equal(form.method, 'elicitation/create', JSON.stringify(capabilities))
+        assert.deepEqual(form.params, { message: `gatelight 要你确认：\n\n${text}`, requestedSchema: { type: 'object', properties: {} } })
+        assert.notEqual(form.id, undefined)
+
+        // 用户还没回答：工具调用没回，别的请求照常回
+        server.send({ id: 3, method: 'ping' })
+        assert.deepEqual(await server.next(), { jsonrpc: '2.0', id: 3, result: {} })
+        assert.deepEqual(askUser(repo, 'craft', HEADING, [item]).pending, [item], '还没回答时不记')
+
+        server.send({ id: form.id, result: { action: 'accept' } })
+        assert.deepEqual(await server.next(), { jsonrpc: '2.0', id: 2, result: toolText(DONE, false) })
+        await server.end()
+        assert.deepEqual(askUser(repo, 'craft', HEADING, [item]), { confirmed: [item], pending: [] }, JSON.stringify(capabilities))
+      }
+    })
+
+    test('用户拒绝、取消，或客户端回的是错误（弹不出表单）：不记，说明是哪种', async () => {
+      const cases: Array<[string, Record<string, unknown>, string]> = [
+        ['拒绝', { result: { action: 'decline' } }, DECLINED],
+        ['取消', { result: { action: 'cancel' } }, NOT_CONFIRMED],
+        ['客户端出错', { error: { code: -32600, message: '不能交互' } }, NOT_CONFIRMED],
+      ]
+      for (const [label, answer, expected] of cases) {
+        const { repo, item, id, text } = pendingAsk()
+        const { server, form } = await formAsked({ repo: repo.root, id, text })
+        assert.equal(form.method, 'elicitation/create', label)
+        server.send({ id: form.id, ...answer })
+        assert.deepEqual(await server.next(), { jsonrpc: '2.0', id: 2, result: toolText(expected, true) }, label)
+        await server.end()
+        assert.deepEqual(askUser(repo, 'craft', HEADING, [item]).pending, [item], label)
+      }
+    })
+
+    test('同一个服务里调几次，每次各发一张表单，按各自的回答记', async () => {
+      const first = pendingAsk()
+      const second = pendingAsk()
+      const { server, form } = await formAsked({ repo: first.repo.root, id: first.id, text: first.text })
+      server.send({ id: form.id, result: { action: 'decline' } })
+      assert.equal((await server.next()).id, 2)
+      server.send(call(3, { repo: second.repo.root, id: second.id, text: second.text }))
+      const again = await server.next()
+      assert.equal(again.method, 'elicitation/create')
+      assert.notEqual(again.id, form.id)
+      server.send({ id: again.id, result: { action: 'accept' } })
+      assert.deepEqual(await server.next(), { jsonrpc: '2.0', id: 3, result: toolText(DONE, false) })
+      await server.end()
+      assert.deepEqual(askUser(first.repo, 'craft', HEADING, [first.item]).pending, [first.item])
+      assert.deepEqual(askUser(second.repo, 'craft', HEADING, [second.item]).pending, [])
+    })
   })
 })
 

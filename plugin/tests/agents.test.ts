@@ -1,4 +1,4 @@
-// 多个 agent：认 agent、Codex 的命令和 hook、合并门的版本只升不降、固定命令入口（只升不降、找 Antigravity 装的、沙箱里的说法）、四份清单的版本和名字。Antigravity 的 hook 在 antigravity.test.ts。
+// 多个 agent：认 agent、Codex 的命令和 hook、Codex 起得来确认工具的服务、合并门的版本只升不降、固定命令入口（只升不降、找 Antigravity 装的、沙箱里的说法）、四份清单的版本和名字。Antigravity 的 hook 在 antigravity.test.ts。
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -7,8 +7,10 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { currentAgent } from '../src/base/agent.ts'
+import { askUser } from '../src/base/confirm.ts'
 import { HOOK_COMMAND } from '../src/base/gate.ts'
 import { handle } from '../src/base/hook.ts'
+import { openRepo } from '../src/base/repo.ts'
 import { byRunner } from '../src/pace/report.ts'
 import type { PaceRun } from '../src/pace/record.ts'
 import { compareVersions, PLUGIN_NAME, VERSION } from '../src/base/version.ts'
@@ -237,6 +239,43 @@ describe('Codex 的 hook', () => {
     const registered = Object.fromEntries(Object.entries(hooks).map(([event, entries]) => [event, entries.map(entry => entry.matcher ?? '')]))
     assert.deepEqual(registered, { SessionStart: [''], PreToolUse: ['^(Bash|apply_patch)$'], PostToolUse: ['^Bash$'], Stop: [''] }, '工具调用前看执行命令的 Bash 和改文件的 apply_patch，调用后只看 Bash')
     for (const entries of Object.values(hooks)) assert.equal(entries[0]!.hooks[0]!.command, 'sh "${PLUGIN_ROOT}/hooks/codex.sh"')
+  })
+})
+
+describe('Codex 的确认工具', () => {
+  test('插件清单登记了确认工具的服务：只有 gatelight 一个，工具调用直接放行（确认靠服务发的表单）；照它的启动命令在插件目录里起得来，起的是发表单的那种', () => {
+    const codex = JSON.parse(readFileSync(join(PLUGIN, '.codex-plugin', 'plugin.json'), 'utf8')) as { mcpServers?: string }
+    assert.equal(codex.mcpServers, './.codex-plugin/mcp.json')
+    const { mcpServers } = JSON.parse(readFileSync(join(PLUGIN, codex.mcpServers), 'utf8')) as {
+      mcpServers: Record<string, { command: string; args: string[]; cwd: string; default_tools_approval_mode?: string }>
+    }
+    assert.deepEqual(Object.keys(mcpServers), [PLUGIN_NAME])
+    const server = mcpServers[PLUGIN_NAME]!
+    assert.equal(server.default_tools_approval_mode, 'approve')
+
+    const repo = openRepo(sampleRepo())
+    assert.ok(repo)
+    const { ask } = askUser(repo, 'craft', '这次放松的地方', [{ before: 'a', after: 'b', text: '把 a 改成了 b' }])
+    assert.ok(ask)
+    const input = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'confirm_with_user', arguments: { repo: repo.root, id: ask.id, text: ask.text } } },
+    ]
+      .map(line => JSON.stringify(line))
+      .join('\n')
+    // cwd 相对插件根
+    const r = spawnSync(server.command, server.args, { cwd: join(PLUGIN, server.cwd), input: `${input}\n`, env: { ...ENV, TESTPACE_NODE: process.execPath }, encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+    const [initialized, listed, called] = r.stdout.trim().split('\n').map(line => JSON.parse(line))
+    assert.equal(initialized.result.serverInfo.name, PLUGIN_NAME)
+    assert.deepEqual(listed.result.tools.map((tool: { name: string }) => tool.name), ['confirm_with_user'])
+    // 客户端没说支持表单：带 codex 起的服务不记，说明原因（不带 codex 的会直接记下）
+    assert.deepEqual(called.result, {
+      content: [{ type: 'text', text: '这个客户端不支持向用户弹表单（MCP elicitation），没法让用户本人确认，没有记下。升级客户端，或在 Claude Code 里确认。' }],
+      isError: true,
+    })
   })
 })
 

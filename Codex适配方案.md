@@ -286,3 +286,17 @@ testpace 的命令要在沙箱外跑：要写 `.git/testpace/`，项目的测试
 - testcraft：没有要拒的，只读项目里的文件和 git。
 - 实测（`codex sandbox`，带上 `CODEX_THREAD_ID`）：上面几条都按预期拒绝或照常跑。`codex sandbox` 自己只带 `CODEX_SANDBOX`、不带 `CODEX_THREAD_ID`，这时认不出是 Codex、不事先拒绝，由写入被拒的说明兜住。
 - `modwall db check` 在沙箱里连不上数据库是按沙箱默认断网判断的，没有实测。
+
+## 10. 确认工具（2026-11-25，0.18.1）
+
+装法改成 npm 后真开会话实测，发现 Codex 里一直没有确认工具 `confirm_with_user`：`.codex-plugin/plugin.json` 没登记 MCP 服务，检查要用户同意时 agent 调不到。
+
+查到的（Codex 0.167.0 程序里的字符串和实测）：
+- 插件清单可以写 `mcpServers`（指向一份 `{"mcpServers": {...}}`）；里面的相对路径（`cwd`）按插件根算，写 `${PLUGIN_ROOT}` 反而被拼在插件根后面。
+- PreToolUse hook 不支持 `permissionDecision: ask`，hook 要不了弹窗。
+- MCP 工具的审批窗有"本会话允许""总是允许"，点过就不再问；开着自动审查（`approvals_reviewer = "auto_review"`，本机就是）时，工具调用交给 AI 审查。
+- Codex 声明支持 MCP 的表单（elicitation，form 和 url）。试验：自动审查只审了工具调用，服务发的表单到了用户面前，用户点了才回答；`codex exec` 不能交互，表单直接取消。
+
+做法（用户定的）：确认服务自己发表单。`.codex-plugin/mcp.json` 起 `.codex-plugin/mcp.sh`（先找够新的 node），服务带参数 `codex`；调用时先核对编号和文字（对不上的不问用户），再发表单，内容是检查存下的原文，用户点同意才记下，拒绝、取消都不记；客户端没声明支持表单的不记、说明原因。工具调用本身设 `default_tools_approval_mode = "approve"`，免得先弹审批窗、再弹表单；真正的确认是表单。Claude Code、Antigravity 的做法不变。
+
+实测（假 HOME，开着自动审查，从这个分支的本地市场装）：`codex exec` 调用返回"没有确认"、不记；交互的 Codex 里两次调用各弹一张表单，用户点同意后记下，之后 `testpace full` 不再要求确认。拒绝那条交互里没点过，按回答直接不记。

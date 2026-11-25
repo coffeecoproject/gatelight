@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "gatelight": {
+      "command": "sh",
+      "args": ["./.codex-plugin/mcp.sh"],
+      "cwd": ".",
+      "default_tools_approval_mode": "approve"
+    }
+  }
+}
