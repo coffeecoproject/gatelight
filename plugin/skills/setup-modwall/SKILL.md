@@ -99,7 +99,7 @@ modwall 让 agent 默认按模块开发，越界由程序拦。它不自己解�
    - **认不出来的应用目录要手动补**：不是工作区包、又不在上面几个目录下的应用（比如放在仓库根目录 `miniprogram/` 下的小程序），`modwall init` 不起草，它下面的代码在输出里列为没有归属。照着这个应用的目录在 `apps` 里手动补一组（应用名取目录名，`roots`、`shared`、`app`、`entry`、`map` 按它搬好的目录写）。草稿是单应用写法的，先把它改成按应用分组的写法（原来那一组放进 `apps`，起个应用名），再补上这一组。补完重跑 `modwall check`，直到没有归属的代码文件都归了某个应用、外面一层的 `shared` 或 `outside`。
 3. **改到清零**：`modwall check` 列出全部越界，当作待办逐条按改法改（R6 是迁移文件里的数据库越界）。每个模块可以补一个 `MODULE.md`（一句职责、一句不做什么）。用 Postgres 的，在临时库上跑完全部迁移后执行 `modwall db check --psql "<执行 SQL 的命令>"`（比如 `psql $DATABASE_URL`；用 napbox 的项目写 `napbox exec postgres --temp $ENV -- psql`），把它报的也改到清零：改迁移或跑迁移的工具，不直接改库。这条命令用哪个账号连库都行，它只读系统目录。
 4. **整份配置让用户确认一次**：首次接入时 `modwall check` 会把整份配置列为放宽项。先用白话告诉用户：分了哪几个模块（有几个应用时按应用说，还有哪些代码是几个应用共用的）、共享层和装配层是哪些、哪些路径不管，再调用 `confirm_with_user` 工具（弹窗，用户同意才算；编号和文字照 `modwall check` 输出的填）。确认后 `modwall check` 应当通过。
-5. **库的检查进整组**（用 Postgres 的项目）：在项目整组（testpace 的 `full`）里，迁移跑完之后加一步 `modwall db check --psql "<执行 SQL 的命令>"`，用测试的临时库；它不通过时退出码非零，整组就不通过。怎么起库、怎么跑迁移仍归项目，modwall 只读系统目录。不接上的话库这一半没人查：`modwall status` 的"数据库"一行会提醒（它只看得到 `testpace.json` 的 `full` 里直接写的命令，写在脚本里的要自己核对）。
+5. **库的检查进整组**（用 Postgres 的项目）：在项目整组（testpace 的 `full`）里，迁移跑完之后加一步 `modwall db check --psql "<执行 SQL 的命令>"`，用测试的临时库；它不通过时退出码非零，整组就不通过。怎么起库、怎么跑迁移仍归项目，modwall 只读系统目录。写在项目的脚本里、在测试里跑都行，但要在整组里跑到、退出码不能被忽略：整组给每段命令一个环境变量 `MODWALL_DB_RECEIPTS`，`modwall db check` 查完往里交一条凭据，整组跑完时写了 `database` 的应用（有几个应用的，每个用 `--app` 各查一次）没交凭据、或没通过却接着跑完了，整组算没过。所以起库、跑迁移的脚本要把环境变量原样传给它（在容器里跑的也要带进去）。
 6. **核对**：`modwall status` 应当显示 LayerMap 能用、testpace 接入了、没有越界、放宽项都同意过。
 7. 提交前先问用户；合回默认分支照 testpace 的节奏（`gatelight:merge`）。
 

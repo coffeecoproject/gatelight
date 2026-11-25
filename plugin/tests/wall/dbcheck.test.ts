@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
+import { runs } from '../helpers.ts'
 import { type Config, parseConfig } from '../../src/wall/config.ts'
 import { type Catalog, catalogViolations } from '../../src/wall/dbcheck.ts'
 import { Layout } from '../../src/wall/layout.ts'
-import { modwall, sampleRepo, tempDir, write } from './helpers.ts'
+import { ENV, modwall, sampleRepo, tempDir, TESTPACE, write } from './helpers.ts'
 
 const DATABASE = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' }
 
@@ -365,5 +367,99 @@ describe('modwall db check', () => {
     const web = modwall(repo, ['db', 'check', '--app', 'web', '--psql', fakePsql([catalog]).command])
     assert.equal(web.code, 1, web.out)
     assert.match(web.out, /库里的 schema orders 不对应任何模块/)
+  })
+})
+
+describe('整组里核对 modwall db check 跑没跑（凭据）', () => {
+  const HEAD = '整组失败：各段都过了，跑完核对没通过（该跑到的没跑到）\n'
+  /** 示例项目：modwall 配置换成 config，testpace 的 full 换成 full（都在默认分支上提交，是项目本来就这样配）。 */
+  const fullRepo = (config: Record<string, unknown>, full: string): string =>
+    sampleRepo(dir => {
+      write(dir, '.modwall/config.json', JSON.stringify({ roots: ['src/modules'], shared: ['src/shared/**'], app: ['src/main.ts'], entry: ['index.ts'], outside: ['scripts/**'], ...config }))
+      const testpace = JSON.parse(readFileSync(join(dir, 'testpace.json'), 'utf8'))
+      write(dir, 'testpace.json', JSON.stringify({ ...testpace, full }))
+    })
+  const full = (repo: string): { code: number | null; out: string } => {
+    const r = spawnSync(TESTPACE, ['full'], { cwd: repo, env: ENV, encoding: 'utf8' })
+    return { code: r.status, out: r.stdout + r.stderr }
+  }
+  const clean = (): string => fakePsql([`modwall-db:${JSON.stringify(SAMPLE)}`]).command
+  /** 两个应用都写了 database 的配置。 */
+  const twoApps = (dir: string, databases: string[]): void => {
+    const app = (name: string) => ({
+      roots: [`apps/${name}/modules`], shared: [`apps/${name}/shared/**`], entry: ['index.ts'],
+      ...(databases.includes(name) ? { database: { ...DATABASE, shared: `apps/${name}/shared/migrations` } } : {}),
+    })
+    write(dir, '.modwall/config.json', JSON.stringify({ apps: { web: app('web'), server: app('server') }, outside: ['scripts/**', 'src/**'] }))
+    write(dir, 'apps/web/modules/pages/index.ts', 'export const a = 1\n')
+    write(dir, 'apps/server/modules/orders/index.ts', 'export const b = 1\n')
+  }
+  const appsRepo = (databases: string[], fullCommand: string): string =>
+    sampleRepo(dir => {
+      twoApps(dir, databases)
+      const testpace = JSON.parse(readFileSync(join(dir, 'testpace.json'), 'utf8'))
+      write(dir, 'testpace.json', JSON.stringify({ ...testpace, full: fullCommand }))
+    })
+
+  test('full 里迁移后跑了 db check、通过了：整组通过；收凭据的临时目录跑完就删掉', () => {
+    const where = join(tempDir('modwall-where-'), 'receipts')
+    const repo = fullRepo({ database: DATABASE }, `modwall db check --psql '${clean()}' && printf %s "$MODWALL_DB_RECEIPTS" > '${where}'`)
+    const r = full(repo)
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /^整组通过/)
+    const receipts = readFileSync(where, 'utf8')
+    assert.ok(receipts, '整组给各段的命令一个交凭据的文件')
+    assert.equal(existsSync(dirname(receipts)), false, '跑完删掉收凭据的临时目录')
+  })
+
+  test('配置里写了 database、整组里没跑 db check：整组失败，不留通过记录，说要在迁移跑完后跑它', () => {
+    const repo = fullRepo({ database: DATABASE }, 'node -e 0')
+    const r = full(repo)
+    assert.equal(r.code, 1, r.out)
+    assert.ok(r.out.startsWith(`${HEAD}- 整组里没跑 modwall db check：.modwall/config.json 写了 database，项目的 full 命令要在迁移跑完后跑它，查库里的模块边界（写法见 gatelight:setup-modwall 技能）。\n`), r.out)
+    const record = runs(repo).at(-1)!
+    assert.equal(record.result, 'fail')
+    assert.match(readFileSync(record.log as string, 'utf8'), /===== testpace 跑完核对没通过\n整组里没跑 modwall db check/)
+  })
+
+  test('db check 用法错了、或执行 SQL 的命令出错（没查成）：不算跑过', () => {
+    const usage = full(fullRepo({ database: DATABASE }, 'modwall db check || true'))
+    assert.equal(usage.code, 1, usage.out)
+    assert.match(usage.out, /^- 整组里没跑 modwall db check：/m)
+    const broken = full(fullRepo({ database: DATABASE }, `modwall db check --psql '${fakePsql(['psql: error: connection refused'], 2).command}' || true`))
+    assert.equal(broken.code, 1, broken.out)
+    assert.match(broken.out, /^- 整组里没跑 modwall db check：/m)
+  })
+
+  test('db check 没通过、整组却接着跑完了（忽略了退出码）：整组失败，说不要忽略它的退出码', () => {
+    const catalog = { ...SAMPLE, schemas: [...SAMPLE.schemas, ...schemas('legacy')] }
+    const repo = fullRepo({ database: DATABASE }, `modwall db check --psql '${fakePsql([`modwall-db:${JSON.stringify(catalog)}`]).command}' || true`)
+    const r = full(repo)
+    assert.equal(r.code, 1, r.out)
+    assert.ok(r.out.startsWith(`${HEAD}- modwall db check没通过，整组却接着跑完了：项目的 full 命令里不要忽略它的退出码（比如 || true），没通过要让整组失败。\n`), r.out)
+    assert.doesNotMatch(r.out, /没跑 modwall db check/)
+    assert.equal(runs(repo).at(-1)!.result, 'fail')
+  })
+
+  test('几个应用都写了 database：每个都要有凭据，没跑的点名应用、说用 --app', () => {
+    const catalog = `modwall-db:${JSON.stringify(catalogOf('orders'))}`
+    const repo = appsRepo(['web', 'server'], `modwall db check --app server --psql '${fakePsql([catalog]).command}'`)
+    const r = full(repo)
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^- 整组里没跑 modwall db check（web 应用的库，用 --app web）：/m)
+    assert.doesNotMatch(r.out, /server 应用的库/)
+  })
+
+  test('几个应用里只有一个写了 database：没跑时点名这个应用，不说用 --app', () => {
+    const r = full(appsRepo(['server'], 'node -e 0'))
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^- 整组里没跑 modwall db check（server 应用的库）：/m)
+    assert.doesNotMatch(r.out, /--app/)
+  })
+
+  test('配置里没有应用写 database：不要凭据，整组照常通过', () => {
+    const r = full(fullRepo({}, 'node -e 0'))
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /^整组通过/)
   })
 })

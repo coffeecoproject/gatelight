@@ -7,7 +7,7 @@ import { describe, test } from 'node:test'
 import { runs } from '../helpers.ts'
 import { keepConfig, keepRepo, sessionBrief, testpace } from './helpers.ts'
 
-const TESTPACE_JSON = `${JSON.stringify({ fast: 'true', files: 'true', full: 'true', tests: ['tests/**/*.test.mjs'] })}\n`
+const TESTPACE_JSON = `${JSON.stringify({ fast: 'true', files: 'testpace run node-test', full: 'true', tests: ['tests/**/*.test.mjs'] })}\n`
 /** 接入了 testpace、testcraft 的小仓库；keep 为 true 时也接入 codekeep。 */
 const project = (keep: boolean, checks = [{ name: 'lint', command: 'true' }]): string =>
   keepRepo({

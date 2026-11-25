@@ -651,6 +651,70 @@ describe('整组跑 tests 规则找到的全部测试', () => {
   })
 })
 
+describe('整组跑完核对：交给 files 的每个测试文件都交回了结果', () => {
+  const HEAD = '整组失败：各段都过了，跑完核对没通过（该跑到的没跑到）\n'
+  /** 示例项目，files 换成 command（在默认分支上提交，是项目本来就这样配）。 */
+  const withFiles = (command: string): string => {
+    const repo = sampleRepo()
+    setConfigWith(repo, { files: command })
+    commit(repo, '配置')
+    return repo
+  }
+  /** 只有路径里带 format 的文件经 testpace run 跑（交回结果），别的直接 node --test 跑（不交）。 */
+  const ONLY_FORMAT = 'f() { for t; do case "$t" in *format*) testpace run node-test "$t" ;; *) node --test "$t" ;; esac || return 1; done; }; f'
+
+  test('各段都过了、files 一个测试结果都没交回：整组失败，不留通过记录；说明怎么交结果，也写进日志', () => {
+    const repo = withFiles('node --test')
+    const r = testpace(repo, 'full')
+    assert.equal(r.code, 1, r.out)
+    assert.ok(r.out.startsWith(`${HEAD}- files 命令（node --test）跑完，一个测试结果都没交回，`), r.out)
+    assert.match(r.out, /经 testpace run 跑（它会交回结果）；别的跑法自己往环境变量 TESTPACE_RESULTS 给的文件里，每个测试追加一行 JSON：\{"file":"文件的绝对路径","name":"测试名","status":"passed、failed 或 skipped"\}/)
+    const record = runs(repo).at(-1)!
+    assert.equal(record.result, 'fail')
+    assert.match(testpace(repo, 'status').out, /没有整组通过记录/)
+    assert.match(readFileSync(record.log as string, 'utf8'), /===== testpace 跑完核对没通过\nfiles 命令（node --test）跑完，一个测试结果都没交回/)
+  })
+
+  test('有的文件交回了结果、有的没有：点名没交回的文件（相对路径），最多 10 个，其余说一共几个', () => {
+    const repo = withFiles(ONLY_FORMAT)
+    const one = testpace(repo, 'full')
+    assert.equal(one.code, 1, one.out)
+    assert.ok(one.out.startsWith(HEAD), one.out)
+    assert.match(one.out, /^- 交给 files 命令（.+）的测试文件里，这些一条结果都没交回：tests\/price\.test\.mjs。.*经 testpace run 跑.*TESTPACE_RESULTS/m)
+    assert.equal(runs(repo).at(-1)!.result, 'fail')
+
+    for (let i = 1; i <= 12; i++) {
+      writeFileSync(join(repo, 'tests', `extra${String(i).padStart(2, '0')}.test.mjs`), `import { test } from 'node:test'\ntest('第 ${i} 个', () => {})\n`)
+    }
+    const many = testpace(repo, 'full')
+    assert.equal(many.code, 1, many.out)
+    const named = /这些一条结果都没交回：(.+?) 等 13 个。/.exec(many.out)?.[1]
+    assert.ok(named, many.out)
+    const files = named.split('、')
+    assert.equal(files.length, 10, named)
+    assert.ok(files.every(file => /^tests\/(extra\d\d|price)\.test\.mjs$/.test(file)), named)
+    assert.doesNotMatch(many.out, /format\.test\.mjs/)
+  })
+
+  test('每个文件都交回了结果（跳过的也算）：整组通过', () => {
+    const repo = withFiles('testpace run node-test')
+    writeFileSync(join(repo, 'tests', 'later.test.mjs'), "import { test } from 'node:test'\ntest('先不跑', { skip: true }, () => {})\n")
+    const r = testpace(repo, 'full')
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /^整组通过 · 3 个测试文件/)
+  })
+
+  test('有一段没通过时不做跑完的核对：照常报那一段没通过', () => {
+    const repo = withFiles('node --test')
+    writeFileSync(join(repo, 'src', 'format.mjs'), 'export function yuan(amount) {\n  return `¥${amount}`\n}\n')
+    const r = testpace(repo, 'full')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^整组失败：全部测试（2 个文件）没通过（退出码 1）/)
+    assert.doesNotMatch(r.out, /跑完核对|一个测试结果都没交回/)
+    assert.doesNotMatch(readFileSync(runs(repo).at(-1)!.log as string, 'utf8'), /跑完核对没通过/)
+  })
+})
+
 describe('整组里各模块交的各段', () => {
   /** 整组，最前面多几段（测试里加的）。 */
   const fullWith = (repo: string, ...steps: Array<string | ExtraStep>): Result => {

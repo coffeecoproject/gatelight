@@ -30,8 +30,10 @@ export interface FullPart {
   /**
    * 各段跑完（没被中断）以后：模块往这次的运行记录里加自己的字段（fields），在记录写下之后说给 agent 的话（notes，
    * 拿得到写好的记录和这之前的全部记录）。
+   * problems：按跑完交回来的东西核对出的问题（比如该跑到的没跑到），一条一句、写明怎么改。各段都过了、却有问题的，整组算没过；
+   * 有哪一段没过时不看（后面的没跑，核对不出什么）。
    */
-  finish?(): { fields?: Record<string, unknown>; notes?(record: RunRecord, before: RunRecord[]): string[] }
+  finish?(): { fields?: Record<string, unknown>; problems?: string[]; notes?(record: RunRecord, before: RunRecord[]): string[] }
   /** 这一轮结束（不管怎么结束）时收拾模块自己的临时文件。 */
   dispose?(): void
 }

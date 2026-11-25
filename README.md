@@ -84,7 +84,7 @@ Antigravity 下的前提和不一样的地方（细节见 [Antigravity适配方�
 
 ## 测试写法（testcraft）
 
-同一个插件里的另一部分，管 agent 怎么写测试。它不检查、不拦路，只做两件事：会话开始时把写测试的约定说给 agent（分支上开发时不写新测试、不改已有的测试，你说要合并时才写、交给一个子代理写；改到规则才写，修已定规则的 bug 先复现；要改已定的业务规则先问你，别的不问）；写不成测试的坑记成清单（`.testcraft/checklist/`），改动碰到了提醒 agent 按条目查一遍（`testcraft checklist`）。它没有"证明测试能抓错"、放水检查、改动记录、另一个 agent 复查这些环节：2026-11-20 全部删了，原因见 [测试写法方案.md](测试写法方案.md) 开头。
+同一个插件里的另一部分，管 agent 怎么写测试。它不检查、不拦路，只做两件事：会话开始时把写测试的约定说给 agent（分支上开发时不写新测试、不改已有的测试，你说要合并时才写、交给一个子代理写；改到规则才写，修已定规则的 bug 先复现；要改已定的业务规则先问你，别的不问；已定的规则只留在测试里，合并时从设计文档里删掉，文档只写为什么这样定、否掉的做法、还没定的）；写不成测试的坑记成清单（`.testcraft/checklist/`），改动碰到了提醒 agent 按条目查一遍（`testcraft checklist`）。它没有"证明测试能抓错"、放水检查、改动记录、另一个 agent 复查这些环节：2026-11-20 全部删了，原因见 [测试写法方案.md](测试写法方案.md) 开头。
 
 仓库里有 `.testcraft/` 目录才启用，没有的仓库里它不出声、不加检查。启用后 `testpace full` 在测试之前跑一次 `testcraft checklist`（只读文件，不跑测试），不用另外登记。接入步骤见 [plugin/skills/setup-testcraft/SKILL.md](plugin/skills/setup-testcraft/SKILL.md)（`gatelight:setup-testcraft` 技能），写测试的约定见 `gatelight:write-tests`。`examples/craft-sample` 是它的示例项目。
 
@@ -94,7 +94,7 @@ Antigravity 下的前提和不一样的地方（细节见 [Antigravity适配方�
 
 同一个插件里的第三项检查，管代码有没有越界：项目分成模块、共享层和装配层，要别的模块的能力只能走它的入口，模块之间不能成环，依赖方向不能反，代码文件要有归属；用 Postgres 的项目，数据库也按模块分 schema。代码里的 import 和调用来自 [layermap](https://github.com/coffeecoproject/layermap)（0.1.48 以上），没有它检查算没做完、不算通过。
 
-仓库里有 `.modwall/` 目录才启用。启用后会话开始时说明模块列表和写法约定，agent 改没有归属的代码文件、或者要写进绕过入口的引用之前就被拦下，`testpace full` 在最前面跑一次 `modwall check`，不用另外登记。放宽规则（加例外、扩大共享层、删模块根目录、删配置等）要你在弹窗里同意，同意按项记。库里的现状由项目在整组里跑完迁移后用 `modwall db check --psql "<执行 SQL 的命令>"` 查。接入步骤见 [plugin/skills/setup-modwall/SKILL.md](plugin/skills/setup-modwall/SKILL.md)（`gatelight:setup-modwall` 技能），写法约定见 `gatelight:modular`。`examples/wall-sample` 是它的示例项目。
+仓库里有 `.modwall/` 目录才启用。启用后会话开始时说明模块列表和写法约定，agent 改没有归属的代码文件、或者要写进绕过入口的引用之前就被拦下，`testpace full` 在最前面跑一次 `modwall check`，不用另外登记。放宽规则（加例外、扩大共享层、删模块根目录、删配置等）要你在弹窗里同意，同意按项记。库里的现状由项目在整组里跑完迁移后用 `modwall db check --psql "<执行 SQL 的命令>"` 查；它查完交一条凭据，整组里没跑到、或没通过却被忽略了，整组算没过。接入步骤见 [plugin/skills/setup-modwall/SKILL.md](plugin/skills/setup-modwall/SKILL.md)（`gatelight:setup-modwall` 技能），写法约定见 `gatelight:modular`。`examples/wall-sample` 是它的示例项目。
 
 它原来是单独的 modwall 插件，换成这一版时把旧插件卸掉：
 
@@ -170,7 +170,7 @@ git config --global --unset-all testpace.check
 |---|---|
 | `testpace focused [--base REF]` | 改完先跑：`fast`，再用 layermap 选出和改动相关的测试交给 `files` 跑（在分支上只跑这次改到的测试，加上最相关的几个，最多再跑 8 个文件：一样近的测试里，先取相关理由少有别的测试共用的，很多测试共用同一条理由的只留一个，凑不满 8 个就不凑；其余留给合并时的整组），并把选出的测试交回 layermap，问它们跑不跑得到每处改动。只从 `tests` 规则找到的测试里选（和整组一致）：规则外的不选，但点出是哪几个（是测试的话整组跑不到它，该补进规则），这次改到的规则内测试文件都选。默认对比和默认分支的分叉点，分支上已提交的改动也算。只改了 `ignore` 路径、规则外的测试或删掉了整组的测试时不跑测试。改了地图跟不到的文件（配置、依赖、迁移、模板、脚本、样式等，`ignore` 里的不算），没有 layermap 或它出错，没找到相关测试，或者选出的测试有跑不到的改动时，在默认分支上建议跑整组；在别的分支上只说明一句，不建议现在跑，合回默认分支时的整组会覆盖 |
 | `testpace files [--repeat N] PATH[:行号]...` | 只跑给定的测试文件；`文件:行号` 只跑那一行的测试，比如重跑失败的测试（测试框架不能按行跑的，跑整个文件）。`--repeat N` 连跑 N 次、没过就停：用来造出时好时坏的测试的失败，或修好后连跑证明；每次各记一条运行记录，`report` 不把它们算成反复跑 |
-| `testpace full` | 依次跑这个仓库接入了的检查（`modwall check`、`testcraft checklist`、`codekeep check`）、`full`（测试以外的检查），再把 `tests` 规则在工作区里找到的全部测试文件交给 `files`，一段没过就停；按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑（`testpace.json` 自己不算忽略路径，改了它要重跑）。跑的过程中代码改过，通过也不算记录，输出里列出变了的文件 |
+| `testpace full` | 依次跑这个仓库接入了的检查（`modwall check`、`testcraft checklist`、`codekeep check`）、`full`（测试以外的检查），再把 `tests` 规则在工作区里找到的全部测试文件交给 `files`，一段没过就停。各段都过了，再按交回来的东西核对该跑到的跑到没有：交给 `files` 的每个测试文件都要交回至少一条结果（见 `testpace run`；不经它跑的自己往 `TESTPACE_RESULTS` 写），接入了 modwall、写了 `database` 的要交回 `modwall db check` 的凭据，缺了算整组没过、点名缺的是什么（项目的脚本里删掉一步，testpace 看不到脚本，靠这个查出来）；按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑（`testpace.json` 自己不算忽略路径，改了它要重跑）。跑的过程中代码改过，通过也不算记录，输出里列出变了的文件 |
 | `testpace status` | 当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、时好时坏的测试名单（各自怎么认出来的、两次的日志）、配置检查（含 `tests` 规则找到多少个测试文件）、合并门和固定命令入口在不在、有没有 layermap |
 | `testpace hold PID 说明`<br>`testpace release ID` | 借用这个工作区（只占这个工作区，别的工作区不管），给要复制或接着用工作区的工具用，比如要建一份副本的工具：跑到一半的状态（锁文件、临时文件）会一起带进副本。查有没有在跑的和占上是同一步，问完到用完之间不会有新起的命令插进来。占着时别的 testpace 命令（`fast`、`files`、`full`、`verify`）不跑，说明是谁占着（`说明` 里写的）、等它放开再跑。`PID` 是借用的那个进程（一般是调用者自己，要是还在的进程，不在的报用法错）：它不在了（被杀、崩了），占用跟着作废，不会把工作区永远锁住。占上时输出这次的 id，退出码 0，用完用 `testpace release ID` 放开（只放借用的，跑着的命令放不开）；有在跑的、已经被借用着的，不占，说明是谁（testpace 被强杀后测试进程组还在跑的，给出停掉它的命令），退出码 3。`testpace full` 只给要建副本的检查（`testcraft check`）在环境变量 `TESTPACE_RUN` 里带上这一轮的运行 id：它在测试之前跑，工作区已经是这一轮的，在里面借用不另占、什么也不输出，退出码 0。别的项目命令（`fast`、`files`、`full` 和整组跑测试的那一段）不带，testpace 起项目命令时去掉从外面继承来的 `TESTPACE_RUN`，`testpace run` 也不把它交给跑测试的进程：测试里借用照样被挡，同一轮别的测试可能正拿着锁 |
 | `testpace report [--days N]` | 计时诊断：各命令次数和耗时、有几个 agent 跑过时按谁跑的分开的次数和耗时、整组的时间花在哪一段（各项检查、`full`、全部测试各跑到几次、平均、合计、占比）、平均每次落地的测试耗时和整组次数、失败后重跑轮数、同一份代码整组先失败后通过的（可能是测试不稳定，也可能是环境问题，列出失败用时和日志供分辨）、`fast` 是否过慢、按周的测试行数和整组耗时 |

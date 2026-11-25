@@ -54,6 +54,15 @@ describe('hooks', () => {
     assert.doesNotMatch(quiet, /testcraft/)
   })
 
+  test('会话开始：已定的规则不另写进文档，设计文档只写代码和测试装不下的；和测试名不一样时以测试为准；合并时删掉文档里写着规则的段落', () => {
+    const told = hook(sampleRepo(), 'SessionStart')?.hookSpecificOutput.additionalContext
+    const item = /^3\. .*$/m.exec(told)?.[0] ?? ''
+    assert.match(item, /文档里不另写已定的规则/)
+    assert.match(item, /设计文档只写代码和测试装不下的（为什么这样定、否掉的做法、还没定的、怎么跑）/)
+    assert.match(item, /和测试名说法不一样时以测试为准/)
+    assert.match(item, /合并时规则写进了测试，文档里写着这几条规则的段落就删掉/)
+  })
+
   test('停止门：这个会话加了测试、跳过了测试、删了测试、改到了清单条目，都不拦，不要求证明或写下什么', () => {
     const repo = withItems()
     hook(repo, 'SessionStart', { session_id: 's' })
