@@ -1,12 +1,12 @@
 // 用户确认：检查里有要用户同意的改动（放松了测试、放宽了规则）时，模块把条目交到这里，不自己弹窗、不自己存同意记录。
 // 同意只能来自确认工具（src/mcp.ts 的 confirm_with_user）：每次调用都要用户在弹窗里同意（Claude Code 靠工具上的标记，
-// Antigravity 靠 hook 的 force_ask），agent 自己说"用户同意了"不算。
+// Antigravity 靠 hook 的 force_ask，Codex 靠服务自己向客户端发的表单），agent 自己说"用户同意了"不算。
 //
 // 同意按项记：一项是"哪个模块的、改之前是什么、改成什么、用户当时看到的文字"，四样都一样才是同一项。
 //   几个分支合到一起，没再动过的那一项不用重新确认；文字相同但改之前的内容不同，是另一项，要重新确认。
 //
 // 两步：检查（askUser）把还没同意的条目按编号存好，输出编号和弹窗文字让 agent 去调工具；
-// 工具（confirm）只按编号取存下的内容，核对传来的文字一字不差，记下同意。工具进程跟着会话开着、插件更新后还是旧代码，
+// 工具（check、record）只按编号取存下的内容，核对传来的文字一字不差，用户同意了再记下。工具进程跟着会话开着、插件更新后还是旧代码，
 // 所以它不打开改动、不做任何判断。
 //
 // 记录在 .git/testpace/confirm/ 下（所有 worktree 共用）：pending.json 等用户过目的，confirmed.json 用户同意过的。
@@ -135,11 +135,21 @@ export interface Confirmed {
 /** 编号是 32 位十六进制。 */
 const ID = /^[0-9a-f]{32}$/
 
-/** 确认工具调：核对传来的文字就是检查给这个编号存下的弹窗内容，记下用户同意了里面的每一项。 */
-export function confirm(repoPath: string, id: string, text: string): Confirmed {
+/** 核对通过、还没记下的一次确认：popup 是检查给这个编号存下的弹窗文字，用户同意了再调 record。 */
+export interface Checked {
+  ok: true
+  popup: string
+  record: () => Confirmed
+}
+
+/**
+ * 只核对、不记：编号和文字对得上时返回存下的弹窗文字和记下同意的办法。
+ * 工具自己问用户的 agent（Codex：服务向客户端发表单）先核对再问，用户同意了才 record；对不上的不问用户。
+ */
+export function check(repoPath: string, id: string, text: string): Checked | { ok: false; text: string } {
   const root = existsSync(repoPath) ? repoRoot(repoPath) : undefined
-  if (!root) return { ok: false, text: `${repoPath} 不在 git 仓库里` }
-  const missing = { ok: false, text: '没有这个编号要确认的内容：重跑要求确认的那条检查，照它输出的编号和文字填。' }
+  if (!root) return { ok: false as const, text: `${repoPath} 不在 git 仓库里` }
+  const missing = { ok: false as const, text: '没有这个编号要确认的内容：重跑要求确认的那条检查，照它输出的编号和文字填。' }
   if (!ID.test(id)) return missing
   const store = new Store(commonDir(root))
   // 编号是外面传来的：模块记录只取文件里这个键自己的
@@ -154,8 +164,14 @@ export function confirm(repoPath: string, id: string, text: string): Confirmed {
   if (plain(text) !== plain(pending.text)) {
     return { ok: false, text: '传来的文字和检查给这个编号的不一致：照它输出的原样填，不要改写、增删。' }
   }
-  const records = confirmedOf(store)
-  const at = Date.now()
-  for (const item of pending.items) records.put(item.key, { module: pending.module, text: item.text, at })
-  return { ok: true, text: `已记下：用户确认并同意了这 ${pending.items.length} 项。再跑一次要求确认的那条检查。` }
+  return {
+    ok: true,
+    popup: pending.text,
+    record: () => {
+      const records = confirmedOf(store)
+      const at = Date.now()
+      for (const item of pending.items) records.put(item.key, { module: pending.module, text: item.text, at })
+      return { ok: true, text: `已记下：用户确认并同意了这 ${pending.items.length} 项。再跑一次要求确认的那条检查。` }
+    },
+  }
 }

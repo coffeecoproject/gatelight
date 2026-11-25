@@ -4,7 +4,8 @@ import assert from 'node:assert/strict'
 import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { confirm } from '../../src/base/confirm.ts'
+import { check } from '../../src/base/confirm.ts'
+import { userAgrees } from '../helpers.ts'
 import { editConfig, modwall, pendingOf, sampleRepo, sh, write } from './helpers.ts'
 
 describe('放宽规则要用户在弹窗里同意', () => {
@@ -23,10 +24,10 @@ describe('放宽规则要用户在弹窗里同意', () => {
     assert.equal(asked.items.length, 1)
     assert.match(asked.items[0] as string, /^首次接入 modwall（分叉点上还没有配置），整份配置：\{"roots":\["src\/modules"\]/)
 
-    assert.equal(confirm(repo, asked.id, asked.text.replace('src/modules', 'src')).ok, false)
+    assert.equal(check(repo, asked.id, asked.text.replace('src/modules', 'src')).ok, false)
     assert.match(modwall(repo, ['check']).out, /还没经用户确认/)
 
-    assert.equal(confirm(repo, asked.id, asked.text).ok, true)
+    userAgrees(repo, asked.id, asked.text)
     r = modwall(repo, ['check'])
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /放宽规则 1 项，用户都同意过/)
@@ -48,7 +49,7 @@ describe('放宽规则要用户在弹窗里同意', () => {
     assert.equal(r.code, 1, r.out)
     const asked = pendingOf(r.out)
     assert.deepEqual(asked.items, ['shared 扩大：新增 "src/common/**"', 'allow 新增例外：R3 src/shared/money.ts → src/main.ts，理由：启动参数待拆'])
-    assert.equal(confirm(repo, asked.id, asked.text).ok, true)
+    userAgrees(repo, asked.id, asked.text)
     assert.equal(modwall(repo, ['check']).code, 0)
 
     // 收紧（删掉例外）：不用再确认
@@ -75,7 +76,7 @@ describe('放宽规则要用户在弹窗里同意', () => {
     assert.equal(r.code, 1, r.out)
     const asked = pendingOf(r.out)
     assert.deepEqual(asked.items, ['删掉了整个 .modwall/ 目录'])
-    assert.equal(confirm(repo, asked.id, asked.text).ok, true)
+    userAgrees(repo, asked.id, asked.text)
     r = modwall(repo, ['check'])
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /退出 modwall/)
@@ -85,7 +86,7 @@ describe('放宽规则要用户在弹窗里同意', () => {
     const repo = sampleRepo()
     rmSync(join(repo, '.modwall'), { recursive: true })
     const first = pendingOf(modwall(repo, ['check']).out)
-    assert.equal(confirm(repo, first.id, first.text).ok, true)
+    userAgrees(repo, first.id, first.text)
     assert.equal(modwall(repo, ['check']).code, 0)
 
     // 这次删除没落地；默认分支上的配置后来变了（多了一条例外），在新的分支上再删
@@ -105,7 +106,7 @@ describe('放宽规则要用户在弹窗里同意', () => {
     const loosen = (): void => editConfig(repo, c => c.shared.push('src/common/**'))
     loosen()
     const asked = pendingOf(modwall(repo, ['check']).out)
-    assert.equal(confirm(repo, asked.id, asked.text).ok, true)
+    userAgrees(repo, asked.id, asked.text)
 
     sh(repo, 'git checkout -q -- .modwall && git checkout -qb other main')
     loosen()

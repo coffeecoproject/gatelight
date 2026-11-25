@@ -2,9 +2,8 @@
 
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { confirm } from '../src/base/confirm.ts'
 import { loosenedItems } from '../src/pace/consent.ts'
-import { commit, runs, sampleRepo, setConfig, sh, testpace } from './helpers.ts'
+import { commit, runs, sampleRepo, setConfig, sh, testpace, userAgrees } from './helpers.ts'
 
 const contract = (change: Record<string, unknown> = {}): string =>
   JSON.stringify({ fast: 'npm run check', files: 'node scripts/test-files.mjs', full: 'npm run check:all', tests: ['tests/**/*.test.mjs', '!tests/slow/**'], ignore: ['docs/**'], ...change })
@@ -91,7 +90,7 @@ describe('testpace full：改了命令、缩小了 tests 规则，用户同意�
     commit(repo, '改 full')
     assert.equal(testpace(repo, ['full']).code, 2)
 
-    assert.equal(confirm(repo, asked.id, asked.text).ok, true)
+    userAgrees(repo, asked.id, asked.text)
     r = testpace(repo, ['full'])
     assert.equal(r.code, 0, r.out)
     assert.match(r.out, /^整组通过/)

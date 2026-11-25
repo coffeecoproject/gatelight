@@ -35,11 +35,13 @@ const manifest = (dir: string): { name: string; version: string } => JSON.parse(
 const executable = (file: string): boolean => (statSync(file).mode & 0o111) !== 0
 
 describe('npm 包的内容', () => {
-  test('files 列的每一项都在 plugin/ 下；包里带着三份插件清单、hooks.json、mcp_config.json、.mcp.json、bin 下的三条命令、entry/command、setup.mjs，不带 tests/、tsconfig.json', () => {
+  test('files 列的每一项都在 plugin/ 下；包里带着三份插件清单、hooks.json、mcp_config.json、.mcp.json、Codex 起确认工具服务的 mcp.json 和 mcp.sh、bin 下的三条命令、entry/command、setup.mjs，不带 tests/、tsconfig.json', () => {
     for (const entry of PKG.files) assert.ok(existsSync(join(PLUGIN, entry)), `files 里的 ${entry} 不在 plugin/ 下`)
     const required = [
       '.claude-plugin/plugin.json',
       '.codex-plugin/plugin.json',
+      '.codex-plugin/mcp.json',
+      '.codex-plugin/mcp.sh',
       '.antigravity-plugin/plugin.json',
       'hooks.json',
       'mcp_config.json',

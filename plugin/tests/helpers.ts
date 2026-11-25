@@ -1,5 +1,6 @@
 // 测试共用：示例项目副本、跑 testpace 命令、读记录。
 
+import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
@@ -9,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 // 先装配：把检查模块登记给底座（测试里直接调 hook 的判断、读约定时要用）
 import '../src/modules.ts'
 import { AGENTS } from '../src/base/agent.ts'
+import { check } from '../src/base/confirm.ts'
 import { HOOK_COMMAND } from '../src/base/gate.ts'
 
 export const BIN = fileURLToPath(new URL('../bin/testpace', import.meta.url))
@@ -191,6 +193,13 @@ export function gatedRepo(): string {
   const r = testpace(dir, ['status'])
   if (!/合并门：已装上/.test(r.out)) throw new Error(`合并门没在把关（测试要 git 2.54 以上）：\n${r.out}`)
   return dir
+}
+
+/** 用户在确认工具的弹窗里同意了：编号和文字要核对得上（对不上测试就失败），再记下。 */
+export function userAgrees(repo: string, id: string, text: string): void {
+  const checked = check(repo, id, text)
+  assert.ok(checked.ok, checked.ok ? undefined : checked.text)
+  checked.record()
 }
 
 /**
