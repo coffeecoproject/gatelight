@@ -3,7 +3,7 @@ import { describe, test } from 'node:test'
 import { type Config, parseConfig } from '../../src/wall/config.ts'
 import type { ChangeFacts, ImportFact, ProjectImports } from '../../src/wall/layermap.ts'
 import { Layout } from '../../src/wall/layout.ts'
-import { behaviorHints, entryExports, importViolations, uncheckedItems, unownedFiles, withAssets } from '../../src/wall/rules.ts'
+import { behaviorHints, entryExports, existingChangeHints, importViolations, type MigrationAlter, uncheckedItems, unownedFiles, withAssets } from '../../src/wall/rules.ts'
 
 const FILES = [
   'src/main.ts',
@@ -229,6 +229,80 @@ describe('R4 为新功能改了别人的已有行为（只提示）', () => {
     assert.deepEqual(behaviorHints(l, changes({ declarations: [changed], calls: [{ ...call, from: 'src/modules/booking/index.ts' }] })), [])
     assert.deepEqual(behaviorHints(l, changes({ declarations: [changed], calls: [{ ...call, from: 'src/main.ts' }] })), [])
     assert.deepEqual(behaviorHints(l, changes({ declarations: [changed], calls: [{ ...call, declaration: 'createBooking' }] })), [])
+  })
+})
+
+describe('R4 的另一种：新建了模块，又改了已有模块里已有的（只提示）', () => {
+  const CREATE = 'src/modules/booking/internal/create.ts'
+  const MIGRATION = 'src/modules/billing/migrations/20261125090000_source.sql'
+  const decl = (path: string, declaration: string, line: number, exported = true) => ({ path, declaration, line, exported })
+  const where = (l: Layout, fresh: string[], value: Partial<ChangeFacts>, alters: MigrationAlter[] = []): string[] =>
+    existingChangeHints(l, changes(value), new Set(fresh), alters).map(hint => hint.where)
+  const alter = (l: Layout, module: string, path: string, line: number): MigrationAlter => ({ module: l.modules.find(m => m.id === module) as MigrationAlter['module'], path, line })
+
+  test('新建了模块，又改了已有模块里已有的声明：每个已有模块一条，写明新模块、已有模块、声明名和位置', () => {
+    const l = layout()
+    const hints = existingChangeHints(
+      l,
+      changes({ declarations: [decl(CREATE, 'Source', 9), decl('src/modules/billing/charge.ts', 'LIMIT', 2, false), decl(CREATE, 'price', 7)] }),
+      new Set(['stock']),
+      [],
+    )
+    assert.deepEqual(hints.map(hint => hint.where), [
+      `这次新建了 stock 模块，同时改了已有的 booking 模块里已有的：Source（${CREATE}:9）、price（${CREATE}:7）`,
+      '这次新建了 stock 模块，同时改了已有的 billing 模块里已有的：LIMIT（src/modules/billing/charge.ts:2）',
+    ])
+    assert.match(hints[0]?.fix as string, /^新模块要的在 booking 新增，不改它已有的。.*改成 booking 收一个值，或者由装配层接进来；是正常的重构就不用管。$/)
+  })
+
+  test('同时新建了几个模块：都写上', () => {
+    assert.deepEqual(where(layout(), ['stock', 'go'], { declarations: [decl(CREATE, 'Source', 9)] }), [`这次新建了 go、stock 模块，同时改了已有的 booking 模块里已有的：Source（${CREATE}:9）`])
+  })
+
+  test('映射进已有模块的文件也算那个模块的', () => {
+    assert.deepEqual(where(layout(), ['stock'], { declarations: [decl('src/pages/booking/list.ts', 'COLUMNS', 4)] }), ['这次新建了 stock 模块，同时改了已有的 booking 模块里已有的：COLUMNS（src/pages/booking/list.ts:4）'])
+  })
+
+  test('对象字面量的属性（PAGES.deposit）按顶层的名字报', () => {
+    assert.deepEqual(where(layout(), ['stock'], { declarations: [decl(CREATE, 'PAGES.deposit', 12)] }), [`这次新建了 stock 模块，同时改了已有的 booking 模块里已有的：PAGES（${CREATE}:12）`])
+  })
+
+  test('同一个对象字面量改了几个属性：按顶层的名字只说一次', () => {
+    const [hint] = where(layout(), ['stock'], { declarations: [decl(CREATE, 'PAGES.deposit', 12), decl(CREATE, 'PAGES.refund', 13)] })
+    assert.equal(hint?.match(/PAGES（/g)?.length, 1, hint)
+    assert.match(hint as string, new RegExp(`PAGES（${CREATE}:12）`))
+  })
+
+  test('这次没有新建模块：改已有模块不提示', () => {
+    const l = layout()
+    assert.deepEqual(where(l, [], { declarations: [decl(CREATE, 'Source', 9)] }, [alter(l, 'billing', MIGRATION, 3)]), [])
+  })
+
+  test('新模块自己的、装配层的、共享层的、outside 里的改动不提示', () => {
+    const declarations = [decl('src/modules/stock/count.ts', 'count', 1), decl('src/main.ts', 'ROUTES', 3), decl('src/shared/money.ts', 'round', 1), decl('scripts/seed.ts', 'seed', 1)]
+    assert.deepEqual(where(layout(), ['stock'], { declarations }), [])
+  })
+
+  test('已经按"改了实现、别的模块新增了调用"提示过的声明不再列；没导出的、只在本模块里新增调用的照列', () => {
+    const l = layout()
+    const price = decl(CREATE, 'price', 7)
+    const call = { from: 'src/modules/stock/count.ts', line: 2, to: CREATE, declaration: 'price', exported: true }
+    const value = { declarations: [price], calls: [call] }
+    assert.equal(behaviorHints(l, changes(value)).length, 1)
+    assert.deepEqual(where(l, ['stock'], value), [])
+    assert.deepEqual(where(l, ['stock'], { declarations: [{ ...price, exported: false }], calls: [call] }), [`这次新建了 stock 模块，同时改了已有的 booking 模块里已有的：price（${CREATE}:7）`])
+    assert.deepEqual(where(l, ['stock'], { declarations: [price], calls: [{ ...call, from: 'src/modules/booking/index.ts' }] }), [`这次新建了 stock 模块，同时改了已有的 booking 模块里已有的：price（${CREATE}:7）`])
+  })
+
+  test('已有模块的新迁移里改、删已有的对象：一个文件只说一次，位置写第一句；和改了的声明并在这个模块的一条里', () => {
+    const l = layout()
+    const hints = where(l, ['stock'], { declarations: [decl('src/modules/billing/charge.ts', 'LIMIT', 2)] }, [alter(l, 'billing', MIGRATION, 7), alter(l, 'billing', MIGRATION, 8)])
+    assert.deepEqual(hints, [`这次新建了 stock 模块，同时改了已有的 billing 模块里已有的：LIMIT（src/modules/billing/charge.ts:2）、迁移里改、删了已有的对象（${MIGRATION}:7）`])
+  })
+
+  test('新模块自己的迁移里改、删对象不提示', () => {
+    const l = layout()
+    assert.deepEqual(where(l, ['stock'], {}, [alter(l, 'stock', 'src/modules/stock/migrations/20261125090000_stock.sql', 2)]), [])
   })
 })
 

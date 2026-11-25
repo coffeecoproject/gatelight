@@ -8,7 +8,7 @@ import { type Config, type GroupedConfig, parseConfig } from '../../src/wall/con
 import type { ChangeFacts, ImportFact, ProjectImports } from '../../src/wall/layermap.ts'
 import { Layout } from '../../src/wall/layout.ts'
 import { type ConfigSide, looseningItems } from '../../src/wall/loosen.ts'
-import { behaviorHints, entryExports, importViolations, unownedFiles } from '../../src/wall/rules.ts'
+import { behaviorHints, entryExports, existingChangeHints, importViolations, type MigrationAlter, unownedFiles } from '../../src/wall/rules.ts'
 import { hook, modwall, sh, tempDir, write } from './helpers.ts'
 
 const APPS = {
@@ -220,6 +220,19 @@ describe('按应用算的规则', () => {
     assert.deepEqual(exports.map(hint => hint.where), ['api/courses 的入口 services/api/src/modules/courses/index.ts:1 新增引用 services/api/src/modules/courses/repo.ts'])
   })
 
+  test('R4 的另一种只看同一个应用：一个应用新建了模块，不提示另一个应用里改了的已有模块', () => {
+    const l = layout()
+    const changes = (value: Partial<ChangeFacts>): ChangeFacts => ({ imports: [], calls: [], declarations: [], edgesTruncated: false, truncated: false, incomplete: [], unmapped: [], ...value })
+    const declarations = [
+      { path: 'apps/admin/src/features/courses/list.ts', declaration: 'list', line: 1, exported: true },
+      { path: 'services/api/src/modules/courses/repo.ts', declaration: 'find', line: 3, exported: true },
+    ]
+    const api = l.modules.find(module => module.id === 'api/courses') as MigrationAlter['module']
+    const alters = [{ module: api, path: 'services/api/src/modules/courses/migrations/20261125090000_x.sql', line: 1 }]
+    const hints = existingChangeHints(l, changes({ declarations }), new Set(['admin/orders']), alters)
+    assert.deepEqual(hints.map(hint => hint.where), ['这次新建了 admin/orders 模块，同时改了已有的 admin/courses 模块里已有的：list（apps/admin/src/features/courses/list.ts:1）'])
+  })
+
   test('R5 按应用说：知道在哪个应用的只说那个应用，不知道的列出每个应用和外面一层的共享层', () => {
     const files = [...FILES, 'services/api/src/modules/stray.ts', 'apps/admin/src/legacy.ts']
     const vs = unownedFiles(layout(APPS, files), files)
@@ -387,6 +400,17 @@ describe('modwall check、status 和钩子（有几个应用时）', () => {
     assert.doesNotMatch(r.out, /R1|R2/)
   })
 
+  test('一个应用新建了模块：只提示同一个应用里改了的已有模块，另一个应用的不提示', () => {
+    const repo = appsRepo()
+    write(repo, 'apps/admin/src/features/orders/index.ts', 'export function orders(): string[] {\n  return []\n}\n')
+    write(repo, 'apps/admin/src/features/courses/list.ts', "export function list(): string[] {\n  return ['orders']\n}\n")
+    write(repo, 'services/api/src/modules/courses/repo.ts', "import { db } from '../../shared/db.ts'\n\nexport function find(): number {\n  return db + 1\n}\n")
+    const r = modwall(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /R4 为新功能改了别人的已有行为（1 处，先只提示）\n {2}· 这次新建了 admin\/orders 模块，同时改了已有的 admin\/courses 模块里已有的：list（apps\/admin\/src\/features\/courses\/list\.ts:1）/)
+    assert.doesNotMatch(r.out, /api\/courses 模块里已有的/)
+  })
+
   test('会话开始按应用分组列模块；改文件之前的 R5 说明和改法按应用说', () => {
     const repo = appsRepo()
     const text = hook(repo, 'SessionStart')?.hookSpecificOutput.additionalContext as string
@@ -400,6 +424,11 @@ describe('modwall check、status 和钩子（有几个应用时）', () => {
     assert.match(edit('apps/admin/src/legacy.ts') as string, /没有归属。代码文件要放进它所在应用的模块、共享层或装配层：admin 应用的.*；api 应用的.*新功能默认在所在应用的模块根目录下新建一个模块目录/)
     assert.equal(edit('services/api/src/modules/orders/index.ts'), undefined)
     assert.equal(edit('packages/common/date.ts'), undefined)
+  })
+
+  test('会话开始说明：不在同一个应用里别的模块的名单、类型、常量、映射表、数据库约束里写上新功能的名字', () => {
+    const text = hook(appsRepo(), 'SessionStart')?.hookSpecificOutput.additionalContext as string
+    assert.match(text, /不给别的模块的已有函数加分支：为新功能在对方新增一个函数。不在别的模块的名单、类型、常量、映射表、数据库约束里写上新功能的名字：改成对方收一个值，或由装配层接进来。同一个应用里的模块之间不能成环。/)
   })
 
   test('单应用的写法换成按应用分组：整份配置要用户确认一次', () => {

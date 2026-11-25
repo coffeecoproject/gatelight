@@ -3,7 +3,8 @@
 //   R2 循环        模块之间有回环                                                         拦
 //   R3 方向反了    共享层引用模块或装配层；模块引用装配层；被管的代码引用 outside 或测试文件；  拦
 //                  一个应用引用另一个应用的代码；外面一层的共享层引用任何应用的代码
-//   R4 改已有行为  改了 B 已有导出函数的实现，A 在这次改动里新增了对它的调用                 只提示
+//   R4 改已有行为  改了 B 已有导出函数的实现，A 在这次改动里新增了对它的调用；                只提示
+//                  这次新建了模块，同时改了已有模块里已有的声明、在它的新迁移里改删已有的对象
 //   R5 没有归属    代码文件不在模块、共享层、装配层、映射和 outside 里                       拦
 //   R6 数据库越界  迁移文件那部分在 database.ts，库里的现状在 dbcheck.ts                       拦
 // R1、R2、R3、R5、R6 看项目当前的全部代码；R4 和"入口新增导出"看这次改动（和分叉点比）。
@@ -17,7 +18,7 @@ import { type App, type ExceptionRule, field, moduleId, type Scheme } from './co
 import { posix } from 'node:path'
 import { inEntryLanguage, isCode, isStylesheet, UNREAD_DIRECTORIES } from './files.ts'
 import type { ChangeFacts, ProjectImports } from './layermap.ts'
-import { label, type Layout, type Owner } from './layout.ts'
+import { label, type Layout, type Module, type Owner } from './layout.ts'
 
 export type Rule = 'R1' | 'R2' | 'R3' | 'R5' | 'R6'
 
@@ -338,19 +339,28 @@ export function unownedFiles(layout: Layout, files: readonly string[]): Violatio
     })
 }
 
+type ChangedDeclaration = ChangeFacts['declarations'][number]
+
+/** 这次改动里，同一个应用里别的模块新增的、对这个已有导出声明的调用（应用之间的调用另由 R3 拦）。 */
+function newCallsFromOthers(layout: Layout, changes: ChangeFacts, declaration: ChangedDeclaration): ChangeFacts['calls'] {
+  const owner = layout.owner(declaration.path)
+  if (!declaration.exported || owner.kind !== 'module') return []
+  return changes.calls.filter(call => {
+    if (call.to !== declaration.path || call.declaration !== declaration.declaration) return false
+    const caller = layout.owner(call.from)
+    return caller.kind === 'module' && caller.app === owner.app && caller.name !== owner.name
+  })
+}
+
 /** R4：这次改了 B 模块已有的导出函数的实现，同时 A 模块在这次改动里新增了对它的调用。只提示。 */
 export function behaviorHints(layout: Layout, changes: ChangeFacts): Hint[] {
   const hints: Hint[] = []
   for (const declaration of changes.declarations) {
-    if (!declaration.exported) continue
     const owner = layout.owner(declaration.path)
     if (owner.kind !== 'module') continue
     const callee = moduleId(owner.app, owner.name)
-    for (const call of changes.calls) {
-      if (call.to !== declaration.path || call.declaration !== declaration.declaration) continue
-      // 只看同一个应用里别的模块：应用之间的调用另由 R3 拦
-      const caller = layout.owner(call.from)
-      if (caller.kind !== 'module' || caller.app !== owner.app || caller.name === owner.name) continue
+    for (const call of newCallsFromOthers(layout, changes, declaration)) {
+      const caller = layout.owner(call.from) as Extract<Owner, { kind: 'module' }>
       hints.push({
         where: `${callee} 模块的 ${declaration.declaration}（${declaration.path}:${declaration.line}）这次改了实现，${moduleId(caller.app, caller.name)} 模块在 ${site(call)} 新增了对它的调用`,
         fix: `为新功能就在 ${callee} 新增一个函数，不要给旧函数加分支；是正常的重构（比如改了签名、同时更新调用处）就不用管。`,
@@ -358,6 +368,52 @@ export function behaviorHints(layout: Layout, changes: ChangeFacts): Hint[] {
     }
   }
   return hints
+}
+
+/** 新迁移里改、删已有对象的一句：所在的模块、位置。 */
+export interface MigrationAlter {
+  module: Module
+  path: string
+  line: number
+}
+
+/**
+ * R4 的另一种：这次新建了模块，同一个应用里已有的模块又被改了已有的东西（声明、迁移里改删已有的对象）。
+ * 新模块要的应该在对方新增；改对方已有的，常是在对方的名单、类型、常量、约束、映射表里加上新模块的名字，
+ * 对方因此认识了用它的模块。这种依赖写在字符串里，看引用查不出来，模块之间经装配层接线时也没有调用可查，所以按"改了已有的"提示。
+ * 已经按调用提示过的（上面的 behaviorHints）不再列。
+ */
+export function existingChangeHints(layout: Layout, changes: ChangeFacts, fresh: ReadonlySet<string>, alters: readonly MigrationAlter[]): Hint[] {
+  const freshIn = (app: string | undefined): string[] => layout.modules.filter(module => module.app === app && fresh.has(module.id)).map(module => module.id)
+  const touched = new Map<string, { app: string | undefined; id: string; where: string[] }>()
+  // 同一处（key）只说一次，位置写第一次见到的
+  const seen = new Set<string>()
+  const add = (app: string | undefined, id: string, key: string, where: string): void => {
+    if (seen.has(key)) return
+    seen.add(key)
+    const found = touched.get(id) ?? { app, id, where: [] }
+    found.where.push(where)
+    touched.set(id, found)
+  }
+  for (const declaration of changes.declarations) {
+    const owner = layout.owner(declaration.path)
+    if (owner.kind !== 'module') continue
+    const id = moduleId(owner.app, owner.name)
+    if (fresh.has(id) || freshIn(owner.app).length === 0) continue
+    // 对象字面量的属性报成 PAGES.deposit 这样，同一个文件里按顶层的名字说一次
+    const name = declaration.declaration.split('.')[0] as string
+    if (newCallsFromOthers(layout, changes, declaration).length) continue
+    add(owner.app, id, `${declaration.path}\0${name}`, `${name}（${declaration.path}:${declaration.line}）`)
+  }
+  // 一个迁移文件只说一次，位置写第一句
+  for (const alter of alters) {
+    if (fresh.has(alter.module.id) || freshIn(alter.module.app).length === 0) continue
+    add(alter.module.app, alter.module.id, alter.path, `迁移里改、删了已有的对象（${alter.path}:${alter.line}）`)
+  }
+  return [...touched.values()].map(({ app, id, where }) => ({
+    where: `这次新建了 ${freshIn(app).join('、')} 模块，同时改了已有的 ${id} 模块里已有的：${where.join('、')}`,
+    fix: `新模块要的在 ${id} 新增，不改它已有的。是在 ${id} 的名单、类型、常量、约束、映射表里加上新模块的名字的（${id} 因此认识了用它的模块），改成 ${id} 收一个值，或者由装配层接进来；是正常的重构就不用管。`,
+  }))
 }
 
 /** 这次改动给哪些模块的入口新增了引用（转导出也算 import）：不算违规，留作试点数据。 */
