@@ -11,6 +11,7 @@
 //   setsSearchPath 这句改了 search_path（SET、RESET search_path，set_config('search_path', …)）
 //   switchesRole   这句切了身份（SET ROLE、RESET ROLE、SET SESSION AUTHORIZATION、set_config('role', …)，也包括角色、库上设的 role；建函数、改函数时设的不算）
 //   schemas    这句建的 schema（CREATE SCHEMA）
+//   alters     这句改、删已有的对象（ALTER、DROP、CREATE OR REPLACE 开头）
 // 不解析完整语法：切词（注释、字符串、带引号的名字、$$ 正文）后按分号分句，在句子里认几种固定的写法。
 // 函数、DO 块的正文当成 SQL 再读一遍，得到的句子单独列出（别名只在自己的句子里起作用）。
 // 拼出来再执行的 SQL（EXECUTE '...'）是字符串，读不到。
@@ -58,6 +59,8 @@ export interface Statement {
   switchesRole: boolean
   /** CREATE SCHEMA 建的 schema。 */
   schemas: Name[]
+  /** 改、删已有的对象：ALTER、DROP、CREATE OR REPLACE 开头的句子。 */
+  alters: boolean
 }
 
 const WORD_START = /[A-Za-z_\u0080-\uffff]/
@@ -206,11 +209,12 @@ const KINDS = new Set(['table', 'view', 'function', 'procedure', 'sequence', 'ty
 const MODIFIERS = new Set(['or', 'replace', 'global', 'local', 'temp', 'temporary', 'unlogged', 'foreign', 'recursive', 'materialized', 'unique', 'concurrently'])
 
 function statement(tokens: Token[]): Statement[] {
-  const found: Statement = { line: tokens[0]?.line ?? 0, refs: [], targets: [], writes: [], tables: [], view: false, aliases: [], relations: [], setsSearchPath: false, switchesRole: false, schemas: [], inFunction: false }
+  const found: Statement = { line: tokens[0]?.line ?? 0, refs: [], targets: [], writes: [], tables: [], view: false, aliases: [], relations: [], setsSearchPath: false, switchesRole: false, schemas: [], inFunction: false, alters: false }
   const nested: Statement[] = []
   const creates = isWord(tokens[0], 'create')
   let at = 1
   if (creates && isWord(tokens[at], 'or') && isWord(tokens[at + 1], 'replace')) at += 2
+  found.alters = isWord(tokens[0], 'alter', 'drop') || at === 3
   const isFunction = creates && isWord(tokens[at], 'function', 'procedure')
   // DO 块的正文是句子里第一个字符串（DO $$…$$、DO LANGUAGE x '…'）
   let doBody = isWord(tokens[0], 'do')

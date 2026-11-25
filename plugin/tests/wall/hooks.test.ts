@@ -34,6 +34,11 @@ describe('会话开始', () => {
     assert.doesNotMatch(text, /readonly/)
   })
 
+  test('说明不在别的模块的名单、类型、常量、映射表、数据库约束里写上新功能的名字，改成对方收一个值或由装配层接进来', () => {
+    const text = hook(sampleRepo(), 'SessionStart')?.hookSpecificOutput.additionalContext as string
+    assert.match(text, /不给别的模块的已有函数加分支：为新功能在对方新增一个函数。不在别的模块的名单、类型、常量、映射表、数据库约束里写上新功能的名字：改成对方收一个值，或由装配层接进来。模块之间不能成环。/)
+  })
+
   test('写了 database：加上数据库按模块分 schema 的约定；没写不提', () => {
     assert.doesNotMatch(hook(sampleRepo(), 'SessionStart')?.hookSpecificOutput.additionalContext as string, /schema/)
     const withDb = (extra: Record<string, unknown> = {}): string =>

@@ -233,6 +233,13 @@ export function filesAt(root: string, rev: string, dir: string): string[] {
   return (out ?? '').split('\0').filter(Boolean)
 }
 
+/** 这些路径（文件或目录，相对仓库根目录）里，提交里有的那些。 */
+export function pathsAt(root: string, rev: string, paths: readonly string[]): Set<string> {
+  if (paths.length === 0) return new Set()
+  const out = gitOr(root, ['ls-tree', '-z', '--name-only', rev, '--', ...paths.map(path => path.replace(/\/+$/, ''))])
+  return new Set((out ?? '').split('\0').filter(Boolean))
+}
+
 /** 工作区里这个文件现在的内容。只读普通文件（跟着软链走）；目录、不存在的都是 undefined。 */
 export function fileNow(root: string, path: string): string | undefined {
   const full = join(root, path)

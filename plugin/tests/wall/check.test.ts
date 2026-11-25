@@ -4,6 +4,10 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fakeLayermap, modwall, sampleRepo, sh, tempDir, withoutLayermap, write } from './helpers.ts'
 
+/** 示例项目里 billing 入口和装配层原来的内容。 */
+const BILLING = 'export function charge(amount: number): number {\n  return amount\n}\n'
+const MAIN = "import { charge } from './modules/billing/index.ts'\nimport { createBooking } from './modules/booking/index.ts'\n\nconsole.log(charge(createBooking(100)))\n"
+
 /** 在示例项目上造出 R1、R2、R3、R5 各一处，R4 一处提示。 */
 function breakSample(repo: string): void {
   // R1 + R4：billing 绕过 booking 的入口，新调用 booking 改了实现的 price
@@ -63,6 +67,53 @@ describe('modwall check', () => {
     // 示例项目里 scripts/seed.ts（outside）和 tests/booking.test.ts 都直接引用了 booking 的内部文件
     assert.doesNotMatch(r.out, /seed\.ts|booking\.test\.ts/)
     assert.match(modwall(repo, ['status']).out, /越界：R1 1、R2 1、R3 1、R5 1、R6 0；R4 提示 1/)
+  })
+
+  test('新建了模块，又改了已有模块里已有的常量、类型：R4 提示一条，写明新模块、已有模块、声明的顶层名字和位置；只是提示，check 照样通过', () => {
+    const repo = sampleRepo(dir => write(dir, 'src/modules/billing/index.ts', `${BILLING}\nexport const PAGES = {\n  invoice: '/invoice',\n}\n\nexport type Source = 'booking' | 'walkin'\n`))
+    write(repo, 'src/modules/deposit/index.ts', 'export function deposit(amount: number): number {\n  return amount\n}\n')
+    write(repo, 'src/modules/billing/index.ts', `${BILLING}\nexport const PAGES = {\n  invoice: '/invoice',\n  deposit: '/deposit',\n}\n\nexport type Source = 'booking' | 'walkin' | 'deposit'\n`)
+    const r = modwall(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /modwall check：通过。/)
+    assert.match(
+      r.out,
+      /R4 为新功能改了别人的已有行为（1 处，先只提示）\n {2}· 这次新建了 deposit 模块，同时改了已有的 billing 模块里已有的：PAGES（src\/modules\/billing\/index\.ts:5）、Source（src\/modules\/billing\/index\.ts:10）\n {4}建议：新模块要的在 billing 新增，不改它已有的。/,
+    )
+    assert.match(modwall(repo, ['status']).out, /R4 提示 1/)
+  })
+
+  test('没有新建模块：改已有模块里已有的常量、类型不提示', () => {
+    const repo = sampleRepo(dir => write(dir, 'src/modules/billing/index.ts', `${BILLING}\nexport type Source = 'booking' | 'walkin'\n`))
+    write(repo, 'src/modules/billing/index.ts', `${BILLING}\nexport type Source = 'booking' | 'walkin' | 'deposit'\n`)
+    const r = modwall(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.doesNotMatch(r.out, /R4|这次新建了/)
+  })
+
+  test('新建了模块：装配层、共享层里的改动，已有模块里新加的函数、入口新加的导出，都不提示', () => {
+    const repo = sampleRepo(dir => write(dir, 'src/main.ts', `${MAIN}\nexport const ROUTES = ['/booking']\n`))
+    write(repo, 'src/modules/deposit/index.ts', 'export function deposit(amount: number): number {\n  return amount\n}\n')
+    write(repo, 'src/main.ts', `${MAIN}\nexport const ROUTES = ['/booking', '/deposit']\n`)
+    write(repo, 'src/shared/money.ts', 'export function round(amount: number): number {\n  return Math.round(amount * 1000) / 1000\n}\n')
+    write(repo, 'src/modules/billing/index.ts', `${BILLING}\nexport function hold(amount: number): number {\n  return amount\n}\n`)
+    write(repo, 'src/modules/booking/internal/cancel.ts', 'export function cancel(): boolean {\n  return true\n}\n')
+    write(repo, 'src/modules/booking/index.ts', "export { createBooking, price } from './internal/create.ts'\nexport { cancel } from './internal/cancel.ts'\n")
+    const r = modwall(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    // 入口新加的导出照旧列在"入口新增导出"里
+    assert.match(r.out, /booking 的入口 src\/modules\/booking\/index\.ts:2 新增引用 src\/modules\/booking\/internal\/cancel\.ts/)
+    assert.doesNotMatch(r.out, /R4|这次新建了/)
+  })
+
+  test('新模块新调用了已有模块里改了实现的导出函数：只按"新增了对它的调用"提示一次，不再按"改了已有的"列', () => {
+    const repo = sampleRepo()
+    write(repo, 'src/modules/deposit/index.ts', "import { charge } from '../billing/index.ts'\n\nexport function deposit(amount: number): number {\n  return charge(amount)\n}\n")
+    write(repo, 'src/modules/billing/index.ts', 'export function charge(amount: number): number {\n  return amount + 1\n}\n')
+    const r = modwall(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /R4 为新功能改了别人的已有行为（1 处，先只提示）\n {2}· billing 模块的 charge（src\/modules\/billing\/index\.ts:1）这次改了实现，deposit 模块在 src\/modules\/deposit\/index\.ts:4 新增了对它的调用/)
+    assert.doesNotMatch(r.out, /这次新建了/)
   })
 
   test('入口新增导出列出来，不算违规；可能是项目自己的、没对上文件的 import 列为没检查到', () => {

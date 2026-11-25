@@ -397,6 +397,20 @@ describe('读 SQL', () => {
     const [trigger] = statements('CREATE TRIGGER t BEFORE UPDATE ON orders.items FOR EACH ROW EXECUTE FUNCTION orders.touch()')
     assert.deepEqual(trigger?.aliases, [])
   })
+
+  test('改、删已有对象的句子（ALTER、DROP、CREATE OR REPLACE 开头）记作 alters；只建新对象、写数据的不算', () => {
+    const sql = [
+      'ALTER TABLE invoices ADD COLUMN note text',
+      'drop index invoices_idx',
+      'CREATE OR REPLACE VIEW invoices_api.list AS SELECT 1',
+      'CREATE TABLE refunds (id bigint)',
+      'CREATE INDEX refunds_idx ON refunds (id)',
+      "INSERT INTO refunds VALUES (1)",
+      'UPDATE refunds SET id = 2',
+      'COMMENT ON TABLE refunds IS $$x$$',
+    ].join(';\n')
+    assert.deepEqual(statements(sql).map(statement => `${statement.line} ${statement.alters}`), ['1 true', '2 true', '3 true', '4 false', '5 false', '6 false', '7 false', '8 false'])
+  })
 })
 
 describe('modwall check 里的 R6', () => {
@@ -452,5 +466,61 @@ describe('modwall check 里的 R6', () => {
     const dup = modwall(repo, ['check'])
     assert.equal(dup.code, 2, dup.out)
     assert.match(dup.out, /配置有问题.*\n {2}✗ 迁移的时间戳重复/)
+  })
+})
+
+describe('modwall check 里的 R4：新建了模块时，已有模块的新迁移', () => {
+  /** 示例项目加上数据库：billing 有建 invoices 的迁移，booking 有建 bookings 的迁移。 */
+  const dbRepo = (): string =>
+    sampleRepo(dir => {
+      const config = { roots: ['src/modules'], shared: ['src/shared/**'], app: ['src/main.ts'], entry: ['index.ts'], outside: ['scripts/**'], database: DATABASE }
+      write(dir, '.modwall/config.json', JSON.stringify(config))
+      write(dir, 'src/shared/migrations/20261118080000_init.sql', 'CREATE TABLE shared.migrations (name text PRIMARY KEY);\n')
+      write(dir, 'src/modules/billing/migrations/20261118090000_invoices.sql', "CREATE TABLE invoices (id bigint PRIMARY KEY, source text CHECK (source IN ('booking')));\n")
+      write(dir, 'src/modules/booking/migrations/20261118090100_bookings.sql', 'CREATE TABLE bookings (id bigint PRIMARY KEY);\n')
+    })
+  const DEPOSIT = 'export function deposit(amount: number): number {\n  return amount\n}\n'
+  // 函数正文里的 ALTER 不算；真正改已有对象的两句在第 7、8 行
+  const SOURCE = [
+    'CREATE TABLE refunds (id bigint PRIMARY KEY);',
+    'CREATE FUNCTION touch() RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = billing, pg_temp AS $$',
+    'BEGIN',
+    '  ALTER TABLE refunds ADD COLUMN note text;',
+    'END',
+    '$$;',
+    'ALTER TABLE invoices DROP CONSTRAINT invoices_source_check;',
+    "ALTER TABLE invoices ADD CONSTRAINT invoices_source_check CHECK (source IN ('booking', 'deposit'));",
+    '',
+  ].join('\n')
+
+  test('已有模块新加的迁移里改、删已有的对象：每个文件提示一次，位置写第一句；只是提示，check 照样通过', () => {
+    const repo = dbRepo()
+    write(repo, 'src/modules/deposit/index.ts', DEPOSIT)
+    write(repo, 'src/modules/billing/migrations/20261125090100_source.sql', SOURCE)
+    write(repo, 'src/modules/booking/migrations/20261125090200_drop.sql', 'DROP TABLE bookings;\n')
+    const r = modwall(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /R4 为新功能改了别人的已有行为（2 处，先只提示）/)
+    assert.match(r.out, /· 这次新建了 deposit 模块，同时改了已有的 billing 模块里已有的：迁移里改、删了已有的对象（src\/modules\/billing\/migrations\/20261125090100_source\.sql:7）\n/)
+    assert.match(r.out, /· 这次新建了 deposit 模块，同时改了已有的 booking 模块里已有的：迁移里改、删了已有的对象（src\/modules\/booking\/migrations\/20261125090200_drop\.sql:1）\n/)
+  })
+
+  test('只建新对象的新迁移、分叉点上已有的迁移、新模块自己的迁移：不提示', () => {
+    const repo = dbRepo()
+    write(repo, 'src/modules/deposit/index.ts', DEPOSIT)
+    write(repo, 'src/modules/deposit/migrations/20261125090000_deposits.sql', 'CREATE TABLE deposits (id bigint PRIMARY KEY);\nALTER TABLE deposits ADD COLUMN amount bigint;\n')
+    write(repo, 'src/modules/billing/migrations/20261125090100_refunds.sql', 'CREATE TABLE refunds (id bigint PRIMARY KEY);\nCREATE INDEX refunds_idx ON refunds (id);\n')
+    write(repo, 'src/modules/booking/migrations/20261118090100_bookings.sql', 'CREATE TABLE bookings (id bigint PRIMARY KEY);\nALTER TABLE bookings ADD COLUMN note text;\n')
+    const r = modwall(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.doesNotMatch(r.out, /R4|这次新建了/)
+  })
+
+  test('没有新建模块：已有模块的新迁移改、删已有的对象不提示', () => {
+    const repo = dbRepo()
+    write(repo, 'src/modules/billing/migrations/20261125090100_source.sql', SOURCE)
+    const r = modwall(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.doesNotMatch(r.out, /R4|这次新建了/)
   })
 })

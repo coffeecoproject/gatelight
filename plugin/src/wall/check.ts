@@ -6,19 +6,23 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { askUser } from '../base/confirm.ts'
 import { EXIT } from '../base/exit.ts'
+import { pathsAt } from '../base/git.ts'
 import type { Repo } from '../base/repo.ts'
 import { CONFIG_PATH } from './config.ts'
 import { unreadSql } from './database.ts'
 import { codeRoleSwitches, migrationViolations } from './dbrules.ts'
 import { type ChangeFacts, type ProjectImports, readChanges, readImports } from './layermap.ts'
 import { miniprogramRefs } from './miniprogram.ts'
-import type { Layout } from './layout.ts'
+import type { Layout, Module } from './layout.ts'
 import { looseningItems } from './loosen.ts'
 import { layoutOf, type Project } from './project.ts'
+import { statements } from './sql.ts'
 import {
   BLOCKING_RULES,
   behaviorHints,
   entryExports,
+  existingChangeHints,
+  type MigrationAlter,
   type Hint,
   importViolations,
   RULE_NAMES,
@@ -121,13 +125,14 @@ export function analyze(project: Project, repo: Repo): Report {
   }
   let changes: ChangeFacts | undefined
   if (project.base && imports.ok) {
-    const read = readChanges(project.root, project.base.commit)
-    if (read.ok) {
-      changes = read.value
+    const changed = readChanges(project.root, project.base.commit)
+    if (changed.ok) {
+      changes = changed.value
       report.behavior = behaviorHints(layout, changes)
+      report.behavior.push(...existingChangeHints(layout, changes, freshModules(project.root, project.base.commit, layout), migrationAlters(project.root, project.base.commit, layout, read)))
       report.entryExports = entryExports(layout, changes)
     } else {
-      report.changesProblem = read.problem
+      report.changesProblem = changed.problem
     }
   }
   report.unchecked = [
@@ -136,6 +141,21 @@ export function analyze(project: Project, repo: Repo): Report {
     ...unreadSql(layout.databases, project.files, path => layout.owner(path)).map(path => `${path}：不在迁移目录里，R6 只查它有没有切身份（应用自己的查询文件可以不管；是迁移的话放进迁移目录）`),
   ]
   return report
+}
+
+/** 这次新建的模块：分叉点上还没有它的目录。 */
+function freshModules(root: string, base: string, layout: Layout): Set<string> {
+  const existed = pathsAt(root, base, layout.modules.map(module => module.dir))
+  return new Set(layout.modules.filter(module => !existed.has(module.dir)).map(module => module.id))
+}
+
+/** 已有模块这次新加的迁移里，改、删已有对象的句子（函数正文里的不算）。 */
+function migrationAlters(root: string, base: string, layout: Layout, read: (path: string) => string): MigrationAlter[] {
+  const owned = layout.databases.flatMap(database => database.migrations).filter((migration): migration is { path: string; module: Module } => migration.module !== undefined)
+  const existed = pathsAt(root, base, owned.map(migration => migration.path))
+  return owned
+    .filter(migration => !existed.has(migration.path))
+    .flatMap(({ path, module }) => statements(read(path)).filter(statement => statement.alters && !statement.inFunction).map(statement => ({ module, path, line: statement.line })))
 }
 
 /** R1–R3、R5、R6 都查了：配置能用、layermap imports 跑成了。只有这样的检查，越界列表才完整。 */
