@@ -1,7 +1,6 @@
-// agent hook 的判断：SessionStart 注入节奏说明，PreToolUse 补说节奏和软提示（执行命令的工具）、问各模块这次改文件拦不拦（改文件的工具），
-// PostToolUse、PostToolUseFailure 记下 agent 在前台看到了整组结果（Claude Code 通过的走前者，失败的走后者），Stop 跑停止门。
-// 各 agent 的 hook 输入输出格式和 Claude Code 一样（Codex 实测：执行命令的工具也叫 Bash，输入是字符串的 command）；
-// 工具名的大小写不一样（dsh 是 bash），这里统一。
+// agent hook 的判断：会话开始时给节奏说明，执行命令之前补说节奏和软提示，改文件之前问各模块这次拦不拦，
+// 命令执行完记下 agent 在前台看到了整组结果，要结束这一轮时跑停止门。
+// 这里只看内部事件、只给结论（judge）；各 agent 的输入输出长什么样在 hookformat.ts，这里不出现它们的字段名。
 // 合并门不在这里：它是 git 的钩子（gate.ts），git 移动默认分支时检查。
 // 入口在 plugin/hooks/testpace.ts，由它说明是哪个 agent。
 
@@ -13,21 +12,13 @@ import { CONTRACT_FILE, joined, loadContract } from './contract.ts'
 import { entriesNotPlaced, entryDir, refreshEntries } from './entry.ts'
 import { ensureGate, gateProblem } from './gate.ts'
 import { git } from './git.ts'
+import type { HookEvent, HookVerdict } from './hookformat.ts'
 import { modules } from './module.ts'
 import { defaultTips, openRepo, type Repo } from './repo.ts'
 import { noteSessionRepos, sessionRepos } from './sessions.ts'
 import { invocations } from './shell.ts'
 import { stopCheck } from './stop.ts'
 import type { SessionState } from './store.ts'
-
-interface HookInput {
-  hook_event_name?: string
-  session_id?: string
-  cwd?: string
-  tool_name?: string
-  tool_input?: { command?: unknown; run_in_background?: unknown; file_path?: unknown; content?: unknown; new_string?: unknown; edits?: unknown }
-  tool_response?: unknown
-}
 
 /** 落地的规矩：底座自己的一句，跟在各模块的会话说明后面。 */
 export const LANDING_RULE =
@@ -140,17 +131,6 @@ function untoldRepos(command: string, cwd: string, sessionId: string, now: numbe
   return untold
 }
 
-/** 改文件的工具（Claude Code 的，和 hooks.json 里的 matcher 一样）。Codex 的 apply_patch 另算（patchFiles）。 */
-const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
-
-/**
- * Codex 的 apply_patch 补丁（tool_input.command 是补丁正文）要改的文件：新建、修改、删除的，和改名后的新路径。
- * 路径相对会话所在目录，也可以是绝对路径。
- */
-function patchFiles(patch: string): string[] {
-  return patch.split('\n').flatMap(line => /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)\s*$/.exec(line)?.[1] ?? [])
-}
-
 /**
  * 会话要用改文件的工具改这个工作区的文件：改之前先记起点（先用改文件的工具改、后来才在这个工作区跑命令的，起点也得是改之前的样子），
  * 记下会话碰过它（改的可以是会话所在目录以外的工作区，停止门才查得到那里），记成会话干活的工作区。
@@ -165,8 +145,8 @@ function noteEditing(repo: Repo, sessionId: string, now: number): void {
  * 要改的文件在哪个接入了的仓库里、相对仓库根目录的路径。目标可以不在会话所在的仓库里，按它自己所在的仓库算；
  * 还不存在的文件按最近的已有目录找仓库。不在接入的仓库里时没有。
  */
-function editTarget(cwd: string, target: unknown): { repo: Repo; path: string } | undefined {
-  if (typeof target !== 'string' || target === '') return undefined
+function editTarget(cwd: string, target: string): { repo: Repo; path: string } | undefined {
+  if (target === '') return undefined
   const file = isAbsolute(target) ? target : resolve(cwd, target)
   let dir = dirname(file)
   while (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
@@ -182,21 +162,7 @@ function editTarget(cwd: string, target: unknown): { repo: Repo; path: string } 
   return { repo, path }
 }
 
-/** 改文件之前：问各模块拦不拦（module.ts 的 beforeEdit），有一个说了原因就拒绝。 */
-/** 改文件的工具这次要写进文件的新文字：Write 的整份内容，Edit、MultiEdit 替换进去的那几段。 */
-function writtenText(input: HookInput['tool_input']): string | undefined {
-  const parts: string[] = []
-  if (typeof input?.content === 'string') parts.push(input.content)
-  if (typeof input?.new_string === 'string') parts.push(input.new_string)
-  if (Array.isArray(input?.edits)) {
-    for (const item of input.edits as unknown[]) {
-      const text = (item as { new_string?: unknown } | null)?.new_string
-      if (typeof text === 'string') parts.push(text)
-    }
-  }
-  return parts.length > 0 ? parts.join('\n') : undefined
-}
-
+/** 改文件之前：问各模块拦不拦（module.ts 的 beforeEdit），有一个说了原因就拒绝。text 是这次要写进文件的新文字。 */
 function editRefusal({ repo, path }: { repo: Repo; path: string }, text: string | undefined): string | undefined {
   for (const module of modules()) {
     const reason = module.beforeEdit?.(repo, path, text)
@@ -205,15 +171,14 @@ function editRefusal({ repo, path }: { repo: Repo; path: string }, text: string 
   return undefined
 }
 
-/** agent：hook 来自哪个 agent（入口参数说明），决定要补充哪些前提。 */
-export function handle(input: HookInput, now: number, agent: AgentKind): unknown {
-  const cwd = input.cwd ?? process.cwd()
-  const event = input.hook_event_name
-  const sessionId = input.session_id ?? 'unknown'
-  // 只认执行命令的工具：Codex 改文件的 apply_patch 输入里也有字符串的 command（补丁正文），不能当命令解析
-  const shell = input.tool_name?.toLowerCase() === 'bash'
+/**
+ * 判断：只看内部事件（hookformat.ts 的 HookEvent），只给结论。agent：hook 来自哪个 agent（入口参数说明），决定会话说明里要补充哪些前提。
+ * 什么都不用说、不用拦时返回 undefined。
+ */
+export function judge(event: HookEvent, now: number, agent: AgentKind): HookVerdict | undefined {
+  const { cwd, sessionId } = event
 
-  if (event === 'SessionStart') {
+  if (event.kind === 'start') {
     // 旧版本放的固定入口先换成这一版的：下面的会话说明、之后的命令和合并门的钩子都靠它们找到命令
     refreshEntries()
     // 会话所在目录的仓库，加上会话之前碰过的仓库（压缩、恢复后重新开始时上下文里的节奏说明可能没了）。
@@ -235,48 +200,40 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
       ...repos.map(repo => (repo.root === here ? told(repo, agent) : told(repo, agent, `${repo.root} 这个仓库`))),
       ...(fresh ? [NEW_REPO] : []),
     ].join('\n\n')
-    return {
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context },
-      ...(notice ? { systemMessage: notice } : {}),
-    }
+    return { context, ...(notice ? { notice } : {}) }
   }
 
-  if (event === 'PreToolUse' && EDIT_TOOLS.has(input.tool_name ?? '')) {
-    const target = editTarget(cwd, input.tool_input?.file_path)
+  if (event.kind === 'edit') {
+    const target = editTarget(cwd, event.file)
     if (!target) return undefined
     noteEditing(target.repo, sessionId, now)
-    const reason = editRefusal(target, writtenText(input.tool_input))
-    return reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : undefined
+    const deny = editRefusal(target, event.text)
+    return deny ? { deny } : undefined
   }
 
-  const command = typeof input.tool_input?.command === 'string' ? input.tool_input.command : undefined
-  // Codex 的 apply_patch：只记下改到的工作区（起点、碰过、干活的地方）。改文件之前的检查（beforeEdit）不接：一段补丁里有几个文件，修改的部分只有差异
-  if (event === 'PreToolUse' && input.tool_name?.toLowerCase() === 'apply_patch' && command) {
-    for (const path of patchFiles(command)) {
+  // 补丁：只记下改到的工作区（起点、碰过、干活的地方）。改文件之前的检查（beforeEdit）不接：一段补丁里有几个文件，修改的部分只有差异
+  if (event.kind === 'patch') {
+    for (const path of event.files) {
       const target = editTarget(cwd, path)
       if (target) noteEditing(target.repo, sessionId, now)
     }
     return undefined
   }
-  if (event === 'PreToolUse' && shell && command) {
-    // 记下会话第一次出现的时间：停止门只管这之后起的整组。会话不在仓库里开始（SessionStart 没说节奏）时，
+
+  if (event.kind === 'command') {
+    // 记下会话第一次出现的时间：停止门只管这之后起的整组。会话不在仓库里开始（会话开始时没说节奏）时，
     // 第一次碰到接入的仓库就补说一次。
-    const untold = untoldRepos(command, cwd, sessionId, now)
+    const untold = untoldRepos(event.command, cwd, sessionId, now)
     for (const { repo, state } of untold) repo.store.saveSession(sessionId, { ...state, rhythm: true })
-    const hints = modules().flatMap(module => module.beforeCommand?.(command, cwd) ?? [])
+    const hints = modules().flatMap(module => module.beforeCommand?.(event.command, cwd) ?? [])
     const context = [...untold.map(({ repo }) => told(repo, agent, `${repo.root} 这个仓库`)), ...hints].join('\n\n')
-    if (context) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }
-    return undefined
+    return context ? { context } : undefined
   }
 
-  // 命令退出码非零时 Claude Code 发的是 PostToolUseFailure：整组失败的输出 agent 同样看到了
-  if ((event === 'PostToolUse' || event === 'PostToolUseFailure') && shell && command) {
-    // 在前台跑完 testpace full，agent 已经看到了结果；放到后台的（Claude Code 的 run_in_background）要等它看 testpace status
-    const background =
-      input.tool_input?.run_in_background === true ||
-      typeof (input.tool_response as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId === 'string'
-    if (background) return undefined
-    for (const call of invocations(command, cwd)) {
+  if (event.kind === 'ran') {
+    // 在前台跑完 testpace full，agent 已经看到了结果（失败的也是）；放到后台的要等它看 testpace status
+    if (event.background) return undefined
+    for (const call of invocations(event.command, cwd)) {
       if (basename(call.argv[0] ?? '') !== 'testpace' || call.argv[1] !== 'full') continue
       const repo = openRepo(call.cwd)
       if (repo) repo.store.markRead(sessionId, repo.root, now, () => defaultTips(repo))
@@ -284,21 +241,26 @@ export function handle(input: HookInput, now: number, agent: AgentKind): unknown
     return undefined
   }
 
-  if (event === 'Stop') {
-    // 会话所在目录的仓库和会话碰过的仓库都查；不是所在目录的，话里写上是哪个仓库。
-    const here = openRepo(cwd)?.root
-    const blocks: string[] = []
-    const warns: string[] = []
-    for (const repo of contractRepos([cwd, ...sessionRepos(sessionId)])) {
-      const result = stopCheck({ sessionId, cwd: repo.root, now, named: repo.root !== here })
-      if (result.block) blocks.push(result.block)
-      if (result.warn) warns.push(result.warn)
-    }
-    if (blocks.length === 0 && warns.length === 0) return undefined
-    return {
-      ...(blocks.length ? { decision: 'block', reason: blocks.join('\n') } : {}),
-      ...(warns.length ? { systemMessage: warns.join('\n') } : {}),
-    }
+  // 要结束这一轮：会话所在目录的仓库和会话碰过的仓库都查；不是所在目录的，话里写上是哪个仓库。
+  const here = openRepo(cwd)?.root
+  const blocks: string[] = []
+  const warns: string[] = []
+  for (const repo of contractRepos([cwd, ...sessionRepos(sessionId)])) {
+    const result = stopCheck({ sessionId, cwd: repo.root, now, named: repo.root !== here })
+    if (result.block) blocks.push(result.block)
+    if (result.warn) warns.push(result.warn)
   }
-  return undefined
+  if (blocks.length === 0 && warns.length === 0) return undefined
+  return {
+    ...(blocks.length ? { block: blocks.join('\n') } : {}),
+    ...(warns.length ? { notice: warns.join('\n') } : {}),
+  }
+}
+
+/** 一次 hook：把 agent 的输入读成内部事件，判断，把结论写成这个 agent 的输出。读写用哪一组看 AGENTS 表。没有要输出的返回 undefined。 */
+export function handle(input: unknown, now: number, agent: AgentKind): unknown {
+  const format = AGENTS[agent].hooks
+  const event = format.read(input)
+  const verdict = event && judge(event, now, agent)
+  return event && verdict ? format.write(event, verdict) : undefined
 }
