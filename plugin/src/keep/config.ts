@@ -2,7 +2,7 @@
 //   checks     规范检查的命令（类型检查、lint、格式），直接写工具命令，不经过项目的脚本；整组里依次跑
 //   eslint     拿来比"生效的规则"的 eslint：config 是配置文件（按它对每个代码文件算生效的规则），
 //              suppressions 是批量豁免文件（eslint --suppress-all 生成的，不写就是仓库根目录的 eslint-suppressions.json）
-//   prettier   开着时比格式检查查哪些文件（prettier --check . 在仓库根目录跑）
+//   prettier   开着时比格式检查查哪些文件（prettier 在仓库根目录跑，查 git 收的文件）
 //   tsconfig   拿来比严格选项的 tsconfig 文件
 //   secrets    开着时整组里用 gitleaks 扫这次的提交和没提交的改动
 // 这份配置是评判用的配置（base/judging.ts），走"用户同意后生效"：改松的地方见 loosen.ts。

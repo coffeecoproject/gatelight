@@ -1,4 +1,4 @@
-// 格式检查查哪些文件：用项目自己装的 prettier 的程序接口（getFileInfo），对仓库里每个文件算它在 prettier --check . 里
+// 格式检查查哪些文件：用项目自己装的 prettier 的程序接口（getFileInfo），对仓库里每个文件（git 收的）算格式检查
 // 查不查（被 .prettierignore、.gitignore 忽略的不查，认不出写法的不查），分叉点那一版和现在比。
 // 算放松的：原来查、现在不查了的文件（往忽略文件里加了路径）。只比两边都有的文件。
 // prettier 的写法选项（单引号、行宽这些）改了只是换风格，不算放松。
@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url'
 import type { ConfirmItem } from '../base/confirm.ts'
 import { stable } from './eslint.ts'
 
-/** prettier --check . 在仓库根目录跑时读的忽略文件（相对仓库根目录）。 */
+/** prettier 在仓库根目录跑时读的忽略文件（相对仓库根目录）。 */
 const IGNORE_FILES = ['.gitignore', '.prettierignore']
 
 type GetFileInfo = (path: string, options: { ignorePath: string[] }) => Promise<{ ignored: boolean; inferredParser: string | null }>
