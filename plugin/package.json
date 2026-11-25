@@ -1,1 +1,23 @@
-{ "type": "module" }
+{
+  "name": "gatelight",
+  "version": "0.18.0",
+  "description": "Gates for coding agents: tests actually ran before code lands, code stays inside its module boundaries, plus test-writing conventions and a change-triggered checklist",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "bin": { "gatelight": "setup.mjs" },
+  "files": [
+    ".claude-plugin",
+    ".codex-plugin",
+    ".antigravity-plugin",
+    ".mcp.json",
+    "mcp_config.json",
+    "hooks.json",
+    "hooks",
+    "bin",
+    "entry",
+    "skills",
+    "src",
+    "setup.mjs"
+  ]
+}

@@ -1,6 +1,6 @@
 # gatelight
 
-给 agent 写代码把关的插件（Claude Code、Codex）。门口的一盏灯：三件事都过了才变绿，代码才能落到默认分支。
+给 agent 写代码把关的插件（Claude Code、Codex、Antigravity）。门口的一盏灯：三件事都过了才变绿，代码才能落到默认分支。
 
 | 查什么 | 怎么查 | 命令 |
 |---|---|---|
@@ -20,8 +20,10 @@
 
 合并门要 git 2.54 以上：它用 git 在配置里声明钩子的功能（实测 2.54 支持，2.49 不支持）。git 太旧时 `testpace status` 和会话开始时的说明会讲出来。
 
+插件发在 npm 上（包名 `gatelight`）。Claude Code、Codex 从插件市场 [gatelight-marketplace](https://github.com/coffeecoproject/gatelight-marketplace) 装，市场里写的是从 npm 拿；Antigravity 没有第三方插件市场，用 `npx` 装。这个仓库根上的市场目录是开发用的（插件从仓库里的 `plugin/` 拿），装来用的话加 gatelight-marketplace，两个市场都叫 `gatelight`，不要同时加。
+
 ```bash
-claude plugin marketplace add coffeecoproject/gatelight
+claude plugin marketplace add coffeecoproject/gatelight-marketplace
 claude plugin install gatelight@gatelight
 ```
 
@@ -35,15 +37,34 @@ claude plugin install layermap@layermap
 ### Codex
 
 ```bash
-codex plugin marketplace add coffeecoproject/gatelight
+codex plugin marketplace add coffeecoproject/gatelight-marketplace
 codex plugin add gatelight@gatelight
 ```
 
-第一次用时 Codex 会要求信任插件的 hook。Codex 下的前提：
+Codex 用本机的 `npm` 从 npm 拿插件，要装着它。第一次用时 Codex 会要求信任插件的 hook。Codex 下的前提：
 
 - **固定命令入口**：Codex 不把插件的 `bin/` 放进命令的 PATH，合并门的钩子也靠 PATH 找 `testpace`。`testpace install` 会在 `~/.local/bin` 给插件的每条命令放一个入口（`testpace`、`modwall`、`testcraft`，内容一样，按被叫的名字转），运行时转给这台机器上装着的、完整的最高版本的插件里同名的命令（Claude Code、Codex 装的都算；缓存只复制了一部分的那份不算），插件升级不用重放；入口文件本身变了的那几版（比如插件改名），会话开始时自动把放过的旧入口换成新的，没放过的那几条不自动放（0.17.4 起多了 `modwall`、`testcraft`，升级后再跑一次 `testpace install`）。没放之前，会话开始时会说是哪几条没放、给出插件里放命令的目录，`testpace` 没放时合并门在 Codex 里不检查。`~/.local/bin` 在 PATH 里排在插件的 `bin/` 前面时，Claude Code 里这几条命令也走入口（用装着的最高版本）。
 - **LayerMap 的命令**：`testpace focused` 按改动选测试、`modwall check` 都靠 PATH 上的 `layermap` 命令。LayerMap 的 Codex 插件只带 MCP 服务、不带命令，所以装好 LayerMap 的插件、开过一次会话后，还要跑一次 `npx layermap setup command`（LayerMap 0.1.55 起）：它在 `~/.local/bin` 放一个 `layermap` 命令，运行这台机器上各 agent 的 LayerMap 插件装着的最高版本，插件升级不用重放。这个入口是 LayerMap 放的、归它管，gatelight 不替它放；没放时 `focused` 没法选测试，`modwall check` 不通过，输出里会说这一句。
 - **在沙箱外跑**：testpace 要写 `.git/testpace/`，项目的测试常要开端口、用网络，Codex 的沙箱里都跑不了。testpace 发现自己在 Codex 沙箱里（`CODEX_SANDBOX`）就不跑测试、也不跑 `status`（它要记下看过结果），说明要提权。modwall 也一样：`modwall check`、`modwall status` 要 LayerMap 更新存在项目外面的地图，`modwall db check` 要连数据库，在沙箱里得出的是假的“没通过”，所以也不跑、说明要提权。testcraft 只读项目里的文件，沙箱里照常跑。可以每次提权交给自动审查；也可以在 `~/.codex/rules/default.rules` 里放行 `testpace`，但那等于放行 `testpace.json` 里的任何命令。
+
+### Antigravity
+
+只接了桌面 App。装、换成新版、卸载：
+
+```bash
+npx gatelight setup antigravity
+npx gatelight remove antigravity
+```
+
+`setup` 把插件复制到 `~/.gemini/config/plugins/gatelight/`，已经装着的换成这一版；那里是开发用的链接、或者是别的东西时不动。装好后新开一个对话生效。它不跑 `testpace install`，和另外两边一样，会话开始时说哪几条入口没放，你同意后再放。`remove` 只删插件目录，`~/.local/bin` 的入口留着（别的 agent 装着的 gatelight 还用它们）。
+
+Antigravity 下的前提和不一样的地方（细节见 [Antigravity适配方案.md](Antigravity适配方案.md)）：
+
+- **固定命令入口**：和 Codex 一样，命令都走 `~/.local/bin` 的入口，要跑一次 `testpace install`。
+- **在沙箱外跑**：Antigravity 的终端沙箱里看不见各 agent 的插件目录，入口找不到插件，会说"多半是在沙箱里"，让 agent 申请在沙箱外跑。
+- **确认工具**：要你同意的改动在 Antigravity 自己的确认弹窗里给你看（"总是允许"选不了，每次都问），弹窗里换行会压成一段。
+- **跑整组配置的命令之前**：Antigravity 的钩子只能拒绝、不能只提示，所以同一段提示一个对话只拦一次，第二次照样放行。
+- 改文件之前的拦截、会话开始的说明照常有；停止门只在 agent 正常说完话时管（用户取消、出错的不拦）；命令跑完之后的检查没有（它的钩子拿不到命令的输出）。
 
 ### 之后
 
@@ -82,6 +103,22 @@ claude plugin uninstall modwall@modwall
 旧插件记在 `.git/modwall/` 下的通过记录、用户同意的记录不带过来：同意过的放宽项要重新同意一次。只接了 modwall、没接 testpace 的仓库，钩子不再管，只剩自己跑 `modwall check`。
 
 ## 换成这一版要做的
+
+**从这个仓库的市场换到 gatelight-marketplace**（0.18.0 起）。以前加的是 `coffeecoproject/gatelight`，插件从这个仓库的代码拿；以后从 npm 拿，发新版不再推送这个仓库。换一次市场（插件名还是 `gatelight@gatelight`，各仓库 `.git/testpace/` 下的记录都还在）：
+
+```bash
+claude plugin marketplace remove gatelight
+claude plugin marketplace add coffeecoproject/gatelight-marketplace
+claude plugin install gatelight@gatelight
+```
+
+Codex：
+
+```bash
+codex plugin marketplace remove gatelight
+codex plugin marketplace add coffeecoproject/gatelight-marketplace
+codex plugin add gatelight@gatelight
+```
 
 **从 testpace 插件换成 gatelight**（0.10.0 起）。插件换了名字，要卸掉旧的、装上新的：
 
@@ -171,7 +208,7 @@ git config --global --unset-all testpace.check
 - **整组里的检查**：仓库里有 `.modwall/`、`.testcraft/` 时，`testpace full` 先跑 `modwall check`、`testcraft checklist`，再跑 `full` 和全部测试：检查便宜，有一段没过就不往下跑、不算整组通过，合并门照常拦。它们随插件一起装，不在仓库里也不在本机配置里登记；分支上删掉 `.modwall/`、`.testcraft/` 躲不过（默认分支上有就算接入）。
 - **用户确认**（确认工具 `confirm_with_user`）：要你同意的改动，检查把它们按编号存好，agent 调这个工具弹窗给你看，你点了同意才记下；agent 自己说"用户同意了"不算。同意按项记（哪项检查的、改之前是什么、改成什么、你看到的文字），同意过的那一项没再变就不再问。
 - **停止门**（agent 的 Stop hook）：启用了 modwall 的仓库里，这个会话改了代码或配置、当前内容却没有 `modwall check` 的通过记录，同一份内容拦一次（架构要严：越界在分支上就查出来，不等到合并）。这个会话起的整组（按 agent 给命令带的会话号认，别的会话和终端里起的不算）还在跑，或这个会话还没看过结果（`testpace status`，或在前台等到了 `testpace full` 的输出，通过、失败都算），拦一次。每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里。本地默认分支或 `origin` 上的默认分支在会话里有了没有通过记录的提交时，提示用户。会话从仓库外开始的，也查它碰过的仓库。
-- **改文件之前**（agent 的 hook，只在 Claude Code 里）：启用了 modwall 的仓库里，agent 要新建或修改一个没有归属的代码文件时直接拒绝，附上该放哪；要写进文件的新文字里用相对路径直接引用了别的模块的内部文件（TypeScript、JavaScript），也直接拒绝，附上改法。只看路径；用命令行改文件绕得过这一步，结束前和合并前的 `modwall check` 照样查出来。
+- **改文件之前**（agent 的 hook，在 Claude Code、Antigravity 里；Codex 改文件用补丁，钩子只记下改到哪，不在这一步检查）：启用了 modwall 的仓库里，agent 要新建或修改一个没有归属的代码文件时直接拒绝，附上该放哪；要写进文件的新文字里用相对路径直接引用了别的模块的内部文件（TypeScript、JavaScript），也直接拒绝，附上改法。只看路径；用命令行改文件绕得过这一步，结束前和合并前的 `modwall check` 照样查出来。
 - **软提示**（agent 的 hook）：会话开始时说明测试节奏（上一节），会话从仓库外开始的，第一次在仓库里执行命令时补说，压缩、恢复后再说一次；agent 直接跑 `full` 配置的命令时，提示它只是整组的一部分、不留记录，改用 `testpace full`。
 
 记录放在仓库的 `.git/testpace/`（所有 worktree、Claude Code 和 Codex 共用）：`runs.jsonl` 每次运行一行（记着哪个 agent、哪一版 testpace 跑的），`logs/` 是完整输出，`running/` 是每个工作区正在跑的命令（或借用着它的工具），`sessions/` 是各会话的状态，`flaky/` 是时好时坏的测试名单（一个测试一份），`rounds/` 是各工作区里测试连着几轮没过，`confirm/` 是等你确认的和你同意过的，`craft/` 是 testcraft 的证明、放水检查记录，`wall/` 是 modwall 的通过记录。
@@ -185,3 +222,7 @@ git config --global --unset-all testpace.check
 ```bash
 testpace focused
 ```
+
+本机开发时，Claude Code、Codex 把这个仓库的主目录加成本地市场（`claude plugin marketplace add <仓库目录>`、`codex plugin marketplace add <仓库目录>`），插件从 `plugin/` 拿：Claude Code 当场读目录，main 一快进就是新代码。Antigravity 在 `~/.gemini/config/plugins/gatelight` 放一个指向仓库 `plugin/` 的链接（`npx gatelight setup` 不动它）。
+
+发版：插件清单（三份）和 `plugin/package.json` 的版本一起升，在 `plugin/` 里 `npm publish`。npm 先暂存，几分钟后才能装到。gatelight-marketplace 不写版本，不用改。装法的来由和实测见 [安装方案.md](安装方案.md)。

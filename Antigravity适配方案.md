@@ -131,6 +131,8 @@
   - 在 `~/.gemini/config/plugins.json` 里登记仓库根目录，它往下找一层找到 `plugin/`。这样安装标识是目录名 `plugin`，不好看，也容易和别的仓库撞。
   
   建议第一种。发到 Antigravity 的插件市场这次不做。
+
+  正式装法（给别人用）后来定为 `npx gatelight setup antigravity`：插件发 npm，复制到 `~/.gemini/config/plugins/gatelight/`，见 [安装方案.md](安装方案.md)。开发期的链接照旧，`setup` 不动它。
 - 会话说明和技能里写的是 `gatelight:merge` 这类名字。Antigravity 里技能的名字不带插件名（实测是 `merge` 这样的光名字），agent 靠读 `SKILL.md` 用上它。会话说明里提到技能的地方按 agent 换说法，写法记在 `AGENTS` 表里。光名字可能和别的插件的技能撞名，`merge`、`setup` 这两个尤其容易，要不要给 Antigravity 改名**要你定**（第 4 节）。
 
 ### 2.2 钩子：把判断和格式分开
