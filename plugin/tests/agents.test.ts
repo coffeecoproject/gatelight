@@ -1,4 +1,4 @@
-// 多个 agent：认 agent、Codex 的命令和 hook、合并门的版本只升不降、固定命令入口（只升不降、找 Antigravity 装的、沙箱里的说法）、三份插件清单。Antigravity 的 hook 在 antigravity.test.ts。
+// 多个 agent：认 agent、Codex 的命令和 hook、合并门的版本只升不降、固定命令入口（只升不降、找 Antigravity 装的、沙箱里的说法）、四份清单的版本和名字。Antigravity 的 hook 在 antigravity.test.ts。
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -554,17 +554,20 @@ describe('固定命令入口', () => {
     })
   })
 
-  test('三份插件清单（Claude Code、Codex、Antigravity）版本一致、和 VERSION 一样；插件的名字各处一样（两份市场清单、确认工具所在的服务）；Codex 的 marketplace 指向 plugin 目录', () => {
+  test('四份清单（Claude Code、Codex、Antigravity 的插件清单和 npm 包的 package.json）版本一致、和 VERSION 一样；插件的名字各处一样（两份市场清单、确认工具所在的服务）；Codex 的 marketplace 指向 plugin 目录', () => {
     const claude = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8'))
     const codex = JSON.parse(readFileSync(join(PLUGIN, '.codex-plugin', 'plugin.json'), 'utf8'))
     const antigravity = JSON.parse(readFileSync(join(PLUGIN, '.antigravity-plugin', 'plugin.json'), 'utf8'))
     assert.equal(claude.version, VERSION)
     assert.equal(codex.version, VERSION)
     assert.equal(antigravity.version, VERSION)
+    const npm = JSON.parse(readFileSync(join(PLUGIN, 'package.json'), 'utf8'))
+    assert.equal(npm.version, VERSION)
     assert.equal(claude.name, 'gatelight')
     assert.equal(codex.name, claude.name)
     assert.equal(antigravity.name, claude.name)
     assert.equal(PLUGIN_NAME, claude.name)
+    assert.equal(npm.name, PLUGIN_NAME, 'npm 包的名字就是插件名')
     // agent 看到的确认工具全名里带着插件名和服务名：服务名和插件名一样，提示里说"调用 <插件名> 的工具"才对得上
     const mcp = JSON.parse(readFileSync(join(PLUGIN, '.mcp.json'), 'utf8'))
     assert.deepEqual(Object.keys(mcp.mcpServers), [claude.name])
