@@ -1,0 +1,61 @@
+// "代码规范"接在底座上的部分：整组（testpace full）里的一段、会话开始时的说明。
+
+import assert from 'node:assert/strict'
+import { readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, test } from 'node:test'
+import { runs } from '../helpers.ts'
+import { keepConfig, keepRepo, sessionBrief, testpace } from './helpers.ts'
+
+const TESTPACE_JSON = `${JSON.stringify({ fast: 'true', files: 'true', full: 'true', tests: ['tests/**/*.test.mjs'] })}\n`
+/** 接入了 testpace、testcraft 的小仓库；keep 为 true 时也接入 codekeep。 */
+const project = (keep: boolean, checks = [{ name: 'lint', command: 'true' }]): string =>
+  keepRepo({
+    'testpace.json': TESTPACE_JSON,
+    'tests/a.test.mjs': "import test from 'node:test'\ntest('a', () => {})\n",
+    '.testcraft/checklist/README': '清单目录\n',
+    ...(keep ? { '.codekeep/config.json': keepConfig({ checks }) } : {}),
+  })
+const kinds = (repo: string): string[] => (runs(repo).at(-1)!.steps as Array<{ kind: string }>).map(step => step.kind)
+
+describe('整组里的"代码规范"', () => {
+  test('接入了的仓库：codekeep check 在清单之后、项目的整组检查之前跑，随插件一起装，不用另外登记', () => {
+    const repo = project(true)
+    const r = testpace(repo, ['full'])
+    assert.equal(r.code, 0, r.out)
+    assert.deepEqual(kinds(repo), ['craft', 'keep', 'full', 'tests'])
+    assert.match(readFileSync(runs(repo).at(-1)!.log as string, 'utf8'), /===== testpace 代码规范的检查：codekeep check\n[\s\S]*codekeep check：通过。/)
+  })
+
+  test('规范检查没过：整组在这一段停下，后面的不跑', () => {
+    const repo = project(true, [{ name: 'lint', command: 'exit 1' }])
+    const r = testpace(repo, ['full'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^整组失败：代码规范的检查（codekeep check）没通过，后面的没有跑/)
+    assert.deepEqual(kinds(repo), ['craft', 'keep'])
+  })
+
+  test('删掉 .codekeep/ 躲不过这一段（按分叉点也算接入）；没接入的仓库没有这一段', () => {
+    const repo = project(true)
+    rmSync(join(repo, '.codekeep'), { recursive: true })
+    const r = testpace(repo, ['full'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /代码规范的检查（codekeep check）没通过/)
+    assert.match(r.out, /删掉了整个 \.codekeep\/ 目录/)
+
+    const outside = project(false)
+    assert.equal(testpace(outside, ['full']).code, 0)
+    assert.deepEqual(kinds(outside), ['craft', 'full', 'tests'])
+  })
+})
+
+describe('会话开始时的说明', () => {
+  test('工作区里有 .codekeep/ 才说：不改松规范、"这里不查"的注释写理由、不放密钥', () => {
+    const told = sessionBrief(project(true))
+    assert.match(told, /这个仓库用 codekeep 管代码规范（\.codekeep\/）/)
+    assert.match(told, /不改松规范：不关规则、不把 error 降成 warn/)
+    assert.match(told, /"这里不查"的注释（eslint-disable、@ts-expect-error 这类）必须写理由/)
+    assert.match(told, /提交里不放密钥、密码/)
+    assert.doesNotMatch(sessionBrief(project(false)), /codekeep/)
+  })
+})

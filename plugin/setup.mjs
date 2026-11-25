@@ -86,7 +86,7 @@ function remove() {
   rmSync(target, { recursive: true, force: true })
   console.log(`已从 Antigravity 卸掉 ${name} ${now.version}（删了 ${target}）。新开的对话里就没有了。`)
   if (existsSync(join(process.env.HOME || homedir(), '.local', 'bin', 'testpace'))) {
-    console.log('~/.local/bin 下的 testpace、modwall、testcraft 入口留着：别的 agent 装着的 gatelight 还用它们，一个都没装时它们会说没装。')
+    console.log('~/.local/bin 下的 testpace、modwall、testcraft、codekeep 入口留着：别的 agent 装着的 gatelight 还用它们，一个都没装时它们会说没装。')
   }
   return 0
 }

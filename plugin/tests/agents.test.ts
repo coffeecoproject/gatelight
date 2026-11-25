@@ -189,19 +189,19 @@ describe('Codex 的 hook', () => {
       const context = start('cx')
       assert.match(context, /用 testpace 管测试节奏/)
       assert.match(context, /在 Codex 里：testpace 的命令要写 \.git\/testpace\/、项目的测试常要开端口和网络，在沙箱里跑不了，每次申请提权在沙箱外跑。/)
-      assert.ok(context.includes(`这台机器还没放 testpace、modwall、testcraft 的固定命令入口（放在 ${dir}）`), context)
+      assert.ok(context.includes(`这台机器还没放 testpace、modwall、testcraft、codekeep 的固定命令入口（放在 ${dir}）`), context)
       assert.ok(context.includes(gateBlind), context)
       assert.ok(context.includes(`同意后在沙箱外跑 ${join(PLUGIN, 'bin', 'testpace')} install`), context)
       assert.ok(existsSync(join(data, 'sessions', 'cx.json')), '会话碰过的仓库记在 Codex 给的插件数据目录里')
 
-      // 只放了 testpace（比如放固定入口时还只有这一条）：说另外两条，不说合并门
+      // 只放了 testpace（比如放固定入口时还只有这一条）：说另外三条，不说合并门
       mkdirSync(dir, { recursive: true })
       writeFileSync(join(dir, 'testpace'), placed())
       const partly = start('cx2')
-      assert.ok(partly.includes(`这台机器还没放 modwall、testcraft 的固定命令入口（放在 ${dir}）`), partly)
+      assert.ok(partly.includes(`这台机器还没放 modwall、testcraft、codekeep 的固定命令入口（放在 ${dir}）`), partly)
       assert.ok(!partly.includes(gateBlind), '合并门的钩子只靠 testpace 的入口')
 
-      for (const command of ['modwall', 'testcraft']) writeFileSync(join(dir, command), placed())
+      for (const command of ['modwall', 'testcraft', 'codekeep']) writeFileSync(join(dir, command), placed())
       assert.doesNotMatch(start('cx3'), /固定命令入口/, '都放好了不再说')
       assert.doesNotMatch(start('cl', 'claude'), /在 Codex 里/, 'Claude Code 的会话不说 Codex 的前提')
     })
@@ -328,7 +328,7 @@ describe('合并门在两个 agent 之间', () => {
 })
 
 describe('固定命令入口', () => {
-  test('install 在 ~/.local/bin 放上 testpace、modwall、testcraft 的入口（同一份脚本，第二行记着是哪一版放的）；用哪个名字叫，就转给装着的最高版本的插件里同名的命令；同名的别的文件不覆盖，其余照放', () => {
+  test('install 在 ~/.local/bin 放上 testpace、modwall、testcraft、codekeep 的入口（同一份脚本，第二行记着是哪一版放的）；用哪个名字叫，就转给装着的最高版本的插件里同名的命令；同名的别的文件不覆盖，其余照放', () => {
     const home = tempDir('testpace-home-')
     const env = { ...ENV, HOME: home, GIT_CONFIG_GLOBAL: globalGitConfig() }
     const repo = sampleRepo()
@@ -336,18 +336,18 @@ describe('固定命令入口', () => {
     const entry = (command: string): string => join(home, '.local', 'bin', command)
     const installed = testpace(repo, ['install'], env)
     assert.equal(installed.code, 0, installed.out)
-    for (const command of ['testpace', 'modwall', 'testcraft']) {
+    for (const command of ['testpace', 'modwall', 'testcraft', 'codekeep']) {
       const text = readFileSync(entry(command), 'utf8')
       assert.equal(text.split('\n')[1], `# gatelight ${VERSION} 放的`, command)
       assert.equal(text, source, `${command}：除了第二行，和源文件逐字节一样`)
     }
-    assert.match(testpace(repo, ['status'], env).out, /固定命令入口（.+）：testpace、modwall、testcraft 已放好\n/)
+    assert.match(testpace(repo, ['status'], env).out, /固定命令入口（.+）：testpace、modwall、testcraft、codekeep 已放好\n/)
 
     // 插件里每条命令都说出自己的名字，看得出转给了哪一份的哪一条
     const fake = (base: string, version: string, complete = true): void => {
       const bin = join(base, PLUGIN_NAME, version, 'bin')
       mkdirSync(bin, { recursive: true })
-      for (const command of ['testpace', 'modwall', 'testcraft'])
+      for (const command of ['testpace', 'modwall', 'testcraft', 'codekeep'])
         writeFileSync(join(bin, command), `#!/bin/sh\necho "${command} ${base.includes('.codex') ? 'codex' : 'claude'} ${version} $*"\n`, { mode: 0o755 })
       if (complete) {
         mkdirSync(join(base, PLUGIN_NAME, version, 'src'), { recursive: true })
@@ -380,6 +380,7 @@ describe('固定命令入口', () => {
     assert.equal(run().stdout, 'testpace codex 0.11.0 status\n', 'Codex 装的更新就用 Codex 的')
     assert.equal(run('modwall').stdout, 'modwall codex 0.11.0 status\n', '用哪个名字叫就转给同名的命令')
     assert.equal(run('testcraft').stdout, 'testcraft codex 0.11.0 status\n')
+    assert.equal(run('codekeep').stdout, 'codekeep codex 0.11.0 status\n')
     rmSync(join(home, '.codex'), { recursive: true })
     claudeInstalls('0.9.0')
     assert.equal(run().stdout, 'testpace claude 0.9.0 status\n', '降级到 0.9.0 后缓存里留下的 0.10.0 不算')
@@ -495,7 +496,7 @@ describe('固定命令入口', () => {
     }
   })
 
-  test('status 用一行说三条命令的固定入口，状态一样的并在一起', () => {
+  test('status 用一行说四条命令的固定入口，状态一样的并在一起', () => {
     const home = tempDir('testpace-home-')
     const env = { ...ENV, HOME: home, GIT_CONFIG_GLOBAL: globalGitConfig() }
     const repo = sampleRepo()
@@ -507,14 +508,14 @@ describe('固定命令入口', () => {
     assert.equal(
       line(),
       `固定命令入口（${dir}）：testpace 是旧版本放的，跑 testpace install 更新；` +
-        'modwall、testcraft 没放：插件的 bin 目录不在 PATH 上的地方（Codex 的命令、合并门的钩子）找不到。用户同意后跑 testpace install 放上',
+        'modwall、testcraft、codekeep 没放：插件的 bin 目录不在 PATH 上的地方（Codex 的命令、合并门的钩子）找不到。用户同意后跑 testpace install 放上',
     )
     writeFileSync(join(dir, 'testpace'), placed())
     writeFileSync(join(dir, 'testcraft'), '#!/bin/sh\necho 别的工具\n')
     assert.equal(
       line(),
       `固定命令入口（${dir}）：testpace 已放好；` +
-        'modwall 没放：插件的 bin 目录不在 PATH 上的地方（Codex 的命令、合并门的钩子）找不到。用户同意后跑 testpace install 放上；' +
+        'modwall、codekeep 没放：插件的 bin 目录不在 PATH 上的地方（Codex 的命令、合并门的钩子）找不到。用户同意后跑 testpace install 放上；' +
         'testcraft 那里是别的文件，没有放',
     )
   })
@@ -526,12 +527,12 @@ describe('固定命令入口', () => {
     const dir = join(home, '.local', 'bin')
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'testpace'), placed('99.0.0', `${SOURCE}# 更新的版本改过\n`), { mode: 0o755 })
-    for (const command of ['modwall', 'testcraft']) writeFileSync(join(dir, command), placed(), { mode: 0o755 })
+    for (const command of ['modwall', 'testcraft', 'codekeep']) writeFileSync(join(dir, command), placed(), { mode: 0o755 })
     const line = testpace(repo, ['status'], env).out.split('\n').find(l => l.startsWith('固定命令入口'))
-    assert.equal(line, `固定命令入口（${dir}）：modwall、testcraft 已放好；testpace 是更新的版本放的（别的 agent 里装的插件更新），照常用`)
+    assert.equal(line, `固定命令入口（${dir}）：modwall、testcraft、codekeep 已放好；testpace 是更新的版本放的（别的 agent 里装的插件更新），照常用`)
   })
 
-  test('会话开始时：旧版本放的入口换成这一版的；没放过的不放（只放过 testpace 的机器上，modwall、testcraft 也不放）；同名的别的文件不动', () => {
+  test('会话开始时：旧版本放的入口换成这一版的；没放过的不放（只放过 testpace 的机器上，modwall、testcraft、codekeep 也不放）；同名的别的文件不动', () => {
     const home = tempDir('testpace-home-')
     const entry = (command: string): string => join(home, '.local', 'bin', command)
     const current = placed()
@@ -540,7 +541,7 @@ describe('固定命令入口', () => {
       const repo = sampleRepo()
       const start = (session: string): unknown => handle({ hook_event_name: 'SessionStart', session_id: session, cwd: repo }, Date.now(), 'claude')
       start('e1')
-      for (const command of ['testpace', 'modwall', 'testcraft'])
+      for (const command of ['testpace', 'modwall', 'testcraft', 'codekeep'])
         assert.equal(existsSync(entry(command)), false, `${command} 没放过：放是全局安装，要用户同意后跑 testpace install`)
 
       // 改名之前的版本放的：按旧名字找插件，找不到装着的那份
@@ -548,8 +549,9 @@ describe('固定命令入口', () => {
       writeFileSync(entry('testpace'), old, { mode: 0o755 })
       start('e2')
       assert.equal(readFileSync(entry('testpace'), 'utf8'), current)
-      assert.equal(existsSync(entry('modwall')), false, '只有旧的 testpace 入口：另外两条也要用户同意后才放')
+      assert.equal(existsSync(entry('modwall')), false, '只有旧的 testpace 入口：另外三条也要用户同意后才放')
       assert.equal(existsSync(entry('testcraft')), false)
+      assert.equal(existsSync(entry('codekeep')), false)
       // 会话不在接入了的仓库里也更新：入口是这台机器的，不是哪个仓库的；每条按各自的情况换
       writeFileSync(entry('testpace'), old, { mode: 0o755 })
       writeFileSync(entry('testcraft'), old, { mode: 0o755 })
@@ -581,6 +583,7 @@ describe('固定命令入口', () => {
       writeFileSync(entry('testpace'), newer, { mode: 0o755 })
       writeFileSync(entry('modwall'), placed(VERSION, `${SOURCE}# 同一版本、内容不同\n`), { mode: 0o755 })
       writeFileSync(entry('testcraft'), placed('0.0.1'), { mode: 0o755 })
+      writeFileSync(entry('codekeep'), placed(), { mode: 0o755 })
       const told = handle({ hook_event_name: 'SessionStart', session_id: 'up1', cwd: repo }, Date.now(), 'codex') as Output
       assert.equal(readFileSync(entry('testpace'), 'utf8'), newer, '另一个 agent 里装的更新版本放的，不换回去')
       assert.equal(readFileSync(entry('modwall'), 'utf8'), placed(), '同一版本、内容不同的刷新成这一版的')

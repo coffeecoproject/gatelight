@@ -1,4 +1,4 @@
-// 固定命令入口：~/.local/bin 下的 testpace、modwall、testcraft。Codex 不把插件的 bin/ 放进命令的 PATH，合并门的 git 钩子也靠 PATH 找 testpace。
+// 固定命令入口：~/.local/bin 下的 testpace、modwall、testcraft、codekeep。Codex 不把插件的 bin/ 放进命令的 PATH，合并门的 git 钩子也靠 PATH 找 testpace。
 // 入口文件只有一份（entry/command），每条命令放一份一样的；它不带版本，运行时按被叫的名字找这台机器上装着的最高版本的插件里同名的命令，插件升级不用重放。
 // 这是全局安装：只在 testpace install 时放，不在会话开始时自动放（放过别的命令的机器上，新加的命令也一样）。
 // 放过的入口是旧版本放的（入口文件本身变了，比如插件改了名、旧入口按旧名字找不到装着的那份）：会话开始时换成这一版的。
@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { compareVersions, VERSION } from './version.ts'
 
 /** 放固定入口的命令：插件 bin/ 里给 agent 直接叫的那几条。加命令只改这里。 */
-export const ENTRY_COMMANDS = ['testpace', 'modwall', 'testcraft'] as const
+export const ENTRY_COMMANDS = ['testpace', 'modwall', 'testcraft', 'codekeep'] as const
 export type EntryCommand = (typeof ENTRY_COMMANDS)[number]
 
 const SOURCE = new URL('../../entry/command', import.meta.url)

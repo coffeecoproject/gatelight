@@ -29,7 +29,7 @@ const USAGE = `用法：
   testpace files [--repeat N] PATH[:行号]...
                                  只跑给定的测试文件（testpace.json 的 files）；文件:行号 只跑那一行的测试，比如重跑失败的测试。
                                  --repeat N 连跑 N 次、没过就停：造出时好时坏的测试的失败，或修好后连跑 3 次证明
-  testpace full                  跑整组：接入了的检查（modwall check、testcraft checklist）、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，
+  testpace full                  跑整组：接入了的检查（modwall check、testcraft checklist、codekeep check）、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，
                                  一段没过就停，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
   testpace hold PID 说明         借用这个工作区（比如要复制一份工作区的工具）：占着时别的 testpace 命令不跑，说明是谁占着。
@@ -39,7 +39,7 @@ const USAGE = `用法：
   testpace report [--days N]     计时诊断，默认最近 28 天
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
   testpace install               这台机器配一次：在全局 git 配置里配上合并门（agent 移动默认分支时，要求落地的代码有整组通过记录），
-                                 并在 ~/.local/bin 放上 testpace、modwall、testcraft 的固定命令入口（Codex 的命令和合并门的钩子靠它们找到这几条命令）
+                                 并在 ~/.local/bin 放上 testpace、modwall、testcraft、codekeep 的固定命令入口（Codex 的命令和合并门的钩子靠它们找到这几条命令）
   ${nodeTest.usage}
   ${vitest.usage}
   ${playwright.usage}
@@ -117,7 +117,7 @@ const ENTRY_STATES = {
   foreign: '那里是别的文件，没有放',
 } as const
 
-/** 各条命令的固定入口放得怎样，状态一样的并在一起说：testpace 已放好；modwall、testcraft 没放：…… */
+/** 各条命令的固定入口放得怎样，状态一样的并在一起说：testpace 已放好；modwall、testcraft、codekeep 没放：…… */
 function entryLine(): string {
   const states = Object.keys(ENTRY_STATES) as EntryState[]
   return states

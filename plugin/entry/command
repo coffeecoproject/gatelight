@@ -1,5 +1,5 @@
 #!/bin/sh
-# testpace 固定入口：testpace install 把这个文件放到 ~/.local/bin 下，gatelight 的每条命令放一份（testpace、modwall、testcraft），内容一样，
+# testpace 固定入口：testpace install 把这个文件放到 ~/.local/bin 下，gatelight 的每条命令放一份（testpace、modwall、testcraft、codekeep），内容一样，
 # 运行时按被叫的名字转给插件里同名的命令（Codex 的命令和终端的 PATH 里都有这个目录）。放哪几条由 src/base/entry.ts 定，这里不列。
 # 放上去时第一行后面插一行记着是哪一版放的（entry.ts），会话开始的自动更新只升不降。
 # 插件（gatelight）的安装目录随版本变，不能写死，这里每次运行时找这台机器上装着的最高版本，Claude Code、Codex、Antigravity 装的都算，不分先后。

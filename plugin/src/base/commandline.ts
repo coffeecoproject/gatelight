@@ -1,5 +1,5 @@
-// 三条命令（testpace、modwall、testcraft）的入口共用的一层：在 agent 的沙箱里跑不了的子命令事先拒绝，写入被拒时说清楚。
-// 各命令只说哪些子命令在沙箱里跑不了、要做什么（outside）；怎么认沙箱、怎么说、退出码是什么都在这里，三个入口都经过它。
+// 几条命令（testpace、modwall、testcraft、codekeep）的入口共用的一层：在 agent 的沙箱里跑不了的子命令事先拒绝，写入被拒时说清楚。
+// 各命令只说哪些子命令在沙箱里跑不了、要做什么（outside）；怎么认沙箱、怎么说、退出码是什么都在这里，各个入口都经过它。
 
 import { AGENTS, currentAgent } from './agent.ts'
 import { EXIT } from './exit.ts'

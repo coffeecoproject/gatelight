@@ -1,6 +1,6 @@
 # gatelight
 
-给 agent 写代码把关的插件（Claude Code、Codex、Antigravity）：测试跑了没有、测试怎么写、代码有没有越界。
+给 agent 写代码把关的插件（Claude Code、Codex、Antigravity）：测试跑了没有、测试怎么写、代码有没有越界、代码守不守规范。
 
 这个 npm 包就是插件本身。说明、规则和开发都在 [gatelight 仓库](https://github.com/coffeecoproject/gatelight)。
 
