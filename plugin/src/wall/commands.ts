@@ -12,6 +12,7 @@ import { openRepo, type Repo } from '../base/repo.ts'
 import { analyze, exitCode, formatReport, logCheck, prepare, type Report, violationLines } from './check.ts'
 import { CONFIG_PATH, MODWALL_DIR, schemeOf } from './config.ts'
 import { catalogViolations, readCatalog } from './dbcheck.ts'
+import { leaveReceipt } from './receipt.ts'
 import { draftConfig } from './init.ts'
 import type { Module } from './layout.ts'
 import { configText } from './loosen.ts'
@@ -153,6 +154,7 @@ function dbCheck(args: string[]): number {
   }
   const violations = catalogViolations(database, catalog.value)
   const which = database.app.name === undefined ? '' : `（${database.app.name} 应用的库）`
+  leaveReceipt(database.app.name, violations.length === 0)
   if (violations.length === 0) {
     console.log(`modwall db check：通过${which}。库里没有越界。`)
     return EXIT.ok

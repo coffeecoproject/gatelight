@@ -2,6 +2,7 @@
 // 参数也可以是 文件:行号（或 文件:行号:列号）；node --test 不能按行跑，去掉行号跑整个文件。
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const targets = process.argv.slice(2)
 if (targets.length === 0) {
@@ -17,7 +18,11 @@ if (missing.length > 0) {
   console.error(`测试文件不存在：${missing.join(', ')}`)
   process.exit(2)
 }
-const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap', ...files], { encoding: 'utf8' })
+// testpace 要结果时（给了 TESTPACE_RESULTS），另加一个报告器把每个测试的结果交回去
+const results = process.env.TESTPACE_RESULTS
+  ? [`--test-reporter=${fileURLToPath(new URL('./results.mjs', import.meta.url))}`, '--test-reporter-destination=stderr']
+  : []
+const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap', '--test-reporter-destination=stdout', ...results, ...files], { encoding: 'utf8' })
 process.stdout.write(run.stdout)
 process.stderr.write(run.stderr)
 // node 把一个测试都没有的文件当成以文件名命名的一个测试报告出来
