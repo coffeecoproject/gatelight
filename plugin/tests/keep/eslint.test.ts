@@ -1,0 +1,142 @@
+// eslint 生效的规则改松了哪些：对两边都有的每个代码文件，用项目自己的 eslint 算它实际用的规则，和分叉点那一版比。
+// 先在比较这一层把各种放松说清（不跑 eslint），再用真的 eslint 在临时仓库里走几遍：按目录的覆盖、按目录的忽略都要抓到。
+
+import assert from 'node:assert/strict'
+import { describe, test } from 'node:test'
+import { type Effective, eslintItems, type FileRules } from '../../src/keep/eslint.ts'
+import { userAgrees } from '../helpers.ts'
+import { codekeep, eslintConfig, keepConfig, keepRepo, pendingOf, write } from './helpers.ts'
+
+const rules = (map: Record<string, unknown[]>, unusedDirectives = 0): Effective => ({ rules: map, unusedDirectives })
+/** 每个文件都用同一份规则。 */
+const same = (files: string[], effective: Effective | undefined): FileRules => new Map(files.map(file => [file, effective]))
+const texts = (before: FileRules, now: FileRules): string[] => eslintItems(before, now).map(item => item.text)
+const ONE = ['src/a.js']
+const between = (was: Record<string, unknown[]>, is: Record<string, unknown[]>): string[] => texts(same(ONE, rules(was)), same(ONE, rules(is)))
+
+describe('比较生效的规则', () => {
+  test('规则没了、关掉、从报错降成警告：各算一项，常见规则写白话的名字', () => {
+    assert.deepEqual(between({ 'no-console': [2] }, {}), ['lint 规则 不许留调试用的 console（no-console） 没了：以后不再查这一条\n影响的代码：src/a.js'])
+    assert.deepEqual(between({ 'no-console': [2] }, { 'no-console': [0] }), ['lint 规则 不许留调试用的 console（no-console） 关掉了：以后不再查这一条\n影响的代码：src/a.js'])
+    assert.deepEqual(between({ 'prefer-const': [2] }, { 'prefer-const': [1] }), ['lint 规则 prefer-const 从报错降成了警告：以后违反它也能通过检查\n影响的代码：src/a.js'])
+  })
+
+  test('上限类规则调大算放松（写数字、写成 { max }、不写数字用规则的默认值都认），调小不问', () => {
+    assert.deepEqual(between({ 'max-depth': [2, 3] }, { 'max-depth': [2, 5] }), ['代码嵌套层数上限（max-depth）从 3 层调到 5 层：以后代码可以嵌套得更深，更难读\n影响的代码：src/a.js'])
+    assert.deepEqual(between({ 'max-lines': [2, { max: 300, skipComments: true }] }, { 'max-lines': [2, { max: 500, skipComments: true }] }), [
+      '单个文件的行数上限（max-lines）从 300 行调到 500 行：以后一个文件可以写得更长，更难读\n影响的代码：src/a.js',
+    ])
+    assert.deepEqual(between({ complexity: [2, 10] }, { complexity: [2] }), ['函数复杂度上限（分支的多少）（complexity）从 10 调到 20：以后一个函数里可以有更多分支，更难读、更难测\n影响的代码：src/a.js'])
+    for (const rule of ['max-lines-per-function', 'max-params', 'max-nested-callbacks']) {
+      assert.equal(between({ [rule]: [2, 5] }, { [rule]: [2, 6] }).length, 1, rule)
+      assert.deepEqual(between({ [rule]: [2, 5] }, { [rule]: [2, 4] }), [], rule)
+    }
+  })
+
+  test('别的参数改了：看不出方向，列出原来和现在问；参数只是写的顺序不同不算', () => {
+    assert.deepEqual(between({ 'max-lines': [2, { max: 300, skipComments: true }] }, { 'max-lines': [2, { max: 300, skipComments: false }] }), [
+      'lint 规则 单个文件的行数上限（max-lines） 的参数改了，程序看不出是改松还是改紧\n原来：[{"max":300,"skipComments":true}]\n现在：[{"max":300,"skipComments":false}]\n影响的代码：src/a.js',
+    ])
+    assert.equal(between({ quotes: [2, 'single'] }, { quotes: [2, 'double'] }).length, 1)
+    assert.deepEqual(between({ 'id-length': [2, { min: 2, exceptions: ['i'] }] }, { 'id-length': [2, { exceptions: ['i'], min: 2 }] }), [])
+  })
+
+  test('新加规则、从警告升成报错、原来就关着的规则删掉：不问', () => {
+    assert.deepEqual(between({ 'no-console': [1], 'no-var': [0] }, { 'no-console': [2], eqeqeq: [2] }), [])
+  })
+
+  test('没用的"这里不查"注释（reportUnusedDisableDirectives）降级、关掉：算一项', () => {
+    assert.deepEqual(texts(same(ONE, rules({}, 2)), same(ONE, rules({}, 1))), [
+      '没用了的"这里不查"注释（eslint-disable）从报错改成警告（reportUnusedDisableDirectives）：以后用不上的这类注释可以留在代码里\n影响的代码：src/a.js',
+    ])
+    assert.deepEqual(texts(same(ONE, rules({}, 0)), same(ONE, rules({}, 2))), [])
+  })
+
+  test('同一处改动出现在很多文件上合成一项，写明多少个文件；不再被 lint 的文件合成一项；这次新加的文件不比', () => {
+    const files = ['src/a.js', 'src/b.js', 'src/c.js', 'src/d.js', 'src/e.js']
+    const before = same(files, rules({ 'no-console': [2] }))
+    const now: FileRules = new Map([...same(files.slice(0, 4), rules({})), ['src/e.js', undefined], ['src/new.js', undefined]])
+    assert.deepEqual(texts(before, now), [
+      'lint 规则 不许留调试用的 console（no-console） 没了：以后不再查这一条\n影响的代码：src/a.js、src/b.js、src/c.js 等 4 个文件',
+      '1 个文件不再被 lint（被忽略了，或 eslint 配置不再覆盖它们）：以后这些代码 lint 一条也不查\nsrc/e.js',
+    ])
+  })
+})
+
+const CHECKS = [{ name: 'lint', command: 'true' }]
+const JOINED = { '.codekeep/config.json': keepConfig({ checks: CHECKS, eslint: { config: 'eslint.config.mjs' } }) }
+const CODE = { 'src/a.js': 'export const a = 1\n', 'src/b.js': 'export const b = 1\n', 'src/legacy/old.js': 'export const old = 1\n', 'src/legacy/older.js': 'export const older = 1\n' }
+
+describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
+  test('只在某个目录下关掉规则（按目录的覆盖）：抓得到，只列那个目录下的文件；同意后不再问，又改松别的只问新的', () => {
+    const repo = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'error', 'max-depth': ['error', 3] }) })
+    write(repo, 'eslint.config.mjs', eslintConfig({ 'no-console': 'error', 'max-depth': ['error', 3] }, "{ files: ['src/legacy/**'], rules: { 'no-console': 'off' } }"))
+    let r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    const asked = pendingOf(r.out)
+    assert.deepEqual(asked.items, ['lint 规则 不许留调试用的 console（no-console） 关掉了：以后不再查这一条'])
+    assert.match(asked.text, /影响的代码：src\/legacy\/old\.js、src\/legacy\/older\.js\n/)
+    assert.ok(r.out.trimEnd().endsWith('-----'), '输出最后是交给确认工具的话')
+
+    userAgrees(repo, asked.id, asked.text)
+    r = codekeep(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /规范改松 1 项，用户都同意过/)
+
+    write(repo, 'eslint.config.mjs', eslintConfig({ 'no-console': 'error', 'max-depth': ['error', 4] }, "{ files: ['src/legacy/**'], rules: { 'no-console': 'off' } }"))
+    r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    const again = pendingOf(r.out)
+    assert.deepEqual(again.items, ['代码嵌套层数上限（max-depth）从 3 层调到 4 层：以后代码可以嵌套得更深，更难读'])
+    assert.match(again.text, /影响的代码：src\/a\.js、src\/b\.js、src\/legacy\/old\.js 等 4 个文件/)
+  })
+
+  test('按目录忽略：原来查、现在不查的文件合成一项，列出文件', () => {
+    const repo = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'error' }) })
+    write(repo, 'eslint.config.mjs', eslintConfig({ 'no-console': 'error' }, "{ ignores: ['src/legacy/**'] }"))
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    const asked = pendingOf(r.out)
+    assert.deepEqual(asked.items, ['2 个文件不再被 lint（被忽略了，或 eslint 配置不再覆盖它们）：以后这些代码 lint 一条也不查'])
+    assert.match(asked.text, /\n {3}src\/legacy\/old\.js\n {3}src\/legacy\/older\.js\n/)
+  })
+
+  test('加规则、调严：不问，照常跑检查；这次新加的文件不比', () => {
+    const repo = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'warn', 'max-depth': ['error', 5] }) })
+    write(repo, 'eslint.config.mjs', eslintConfig({ 'no-console': 'error', 'max-depth': ['error', 2], eqeqeq: 'error' }, "{ ignores: ['src/new/**'] }"))
+    write(repo, 'src/new/fresh.js', 'export const fresh = 1\n')
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /规范配置没有改松（和分叉点上的比）；规范检查都过了（lint）/)
+  })
+
+  test('批量豁免文件多豁免了、biome 的配置改了：和规则一起列出来问', () => {
+    const repo = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'error' }), 'biome.json': '{}\n' })
+    write(repo, 'eslint-suppressions.json', JSON.stringify({ 'src/a.js': { 'no-console': { count: 2 } } }))
+    write(repo, 'biome.json', '{"linter":{"enabled":false}}\n')
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    assert.deepEqual(pendingOf(r.out).items, [
+      'eslint 的批量豁免文件 eslint-suppressions.json 多豁免了 1 处：这些地方违反了规则也照样通过',
+      'biome 的配置 biome.json 改了，程序看不出 lint、格式规则是改松还是改紧',
+    ])
+  })
+
+  test('分叉点那一版的 eslint 配置算不出来：不当成没放松，列成"程序看不出"的一项问', () => {
+    const repo = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': "throw new Error('分叉点上的配置坏了')\n" })
+    write(repo, 'eslint.config.mjs', eslintConfig({ 'no-console': 'error' }))
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    assert.deepEqual(pendingOf(r.out).items, ['lint 规则：分叉点那一版算不出来，程序看不出这次是改松还是改紧'])
+    assert.match(r.out, /分叉点那一版算不出来的原因（不用给用户看）：\n {2}· eslint 生效的规则（分叉点那一版）：.*分叉点上的配置坏了/)
+  })
+
+  test('现在这一版一个代码文件都没 lint 到：配置问题，退出码 2，不跑检查', () => {
+    const repo = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'error' }) })
+    write(repo, 'eslint.config.mjs', eslintConfig({ 'no-console': 'error' }, "{ ignores: ['**'] }"))
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 2, r.out)
+    assert.match(r.out, /现在这一版的规范配置算不出来.*\n {2}✗ eslint\.config\.mjs 一个代码文件都没 lint 到/)
+    assert.doesNotMatch(r.out, /== 规范检查/)
+  })
+})
