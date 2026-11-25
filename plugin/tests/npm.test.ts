@@ -59,6 +59,11 @@ describe('npm 包的内容', () => {
   test('npm 的 bin 只有 gatelight 一条、指向 setup.mjs：testpace、modwall、testcraft 不放进去（入口归 testpace install 管）', () => {
     assert.deepEqual(PKG.bin, { [PLUGIN_NAME]: 'setup.mjs' })
   })
+
+  test('包的根上有许可证（和仓库根上的 LICENSE 一字不差）和说明（npm 页面显示它），npm 不用列进 files 也总会带上', () => {
+    assert.equal(readFileSync(join(PLUGIN, 'LICENSE'), 'utf8'), readFileSync(join(PLUGIN, '..', 'LICENSE'), 'utf8'), 'plugin/LICENSE 和仓库根上的不一样')
+    assert.match(readFileSync(join(PLUGIN, 'README.md'), 'utf8'), /npx gatelight setup antigravity/)
+  })
 })
 
 describe('npx gatelight setup/remove antigravity', () => {
