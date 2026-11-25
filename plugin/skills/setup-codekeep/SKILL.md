@@ -29,8 +29,19 @@ codekeep 管代码本身的规范：类型查得严不严、lint 和格式检查
 3. **配 lint**（eslint 的 flat config；批量豁免用 eslint 自带的，实测 eslint 10 有）：
    - 用工具的推荐集：`@eslint/js` 的 `recommended`，TypeScript 项目加 `typescript-eslint` 的 `recommended`（里面有不许 `any`、不许没用的变量和导入），React 项目加 `eslint-plugin-react-hooks` 的推荐集（代码里已经有 `react-hooks/...` 的注释的，不加它 lint 会报找不到规则）。
    - 长度和复杂度上限：`max-lines` 500（`{ max: 500, skipBlankLines: true, skipComments: true }`）、`max-lines-per-function` 80（同样不算空行和注释）、`complexity` 20、`max-depth` 5，都是 `error`。先放宽一点，试接后再调。
+   - 只查 git 收的文件：eslint 不读 `.git/info/exclude` 和全局的排除规则，本机工具放在仓库里的目录（napbox 的 `.napbox/`、agent 开在仓库里的 `.claude/worktrees/`）只写在那里，在主目录跑会查到它们（嵌着的工作区还会按它自己的配置查、对不上主目录的批量豁免）。配置文件开头用 git 列出它不收的，放进 `ignores`：
+
+     ```js
+     import { execFileSync } from 'node:child_process'
+     const gitIgnored = execFileSync('git', ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory'], { cwd: import.meta.dirname, encoding: 'utf8' })
+       .split('\0')
+       .filter(Boolean)
+       .map(path => path.replace(/[*?[\]{}()!\\]/g, '\\$&'))
+     // export default [{ ignores: gitIgnored }, ...]
+     ```
+
    - "这里不查"的注释要写理由、没用了的要删：`linterOptions: { reportUnusedDisableDirectives: 'error' }`；`@eslint-community/eslint-plugin-eslint-comments` 的 `require-description`（`eslint-disable` 一类的注释要带 `-- 理由`）；TypeScript 项目用 `@typescript-eslint/ban-ts-comment` 的默认设置（`@ts-ignore`、`@ts-nocheck` 不许用，`@ts-expect-error` 要写理由）。没装这几个插件的，装之前先问用户。
-4. **格式检查**：项目有 prettier 的用 `prettier --check .`；没有的问用户要不要加。新加的照项目现有的写法配（分号、引号、行宽），让改动尽量小，再 `prettier --write .` 把全部代码排一遍（改动大，先和用户说清；有别的分支正在做的，排完它们合进来会冲突，先问）。`.prettierignore` 里写上 `eslint-suppressions.json`（eslint 生成、改写它，不按 prettier 排）和锁文件。
+4. **格式检查**：项目有 prettier 的用它；没有的问用户要不要加。检查命令把 git 收的文件交给 prettier（`git ls-files -z --cached --others --exclude-standard | xargs -0 pnpm -s exec prettier --check --ignore-unknown --no-error-on-unmatched-pattern`），不用 `prettier --check .`：prettier 只读仓库根目录的 `.gitignore` 和 `.prettierignore`，会查到上面说的本机工具目录。新加的照项目现有的写法配（分号、引号、行宽），让改动尽量小，再 `prettier --write .` 把全部代码排一遍（改动大，先和用户说清；有别的分支正在做的，排完它们合进来会冲突，先问）。`.prettierignore` 里写上 `eslint-suppressions.json`（eslint 生成、改写它，不按 prettier 排）和锁文件。
 5. **旧代码超标的记进批量豁免**：`eslint --suppress-all`，生成仓库根目录的 `eslint-suppressions.json`，提交进仓库。以后豁免只许变少：代码改好了用 `eslint --prune-suppressions` 清掉用不上的；豁免变多算改松，要用户同意。lint 不在仓库根目录跑的，用 `--suppressions-location` 指到同一个文件，并在配置里写上 `eslint.suppressions`。
 6. **写 `.codekeep/config.json`**：
 
@@ -39,7 +50,7 @@ codekeep 管代码本身的规范：类型查得严不严、lint 和格式检查
      "checks": [
        { "name": "类型检查", "command": "pnpm -s exec tsc -p apps/server --noEmit" },
        { "name": "lint", "command": "pnpm -s exec eslint ." },
-       { "name": "格式", "command": "pnpm -s exec prettier --check ." }
+       { "name": "格式", "command": "git ls-files -z --cached --others --exclude-standard | xargs -0 pnpm -s exec prettier --check --ignore-unknown --no-error-on-unmatched-pattern" }
      ],
      "eslint": { "config": "eslint.config.mjs" },
      "tsconfig": ["apps/server/tsconfig.json", "apps/web/tsconfig.app.json"],
