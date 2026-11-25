@@ -1,6 +1,8 @@
 // 确认工具的 MCP 服务：只有一个工具 confirm_with_user，把检查要用户同意的改动给用户确认。
 // 工具标了 anthropic/requiresUserInteraction：Claude Code 每次都弹窗，任何权限模式、允许规则都跳不过，
 // 用户在弹窗里看到 text 的原文（检查写好的白话），同意了工具才会执行、记下确认。用标准输入输出收发一行一条的 JSON-RPC。
+// Antigravity 不认这个标记：它从插件根上的 mcp_config.json 起这个服务，每次调用前由插件的 hook 输出 force_ask 弹窗（hookformat.ts），
+// "总是允许"在那个弹窗里选不了；hook 出错时拒绝这次调用（hooks/antigravity.sh）。
 // 这个进程跟着会话开着，插件更新了也不换代码，所以工具只认检查存下的编号和文字（见 base/confirm.ts），不引用任何模块、不做判断。
 
 import { createInterface } from 'node:readline'

@@ -122,8 +122,8 @@
 ### 2.1 打包和安装
 
 - 新加 `plugin/.antigravity-plugin/plugin.json`：`name`、`description`、`version`、`author`、`repository`。和另外两份清单一样放在点目录里。
-- 新加 `plugin/hooks.json`（Antigravity 要求在插件根上）：SessionStart、PreToolUse、PostToolUse、Stop 四个事件，命令都是 `./hooks/antigravity.sh`（钩子的工作目录就是 `hooks.json` 所在的目录，实测）。Claude Code 读的是 `hooks/hooks.json`，Codex 读清单里指的 `hooks/codex.json`；Antigravity 不执行 `hooks/hooks.json`（实测）。Claude Code 不会把根上这份当成自己的，这一半还没测，加文件时在 Claude Code 里看一眼。
-- 新加 `plugin/mcp_config.json`：确认工具的服务。`command` 用 `sh`，`args` 用 `-c` 包一层，里面用 `$PLUGIN_ROOT` 找 `bin/node.sh` 和 `src/mcp.ts`（MCP 服务的进程里有 `PLUGIN_ROOT`，实测）。
+- 新加 `plugin/hooks.json`（Antigravity 要求在插件根上）：SessionStart、PreToolUse、PostToolUse、Stop 四个事件，命令都是 `./hooks/antigravity.sh`（钩子的工作目录就是 `hooks.json` 所在的目录，实测）。Claude Code 读的是 `hooks/hooks.json`，Codex 读清单里指的 `hooks/codex.json`；Antigravity 不执行 `hooks/hooks.json`（实测）。Claude Code 不会把根上这份当成自己的，这一半还没测，加文件时在 Claude Code 里看一眼。 做的时候定了：PostToolUse 不接（它的输入里没有命令的输出、分不出转没转后台，接了也用不上，见 2.2），只接 SessionStart、PreToolUse（`run_command`、`write_file`、`edit_file` 各一组，不靠正则的写法）、Stop；入口用 `sh ./hooks/antigravity.sh`。Claude Code 不读插件根上的 `hooks.json`、也不认 `mcp_config.json`（官方文档；`claude plugin validate` 实测和 main 上的结果一样）。
+- 新加 `plugin/mcp_config.json`：确认工具的服务。`command` 用 `sh`，`args` 用 `-c` 包一层，里面用 `$PLUGIN_ROOT` 找 `bin/node.sh` 和 `src/mcp.ts`（MCP 服务的进程里有 `PLUGIN_ROOT`，实测）。 放到第 4 步（2.6）和 `force_ask` 一起加：先加上服务、没有 `force_ask` 的话，Auto 预设下 agent 可能自己同意自己。
 - 版本号三份清单一起升；核对清单版本一致的那条测试（`agents.test.ts`）加上第三份。
 - 不加 `rules/AGENTS.md`：会话说明是按仓库现算的（模块列表、时好时坏的测试），由 SessionStart 钩子给，写不成固定文字。
 - 安装（开发期）：**要你定**（第 4 节）。两种办法：
@@ -152,7 +152,7 @@
 | 不干预 | **什么都不输出**，退出码 0（实测）。`{}`、空的 `decision`、退出码非 0 都会把工具拦掉 | |
 | 跑命令之前给提示（直接跑 full 的命令时提醒改用 testpace full） | PreToolUse 没有"只加一段话"的写法。办法二选一，**要你定**（第 4 节）：改成拒绝一次并说明（agent 一定看得到，但从提醒变成了拦）；或者钩子先记下，下一次调模型前由 PreInvocation 的 `injectSteps` 带给模型（要多接一个每次调模型都跑的钩子） | 两种办法都做得到：PreInvocation 的 `injectSteps` 模型收得到（实测）。第二种是命令跑起来之后、下一次调模型时才带到，和 Claude Code 现在"提醒、不拦"的效果一样 |
 | 跑完 testpace full 记下"看过结果" | PostToolUse 的输入里没有命令的输出，也分不出命令是不是转了后台（实测）。几分钟的命令一定会转后台，所以 Antigravity 下不靠 PostToolUse 记，只认 `testpace status`：它在命令环境里拿得到会话号 | 后台任务结束时 agent 收到的那条系统消息里带多少输出没测；带得全的话可以放宽，先不做 |
-| 停止门 | Stop 输出 `{ decision: "continue", reason }`，模型收得到（实测）。"只拦一次"看 `executionNum`：第一次是 0，被要求继续之后是 1（实测；文档说的 `continuationActive` 实测一直是 `false`，不用它） | 只在 `terminationReason` 是 `NO_TOOL_CALL` 时管；提醒类的话（不拦、只说一句）Stop 的输出里没地方放，Antigravity 下先不说 |
+| 停止门 | Stop 输出 `{ decision: "continue", reason }`，模型收得到（实测）。"只拦一次"和 Claude Code 下一样靠停止门自己记下拦过的（`stop.ts`），不看输入里的标记（实测 `executionNum` 第一次是 0、被要求继续之后是 1；文档说的 `continuationActive` 实测一直是 `false`） | 只在 `terminationReason` 是 `NO_TOOL_CALL` 时管；提醒类的话（不拦、只说一句）Stop 的输出里没地方放，Antigravity 下先不说 |
 | 钩子自己出错 | 不能照现在的做法往标准输出写东西，也不能让退出码非 0：PreToolUse 下那等于把用户的每一次工具调用都拦掉 | 出错的话怎么给用户看：SessionStart 可以用 `errorMessage`，别的事件先写到标准错误，用户看不看得到没测 |
 
 两条硬规矩：
@@ -167,7 +167,7 @@
 实测和第一版的推断不一样，这一节重写。
 
 - 沙箱里 gatelight 的命令一条都起不来：固定入口要到 `~/.claude`、`~/.codex`（以后加上 `~/.gemini/config`）下面找装着的插件，这三处在沙箱里都看不见。现在入口会说"这台机器上没找到装着的 gatelight"，这句话在沙箱里是错的，agent 照着它去重装就更糟。
-- 所以拒跑放在固定入口，不放在 `base/commandline.ts`：入口找不到插件时，再看一眼那几个上级目录本身看不看得见。都看不见，就说"看不见插件的安装目录，多半是在 agent 的沙箱里，申请在沙箱外重新运行这条命令"，退出码 2。看得见但没装，才说没装。这个判断不分 agent，入口不用认识 Antigravity。
+- 所以拒跑放在固定入口，不放在 `base/commandline.ts`：入口找不到插件时，再看一眼那几个上级目录本身读不读得了。有在的、却一个都读不了，就说"读不了插件的安装目录，多半是在 agent 的沙箱里，申请在沙箱外重新运行这条命令"，退出码 2；其余的才说没装。（第一版按"在不在"判断，验收时实测沙箱里这几个目录都在、只是读不了，判成了没装，改成按读不读得了。）这个判断不分 agent，入口不用认识 Antigravity。
 - `AGENTS` 表里 Antigravity 不填沙箱变量（本来也没有这样的变量）。`base/commandline.ts` 不用改；它里面"写入被拒时说清楚"那一层照常兜底：直接跑插件目录里的命令、绕过入口时，写 `.git/testpace/` 会被拒，说明照旧。
 - 这样 Antigravity 的沙箱里和 Codex 的结果一样：命令不跑、不留记录、告诉 agent 申请到沙箱外。区别只是拦在哪一层。
 - 会话说明里 Antigravity 的那句照 Codex 的写：testpace、modwall、testcraft 的命令申请在沙箱外跑（`run_command` 的 `BypassSandbox`）。Auto 预设下 Antigravity 自动审查，实测没有问用户。
@@ -190,7 +190,7 @@
 
 - `entry/command` 找装着的版本时多看一处：Antigravity 的安装目录（2.1 定下来的那个位置）。三处里挑版本最高的，不按 agent 分先后。
 - 版本从 `.antigravity-plugin/plugin.json` 读。
-- 找不到时分两种说法（2.3）：安装目录的上级都看不见，说在沙箱里、申请到沙箱外；看得见但没装，说没装。两种都是退出码 2。
+- 找不到时分两种说法（2.3）：安装目录的上级有在的、却都读不了，说在沙箱里、申请到沙箱外；其余的说没装。两种都是退出码 2。话里的变量写成 `${名字}`：紧跟着的中文标点在 UTF-8 语言环境里会被 sh（macOS 上是 bash）吞进变量名。
 - 入口本身、`testpace install` 放入口的做法都不变。
 
 ### 2.6 用户确认
@@ -293,9 +293,28 @@ LayerMap 在 Antigravity 里的实测（2026-11-24 第五、六轮，在小仓�
 
 1. 实测第 3 节，结果记进这份文档，按结果改第 2 节。（要在界面里点的都做了；剩下的见第 3 节，跟着后面几步一起看，不挡第 2 步。）
 2. 钩子的判断和格式分开（2.2）。这一步不涉及 Antigravity，Claude Code、Codex 的行为不变，现有测试跟着接法改，单独合一次。（2026-11-24 写好，没提交：新加 `base/hookformat.ts`，内部事件、结论和 Claude Code 那一组读写都在里面，Codex、dsh 共用；`hook.ts` 的 `judge` 只看内部事件、只给结论；`AGENTS` 表每行带上用哪一组。现有测试一条没改，钩子相关的都过了。）
-3. `AGENTS` 表加 Antigravity、钩子的读写、三份清单、固定入口多看一处并分清"在沙箱里"和"没装"（2.1、2.3、2.4、2.5）。
-4. 用户确认（2.6）。
+3. `AGENTS` 表加 Antigravity、钩子的读写、三份清单、固定入口多看一处并分清"在沙箱里"和"没装"（2.1、2.3、2.4、2.5）。（2026-11-24 写好，没提交：`AGENTS` 加 antigravity，排在 Codex 后；表里加 `leaveSandbox`（会话说明里怎么申请到沙箱外）和 `skill`（技能名的叫法，Antigravity 里写成"gatelight 的 merge 技能"）；`hookformat.ts` 加 Antigravity 的读写，执行命令前的提示改成拒绝、同一段提示一个会话只拦一次（记在会话状态的 `refused`）；会话记录的目录也认 `PLUGIN_DATA`；第三份清单 `.antigravity-plugin/plugin.json`、根上的 `hooks.json`、`hooks/antigravity.sh`（任何情况下退出码 0、不往标准输出写错误）；固定入口多找 `~/.gemini/config/plugins/*/`，三个配置目录都看不见时说多半在沙箱里。有一条已有的测试按新规则不过（空的 HOME 里入口现在说"在沙箱里"，原来说"没装"），合并时改。代码验收后补了两处：输入里没有 `cwd` 时不管（不拿钩子进程的目录、也就是插件目录顶替）；技能名改在钩子输出的出口（`handle`）统一换，合并门、modwall 这些命令自己的输出照原样。会话从仓库外开始、第一次碰到接入的仓库时补说的节奏也是靠拒绝那一次命令送到，每个仓库每个会话一次。还没在 Antigravity 里装上试。）
+4. 用户确认（2.6）。（2026-11-25 写好，没提交：插件根上加 `mcp_config.json`，Antigravity 从它起确认工具的服务（服务名 `gatelight`，agent 看到的是 `gatelight_gatelight`；启动命令先找够新的 node）；`hooks.json` 多接 `call_mcp_tool`。`hookformat.ts` 里 Antigravity 读到调 `gatelight_gatelight` 的（这个服务只有确认工具，只看服务名；没有 `cwd` 也算）读成新的内部事件"调确认工具"，判断给出新的结论"要用户当场同意"（原文就是调用里填的 `text`，没填就拒），写成 `force_ask`，原文压成一段。`hooks/antigravity.sh` 先从输入里认出是不是确认工具的调用，是的话找不到 node、node 出错、没给结论都输出 `deny`；别的调用出错照旧什么都不输出。会话说明里 Antigravity 多一句怎么调（`call_mcp_tool`，ServerName、ToolName、Arguments 填什么，`AGENTS` 表的 `confirmCall`）。Claude Code、Codex 不变：它们的钩子读不出这种事件。本地核对过：弹窗原文、没填原文被拒、别的 MCP 服务不管、node 出错时只拒确认工具、按配置起得来服务。2026-11-25 在 Antigravity 里实测：试验仓库工作区放宽 `outside`，agent 在沙箱外跑 `modwall check` 后照输出用 `call_mcp_tool` 调到 `gatelight_gatelight` 的 `confirm_with_user`（新对话第一轮就找到了）；弹窗原文完整、压成一段，两个"总是允许"是灰的；点"拒绝"后工具没执行，`confirm/` 下只有 `pending.json`、没有 `confirmed.json`，agent 停下没改文件，停止门照常拦了一次。同意路径（用户自己点的"Yes, allow this time"）也过：工具执行后 `confirmed.json` 记下了这一项（模块 `wall`，文字就是弹窗里那一项），再跑 `modwall check` 通过，输出"放宽规则 1 项，用户都同意过"。顺带看到 agent 没照输出先在对话里白话讲清就直接调了工具，被拒后才补上；这是模型没照做，弹窗里原文是全的，暂不改。）
 5. 在 Antigravity 里验收：会话开始有说明；沙箱里 `testpace focused`、`modwall check` 被固定入口拒掉并说明清楚；沙箱外能跑；改没有归属的文件被拦；没跑整组就合到默认分支被合并门拦；整组没看结果就结束被停止门拦一次。
+
+第 3 步装上后又补了一处：固定入口第二行记着是哪一版放的（`# gatelight <版本> 放的`），会话开始的自动更新只升不降，`testpace status` 里更新的版本放的算"照常用"。原来只比内容，装着不同版本的 agent 轮流开会话时会把入口来回改。三份清单升到 0.17.9。（Codex 里装的还是 0.17.7，没有只升不降，开 Codex 会话会把入口改回去，等它更新。）
+
+验收结果（2026-11-25，`~/Developer/agy-gatelight-try`：wall-sample 的副本，`full` 是 `node -e 0`；插件用链接装，指向这个分支的 worktree）：
+
+| 项目 | 结果 |
+|---|---|
+| 会话开始的说明 | 过。SessionStart 钩子注入了 modwall、testpace 的说明，技能写成"gatelight 的 merge 技能"，带着 BypassSandbox 那句。系统提示的技能列表里是 `merge`、`modular` 这些短名字 |
+| 固定入口自动更新 | 过。会话开始后 `~/.local/bin` 下三条入口第二行都成了 `# gatelight 0.17.9 放的` |
+| 沙箱外跑 `testpace status`、`testpace focused` | 过。Auto 预设下申请 BypassSandbox 没有问用户 |
+| 沙箱里跑 `testpace focused` | **没过，已改，2026-11-25 复测过**：拒了（退出码 2），说法错了，说"没找到装着的 gatelight"。实测沙箱里 `~/.claude`、`~/.codex`、`~/.gemini/config` 都**存在、读不了**（`[ -e ]` 真、`[ -r ]` 假、`ls` 失败），只有 `~/.gemini/config/plugins` 读得了，链接指向的插件目录读不了。入口拿"存在"判断在不在沙箱，判错了。第 1.1 节说的"看不见"是读不了，不是不存在。改成：三处有在的、却一个都读不了，才说在沙箱里；其余说没装（空的家目录里也说没装）。复测：新对话开始时入口换成了改后的内容（同一版本、内容不同也换），沙箱里说"读不了插件的安装目录……多半是在 agent 的沙箱里"，退出码 2 |
+| 入口的提示开头少了字 | **没过，已改，2026-11-25 复测过**：输出开头是 `\xBC\x9A`，`testpace：` 整个没了。`"$name："` 里"："的第一个字节被 sh 当成变量名的一部分（UTF-8 语言环境下才会；C 语言环境下不会，合并时写测试才核对清楚，原先记反了），变量成了空的、还吃掉一个字节。`$claude、` 这些同样。main 上的入口也有这个问题，终端或别的 agent 在 UTF-8 语言环境下一样。改成变量都写 `${名字}`，测试在 C 和 UTF-8 两种语言环境下都核对开头不丢字；复测时沙箱里输出开头是完整的 `testpace：` |
+| 改没有归属的文件 | 过。`write_file` 被 modwall 拦下，原因原样到了模型；只是 `<`、`>` 被 Antigravity 转成 `<`、`>`，模型自己认得出 |
+| 直接跑 full 的命令 | 过。第一次被拒、说明原样到了模型，同一条命令第二次放行；拦过的记在会话状态的 `refused` |
+| 合并门 | 过。`git merge --ff-only` 被 reference-transaction 钩子取消，main 没动。合并门自己的话里写的是 `gatelight:merge 技能`（命令的输出照原样，不换说法），模型看得懂 |
+| 停止门 | 过。改了模块里的文件、没跑 `modwall check` 就结束，被拦一次；再结束放行 |
+| `PLUGIN_DATA` | 过。是 `~/.gemini/antigravity/plugin_data/gatelight`，会话记录写在它下面的 `sessions/` |
+| 给用户看的话（`user_markdown`） | 没碰到要说的情形（试验仓库已接入、入口装好），没看到。SessionStart 注入的说明在对话里是一条可展开的"Hook Json SessionStart"，用户点开看得到 |
+| 说明里提到 `confirm_with_user` | 第 4 步加上了，2026-11-25 实测弹窗、拒绝、同意都过（见第 4 步） |
 
 ## 6. 不做的
 

@@ -43,6 +43,7 @@ process.env.HOME = testHome
 const DROPPED = new Set([
   'NODE_TEST_CONTEXT',
   'CLAUDE_PLUGIN_DATA',
+  'PLUGIN_DATA',
   'CODEX_HOME',
   // 外层 testpace 给的交结果的文件也不带：测试里起的 testpace run 不把结果交给跑这些测试的那次
   'TESTPACE_RESULTS',
@@ -51,6 +52,27 @@ const DROPPED = new Set([
   ...Object.values(AGENTS).flatMap(agent => [...agent.markers, agent.session, ...(agent.sandbox ? [agent.sandbox] : [])]),
 ])
 export const ENV: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !DROPPED.has(key)))
+// 测试进程里直接调的 hook 判断也不写真实的会话记录：插件数据目录（Claude Code、Codex 的 CLAUDE_PLUGIN_DATA，Antigravity 的 PLUGIN_DATA）
+// 从本进程的环境里也去掉，要的测试自己给临时目录。
+delete process.env.CLAUDE_PLUGIN_DATA
+delete process.env.PLUGIN_DATA
+
+/** 在一段时间里换掉本进程的环境变量（hook 的判断在本进程里跑）；值为 undefined 的去掉。 */
+export function withEnv<T>(change: Record<string, string | undefined>, run: () => T): T {
+  const saved = Object.fromEntries(Object.keys(change).map(key => [key, process.env[key]]))
+  const apply = (values: Record<string, string | undefined>): void => {
+    for (const [key, value] of Object.entries(values)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+  apply(change)
+  try {
+    return run()
+  } finally {
+    apply(saved)
+  }
+}
 
 export interface Result {
   code: number | null

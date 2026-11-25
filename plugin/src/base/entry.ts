@@ -2,10 +2,13 @@
 // 入口文件只有一份（entry/command），每条命令放一份一样的；它不带版本，运行时按被叫的名字找这台机器上装着的最高版本的插件里同名的命令，插件升级不用重放。
 // 这是全局安装：只在 testpace install 时放，不在会话开始时自动放（放过别的命令的机器上，新加的命令也一样）。
 // 放过的入口是旧版本放的（入口文件本身变了，比如插件改了名、旧入口按旧名字找不到装着的那份）：会话开始时换成这一版的。
+// 放上去的入口第二行记着是哪一版放的，只升不降：几个 agent 里装的版本不同时（比如 Claude Code 里更新了、Codex 里还是旧的），
+// 各自会话开始时不来回覆盖，更新的版本放的留着（和合并门的钩子命令一样，gate.ts）。
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { compareVersions, VERSION } from './version.ts'
 
 /** 放固定入口的命令：插件 bin/ 里给 agent 直接叫的那几条。加命令只改这里。 */
 export const ENTRY_COMMANDS = ['testpace', 'modwall', 'testcraft'] as const
@@ -14,6 +17,15 @@ export type EntryCommand = (typeof ENTRY_COMMANDS)[number]
 const SOURCE = new URL('../../entry/command', import.meta.url)
 /** 入口文件里认得出是 testpace install 放的那一行。 */
 const MARK = '# testpace 固定入口'
+/** 放上去时插在第一行（#!）后面、记着是哪一版放的那一行；没有这一行的是加这一行之前的版本放的。 */
+const VERSION_LINE = /^# gatelight (\S+) 放的$/m
+
+/** 这一版放上去的入口：源文件第一行后面插上记版本的那一行。 */
+function entryText(): string {
+  const source = readFileSync(SOURCE, 'utf8')
+  const end = source.indexOf('\n') + 1
+  return `${source.slice(0, end)}# gatelight ${VERSION} 放的\n${source.slice(end)}`
+}
 
 export function entryDir(): string {
   return join(homedir(), '.local', 'bin')
@@ -23,26 +35,31 @@ export function entryPath(command: EntryCommand): string {
   return join(entryDir(), command)
 }
 
-export type EntryState = 'installed' | 'missing' | 'outdated' | 'foreign'
+export type EntryState = 'installed' | 'newer' | 'missing' | 'outdated' | 'foreign'
 
-/** 一条命令的固定入口的状态：没放、放的是这一版、旧的、还是同名的别的文件（不动它）。 */
+/**
+ * 一条命令的固定入口的状态：没放、放的是这一版、更新的版本放的（照常用，不动它）、旧的（包括同一版但内容不同的）、
+ * 还是同名的别的文件（不动它）。
+ */
 export function entryState(command: EntryCommand): EntryState {
   const path = entryPath(command)
   if (!existsSync(path)) return 'missing'
   const text = readFileSync(path, 'utf8')
-  if (text === readFileSync(SOURCE, 'utf8')) return 'installed'
-  return text.includes(MARK) ? 'outdated' : 'foreign'
+  if (text === entryText()) return 'installed'
+  if (!text.includes(MARK)) return 'foreign'
+  const placed = VERSION_LINE.exec(text)?.[1]
+  return placed && compareVersions(placed, VERSION) > 0 ? 'newer' : 'outdated'
 }
 
-/** 固定入口不是这一版放好的那几条命令（没放、旧的、同名的别的文件）：靠入口找命令的地方找不到它们。 */
+/** 固定入口没放好的那几条命令（没放、旧的、同名的别的文件）：靠入口找命令的地方找不到它们。更新的版本放的算放好了。 */
 export function entriesNotPlaced(): EntryCommand[] {
-  return ENTRY_COMMANDS.filter(command => entryState(command) !== 'installed')
+  return ENTRY_COMMANDS.filter(command => !['installed', 'newer'].includes(entryState(command)))
 }
 
 function place(command: EntryCommand): void {
   mkdirSync(entryDir(), { recursive: true })
   const path = entryPath(command)
-  writeFileSync(path, readFileSync(SOURCE, 'utf8'))
+  writeFileSync(path, entryText())
   chmodSync(path, 0o755)
 }
 
@@ -61,13 +78,13 @@ export function refreshEntries(): void {
   }
 }
 
-/** 放上或更新每条命令的固定入口；同名的别的文件不覆盖，返回是哪几条没放上。 */
+/** 放上或更新每条命令的固定入口；同名的别的文件不覆盖、更新的版本放的不换成旧的，返回是哪几条因为是别的文件没放上。 */
 export function installEntries(): { refused: EntryCommand[] } {
   const refused: EntryCommand[] = []
   for (const command of ENTRY_COMMANDS) {
     const state = entryState(command)
     if (state === 'foreign') refused.push(command)
-    else if (state !== 'installed') place(command)
+    else if (state !== 'installed' && state !== 'newer') place(command)
   }
   return { refused }
 }

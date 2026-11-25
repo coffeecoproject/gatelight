@@ -1,4 +1,4 @@
-// 插件自己的名字和版本：取 Claude Code 的插件清单（Codex 的清单和它一起改，测试核对两边一致）。
+// 插件自己的名字和版本：取 Claude Code 的插件清单（Codex、Antigravity 的清单和它一起改，测试核对几份一致）。
 
 import { readFileSync } from 'node:fs'
 

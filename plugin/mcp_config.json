@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gatelight": {
+      "command": "sh",
+      "args": ["-c", ". ./bin/node.sh && node=$(testpace_node) || { echo 'gatelight 的确认工具没有启动：找不到 22.18 以上的 node（要能直接运行 TypeScript）。' >&2; exit 1; }; exec \"$node\" --disable-warning=ExperimentalWarning ./src/mcp.ts"]
+    }
+  }
+}

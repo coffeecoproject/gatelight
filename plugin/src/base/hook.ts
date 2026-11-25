@@ -8,6 +8,7 @@ import { realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AGENTS, type AgentKind } from './agent.ts'
+import { CONFIRM_TOOL } from './confirm.ts'
 import { CONTRACT_FILE, joined, loadContract } from './contract.ts'
 import { entriesNotPlaced, entryDir, refreshEntries } from './entry.ts'
 import { ensureGate, gateProblem } from './gate.ts'
@@ -17,6 +18,7 @@ import { modules } from './module.ts'
 import { defaultTips, openRepo, type Repo } from './repo.ts'
 import { noteSessionRepos, sessionRepos } from './sessions.ts'
 import { invocations } from './shell.ts'
+import { PLUGIN_NAME } from './version.ts'
 import { stopCheck } from './stop.ts'
 import type { SessionState } from './store.ts'
 
@@ -75,9 +77,11 @@ const PLUGIN_BIN = fileURLToPath(new URL('../../bin', import.meta.url))
 
 /** 各 agent 自己的前提（AGENTS 表里的沙箱、固定入口）。 */
 function agentNotes(agent: AgentKind): string[] {
-  const { name, sandbox, needsEntry } = AGENTS[agent]
+  const { name, leaveSandbox, needsEntry, confirmCall } = AGENTS[agent]
+  const sandbox = leaveSandbox !== undefined
   const notes: string[] = []
-  if (sandbox) notes.push(`在 ${name} 里：testpace 的命令要写 .git/testpace/、项目的测试常要开端口和网络，在沙箱里跑不了，每次申请提权在沙箱外跑。`)
+  if (sandbox) notes.push(`在 ${name} 里：testpace 的命令要写 .git/testpace/、项目的测试常要开端口和网络，在沙箱里跑不了，每次${leaveSandbox}。`)
+  if (confirmCall) notes.push(`在 ${name} 里，${PLUGIN_NAME} 的 ${CONFIRM_TOOL} 工具${confirmCall(CONFIRM_TOOL)}。`)
   const absent = needsEntry ? entriesNotPlaced() : []
   if (absent.length) {
     const gate = absent.includes('testpace') ? '合并门的 git 钩子也找不到 testpace（找不到就不检查）。' : ''
@@ -87,6 +91,17 @@ function agentNotes(agent: AgentKind): string[] {
     )
   }
   return notes
+}
+
+/**
+ * 结论里提到的技能（插件名:技能名）按这个 agent 的叫法写（AGENTS 表的 skill），没有换法的照原样。
+ * 钩子说的话都在这里换，判断各处照 Claude Code 的叫法写；命令自己的输出（合并门、modwall 的话）不经过这里，照原样。
+ */
+function inAgentWords(verdict: HookVerdict, agent: AgentKind): HookVerdict {
+  const skill = AGENTS[agent].skill
+  if (!skill) return verdict
+  const pattern = new RegExp(`\\b${PLUGIN_NAME}:([a-z][a-z-]*)`, 'g')
+  return Object.fromEntries(Object.entries(verdict).map(([key, text]) => [key, text.replace(pattern, (_: string, name: string) => skill(name))]))
 }
 
 /** 给 agent 的会话说明；testpace.json 有问题、合并门没在把关时加上原因，再加各模块的提醒（比如时好时坏的测试）和这个 agent 自己的前提。 */
@@ -178,6 +193,11 @@ function editRefusal({ repo, path }: { repo: Repo; path: string }, text: string 
 export function judge(event: HookEvent, now: number, agent: AgentKind): HookVerdict | undefined {
   const { cwd, sessionId } = event
 
+  // 确认工具：用户当场在弹窗里看到原文、点了同意才执行。没填原文的不弹空窗，拒掉让 agent 照检查输出填
+  if (event.kind === 'confirm') {
+    return event.text?.trim() ? { ask: event.text } : { deny: `${CONFIRM_TOOL} 的 text 没填：照要求确认的那条检查输出的原样填。` }
+  }
+
   if (event.kind === 'start') {
     // 旧版本放的固定入口先换成这一版的：下面的会话说明、之后的命令和合并门的钩子都靠它们找到命令
     refreshEntries()
@@ -225,8 +245,19 @@ export function judge(event: HookEvent, now: number, agent: AgentKind): HookVerd
     // 第一次碰到接入的仓库就补说一次。
     const untold = untoldRepos(event.command, cwd, sessionId, now)
     for (const { repo, state } of untold) repo.store.saveSession(sessionId, { ...state, rhythm: true })
-    const hints = modules().flatMap(module => module.beforeCommand?.(event.command, cwd) ?? [])
-    const context = [...untold.map(({ repo }) => told(repo, agent, `${repo.root} 这个仓库`)), ...hints].join('\n\n')
+    const briefs = untold.map(({ repo }) => told(repo, agent, `${repo.root} 这个仓库`))
+    let hints = modules().flatMap(module => module.beforeCommand?.(event.command, cwd) ?? [])
+    if (AGENTS[agent].hooks.beforeCommand === 'refuse') {
+      // 只能拒绝的 agent：说过节奏的会话不会再补说，提示（比如直接跑 full 的命令）却每次都有，同一段提示一个会话只拦一次，
+      // 拦过的记在会话所在工作区的会话状态里；会话不在接入的仓库里时没处记，提示就不说（不拦）
+      const repo = openRepo(cwd)
+      const state = repo && joined(repo.root) ? repo.store.session(sessionId, now, () => defaultTips(repo)) : undefined
+      hints = state ? hints.filter(hint => !state.refused?.includes(hint)) : []
+      if (repo && state && hints.length > 0) repo.store.saveSession(sessionId, { ...state, refused: [...(state.refused ?? []), ...hints] })
+      const reason = [...briefs, ...hints].join('\n\n')
+      return reason ? { deny: `${reason}\n\n（这条命令被 gatelight 拦了一次，只为了把上面的话交给你；看过后照它做，要跑的话再跑一次，同样的话不会再拦。）` } : undefined
+    }
+    const context = [...briefs, ...hints].join('\n\n')
     return context ? { context } : undefined
   }
 
@@ -262,5 +293,5 @@ export function handle(input: unknown, now: number, agent: AgentKind): unknown {
   const format = AGENTS[agent].hooks
   const event = format.read(input)
   const verdict = event && judge(event, now, agent)
-  return event && verdict ? format.write(event, verdict) : undefined
+  return event && verdict ? format.write(event, inAgentWords(verdict, agent)) : undefined
 }
