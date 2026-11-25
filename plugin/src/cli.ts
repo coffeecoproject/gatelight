@@ -111,6 +111,7 @@ function status(): number {
 
 const ENTRY_STATES = {
   installed: '已放好',
+  newer: '是更新的版本放的（别的 agent 里装的插件更新），照常用',
   outdated: '是旧版本放的，跑 testpace install 更新',
   missing: '没放：插件的 bin 目录不在 PATH 上的地方（Codex 的命令、合并门的钩子）找不到。用户同意后跑 testpace install 放上',
   foreign: '那里是别的文件，没有放',

@@ -1,22 +1,44 @@
 #!/bin/sh
 # testpace 固定入口：testpace install 把这个文件放到 ~/.local/bin 下，gatelight 的每条命令放一份（testpace、modwall、testcraft），内容一样，
 # 运行时按被叫的名字转给插件里同名的命令（Codex 的命令和终端的 PATH 里都有这个目录）。放哪几条由 src/base/entry.ts 定，这里不列。
-# 插件（gatelight）的安装目录随版本变，不能写死，这里每次运行时找这台机器上装着的最高版本，Claude Code 和 Codex 装的都算。
+# 放上去时第一行后面插一行记着是哪一版放的（entry.ts），会话开始的自动更新只升不降。
+# 插件（gatelight）的安装目录随版本变，不能写死，这里每次运行时找这台机器上装着的最高版本，Claude Code、Codex、Antigravity 装的都算，不分先后。
 # 只认装着的：Claude Code 看它的安装记录（卸载、降级后缓存里留下的旧目录不算；没有记录就是没装）；
-# Codex 卸载插件时会删掉缓存，缓存里有的就是装着的。
+# Codex 卸载插件时会删掉缓存，缓存里有的就是装着的；
+# Antigravity 装在 ~/.gemini/config/plugins/<目录名>/（可以是指向别处的链接），目录名是它的安装标识，不带版本，版本看那里的 .antigravity-plugin/plugin.json。
 # 只认装全的：插件目录里要有 src/cli.ts（缓存可能只复制了一部分），残缺的那份不参与挑版本。
-# 找不到时退出码 2（配置问题）。
+# 找不到时退出码 2（配置问题），分两种说：这几个 agent 的配置目录有在的、却一个都读不了，多半是在 agent 的沙箱里
+# （Antigravity 的沙箱里实测 ~/.claude、~/.codex、~/.gemini/config 都在、都读不了），让它申请到沙箱外；其余的才是没装。
+# 话里的变量都写成 ${名字}：紧跟着的中文标点在 UTF-8 语言环境里会被 sh（macOS 上是 bash）把头一个字节当成变量名的一部分，吞掉字节。
 name=$(basename -- "$0")
-installed="$HOME/.claude/plugins/installed_plugins.json"
-candidates() {
-  [ ! -f "$installed" ] || grep -o '"installPath": *"[^"]*/gatelight/[^"]*"' "$installed" | sed 's/.*"\([^"]*\)"$/\1/'
-  ls -d "${CODEX_HOME:-$HOME/.codex}"/plugins/cache/*/gatelight/* 2>/dev/null
-}
+claude="$HOME/.claude"
+codex="${CODEX_HOME:-$HOME/.codex}"
+antigravity="$HOME/.gemini/config"
+installed="$claude/plugins/installed_plugins.json"
 tab=$(printf '\t')
+# 每行一个装着的插件：版本、目录。Claude Code、Codex 的目录名就是版本
+candidates() {
+  {
+    [ ! -f "$installed" ] || grep -o '"installPath": *"[^"]*/gatelight/[^"]*"' "$installed" | sed 's/.*"\([^"]*\)"$/\1/'
+    ls -d "$codex"/plugins/cache/*/gatelight/* 2>/dev/null
+  } | while IFS= read -r plugin; do printf '%s\t%s\n' "$(basename "$plugin")" "$plugin"; done
+  for plugin in "$antigravity"/plugins/*/; do
+    manifest="$plugin.antigravity-plugin/plugin.json"
+    [ -f "$manifest" ] && grep -q '"name": *"gatelight"' "$manifest" || continue
+    printf '%s\t%s\n' "$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$manifest" | head -n 1)" "${plugin%/}"
+  done
+}
 best=$(
-  candidates | while IFS= read -r plugin; do
-    [ -x "$plugin/bin/$name" ] && [ -f "$plugin/src/cli.ts" ] && printf '%s\t%s\n' "$(basename "$plugin")" "$plugin/bin/$name"
+  candidates | while IFS="$tab" read -r version plugin; do
+    [ -x "$plugin/bin/$name" ] && [ -f "$plugin/src/cli.ts" ] && printf '%s\t%s\n' "$version" "$plugin/bin/$name"
   done | sort -t "$tab" -k1,1V | tail -n 1 | cut -f 2
 )
-[ -n "$best" ] || { echo "$name：这台机器上没找到装着的、完整的 gatelight 插件（Claude Code、Codex 里都没有）。" >&2; exit 2; }
+if [ -z "$best" ]; then
+  if { [ -e "$claude" ] || [ -e "$codex" ] || [ -e "$antigravity" ]; } && [ ! -r "$claude" ] && [ ! -r "$codex" ] && [ ! -r "$antigravity" ]; then
+    echo "${name}：读不了插件的安装目录（${claude}、${codex}、${antigravity} 都读不了），多半是在 agent 的沙箱里。申请在沙箱外重新运行这条命令。" >&2
+  else
+    echo "${name}：这台机器上没找到装着的、完整的 gatelight 插件（Claude Code、Codex、Antigravity 里都没有）。" >&2
+  fi
+  exit 2
+fi
 exec "$best" "$@"

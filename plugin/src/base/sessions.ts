@@ -1,5 +1,5 @@
 // 会话碰过哪些接入了 testpace 的仓库。记在插件数据目录（agent 给 hook 的 CLAUDE_PLUGIN_DATA，Claude Code 和 Codex 都给；
-// Codex 实测是 ~/.codex/plugins/data/<插件>-<市场>）里，不在哪个仓库里：会话从仓库外（比如上一级目录）开始时，
+// Codex 实测是 ~/.codex/plugins/data/<插件>-<市场>。Antigravity 给的是 PLUGIN_DATA，文档说装好的插件才有）里，不在哪个仓库里：会话从仓库外（比如上一级目录）开始时，
 // 压缩后补说节奏、停止门都靠它找到仓库。没有插件数据目录（不在 hook 里）时不记，只认会话所在目录的仓库。
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
@@ -12,7 +12,7 @@ interface SessionRepos {
 }
 
 function sessionsDir(): string | undefined {
-  const data = process.env.CLAUDE_PLUGIN_DATA
+  const data = process.env.CLAUDE_PLUGIN_DATA || process.env.PLUGIN_DATA
   return data ? join(data, 'sessions') : undefined
 }
 

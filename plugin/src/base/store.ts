@@ -103,6 +103,8 @@ export interface SessionState {
   worked?: string[]
   /** 停止门拦过的：running:<运行 id>（还在跑时拦过）、unread:<运行 id>（跑完没看结果时拦过）、flaky:<testKey>（认出的时好时坏测试）。每种只拦一次。 */
   blocked?: string[]
+  /** 执行命令之前只能拒绝、不能只加一句话的 agent（Antigravity）：为了说这几段提示已经拦过一次命令，同样的不再拦（hook.ts）。 */
+  refused?: string[]
 }
 
 /** 会话记录留多久。 */

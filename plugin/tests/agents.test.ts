@@ -1,8 +1,8 @@
-// 多个 agent：认 agent、Codex 的命令和 hook、合并门的版本只升不降、固定命令入口、两份插件清单。
+// 多个 agent：认 agent、Codex 的命令和 hook、合并门的版本只升不降、固定命令入口（只升不降、找 Antigravity 装的、沙箱里的说法）、三份插件清单。Antigravity 的 hook 在 antigravity.test.ts。
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -12,7 +12,7 @@ import { handle } from '../src/base/hook.ts'
 import { byRunner } from '../src/pace/report.ts'
 import type { PaceRun } from '../src/pace/record.ts'
 import { compareVersions, PLUGIN_NAME, VERSION } from '../src/base/version.ts'
-import { BIN_DIR, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
+import { BIN_DIR, ENV, gatedRepo, globalGitConfig, runs, sampleRepo, sh, tempDir, testpace, withEnv } from './helpers.ts'
 import { sampleRepo as craftRepo, testcraft } from './craft/helpers.ts'
 import { modwall, ENV as WALL_ENV, sampleRepo as wallRepo } from './wall/helpers.ts'
 
@@ -21,25 +21,25 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 
 type Output = { hookSpecificOutput?: { additionalContext?: string }; systemMessage?: string } | undefined
 
-function change(repo: string, text = '// 改过\n'): void {
-  writeFileSync(join(repo, 'src', 'price.mjs'), `${readFileSync(join(repo, 'src', 'price.mjs'), 'utf8')}${text}`)
+/** 入口源文件（entry/command）。 */
+const SOURCE = readFileSync(join(PLUGIN, 'entry', 'command'), 'utf8')
+
+/** 某一版放上去的入口：源文件第一行后面插一行"# gatelight <版本> 放的"。body 换掉源文件（更新的版本改了入口）。 */
+function placed(version = VERSION, body = SOURCE): string {
+  const end = body.indexOf('\n') + 1
+  return `${body.slice(0, end)}# gatelight ${version} 放的\n${body.slice(end)}`
 }
 
-/** 在一段时间里换掉进程的环境变量（hook 的判断在本进程里跑）。 */
-function withEnv<T>(change: Record<string, string | undefined>, run: () => T): T {
-  const saved = Object.fromEntries(Object.keys(change).map(key => [key, process.env[key]]))
-  const apply = (values: Record<string, string | undefined>): void => {
-    for (const [key, value] of Object.entries(values)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-  }
-  apply(change)
-  try {
-    return run()
-  } finally {
-    apply(saved)
-  }
+/** 在这个家目录里放好 testpace 的固定入口（和 testpace install 放的一样），返回它的路径。 */
+function placedEntry(home: string): string {
+  const dir = join(home, '.local', 'bin')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'testpace'), placed(), { mode: 0o755 })
+  return join(dir, 'testpace')
+}
+
+function change(repo: string, text = '// 改过\n'): void {
+  writeFileSync(join(repo, 'src', 'price.mjs'), `${readFileSync(join(repo, 'src', 'price.mjs'), 'utf8')}${text}`)
 }
 
 describe('认 agent', () => {
@@ -194,12 +194,12 @@ describe('Codex 的 hook', () => {
 
       // 只放了 testpace（比如放固定入口时还只有这一条）：说另外两条，不说合并门
       mkdirSync(dir, { recursive: true })
-      writeFileSync(join(dir, 'testpace'), readFileSync(join(PLUGIN, 'entry', 'command')))
+      writeFileSync(join(dir, 'testpace'), placed())
       const partly = start('cx2')
       assert.ok(partly.includes(`这台机器还没放 modwall、testcraft 的固定命令入口（放在 ${dir}）`), partly)
       assert.ok(!partly.includes(gateBlind), '合并门的钩子只靠 testpace 的入口')
 
-      for (const command of ['modwall', 'testcraft']) writeFileSync(join(dir, command), readFileSync(join(PLUGIN, 'entry', 'command')))
+      for (const command of ['modwall', 'testcraft']) writeFileSync(join(dir, command), placed())
       assert.doesNotMatch(start('cx3'), /固定命令入口/, '都放好了不再说')
       assert.doesNotMatch(start('cl', 'claude'), /在 Codex 里/, 'Claude Code 的会话不说 Codex 的前提')
     })
@@ -289,15 +289,19 @@ describe('合并门在两个 agent 之间', () => {
 })
 
 describe('固定命令入口', () => {
-  test('install 在 ~/.local/bin 放上 testpace、modwall、testcraft 的入口（同一份脚本）；用哪个名字叫，就转给装着的最高版本的插件里同名的命令；同名的别的文件不覆盖，其余照放', () => {
+  test('install 在 ~/.local/bin 放上 testpace、modwall、testcraft 的入口（同一份脚本，第二行记着是哪一版放的）；用哪个名字叫，就转给装着的最高版本的插件里同名的命令；同名的别的文件不覆盖，其余照放', () => {
     const home = tempDir('testpace-home-')
     const env = { ...ENV, HOME: home, GIT_CONFIG_GLOBAL: globalGitConfig() }
     const repo = sampleRepo()
-    const source = readFileSync(join(PLUGIN, 'entry', 'command'), 'utf8')
+    const source = placed()
     const entry = (command: string): string => join(home, '.local', 'bin', command)
     const installed = testpace(repo, ['install'], env)
     assert.equal(installed.code, 0, installed.out)
-    for (const command of ['testpace', 'modwall', 'testcraft']) assert.equal(readFileSync(entry(command), 'utf8'), source, command)
+    for (const command of ['testpace', 'modwall', 'testcraft']) {
+      const text = readFileSync(entry(command), 'utf8')
+      assert.equal(text.split('\n')[1], `# gatelight ${VERSION} 放的`, command)
+      assert.equal(text, source, `${command}：除了第二行，和源文件逐字节一样`)
+    }
     assert.match(testpace(repo, ['status'], env).out, /固定命令入口（.+）：testpace、modwall、testcraft 已放好\n/)
 
     // 插件里每条命令都说出自己的名字，看得出转给了哪一份的哪一条
@@ -354,6 +358,104 @@ describe('固定命令入口', () => {
     assert.equal(readFileSync(entry('testcraft'), 'utf8'), source)
   })
 
+  test('Antigravity 装的插件也算：在 ~/.gemini/config/plugins/<目录名>/（可以是链接），版本看它自己的清单；和 Claude Code 装的一起挑最高版本，别的插件不算', () => {
+    const home = tempDir('testpace-home-')
+    const env = { ...ENV, HOME: home }
+    const entry = placedEntry(home)
+    const run = (): string => spawnSync(entry, ['status'], { env, encoding: 'utf8' }).stdout
+    const antigravityPlugin = (dir: string, name: string, version: string): void => {
+      mkdirSync(join(dir, '.antigravity-plugin'), { recursive: true })
+      writeFileSync(join(dir, '.antigravity-plugin', 'plugin.json'), JSON.stringify({ name, displayName: name, version }, null, 2))
+      mkdirSync(join(dir, 'bin'), { recursive: true })
+      writeFileSync(join(dir, 'bin', 'testpace'), `#!/bin/sh\necho "testpace antigravity ${name} ${version} $*"\n`, { mode: 0o755 })
+      mkdirSync(join(dir, 'src'), { recursive: true })
+      writeFileSync(join(dir, 'src', 'cli.ts'), '')
+    }
+    // 开发期的装法：插件目录是指向别处的链接，目录名不带版本
+    const plugins = join(home, '.gemini', 'config', 'plugins')
+    mkdirSync(plugins, { recursive: true })
+    const real = tempDir('testpace-agy-plugin-')
+    antigravityPlugin(real, PLUGIN_NAME, '0.12.0')
+    symlinkSync(real, join(plugins, PLUGIN_NAME))
+    assert.equal(run(), `testpace antigravity ${PLUGIN_NAME} 0.12.0 status\n`)
+    antigravityPlugin(join(plugins, 'other'), 'other', '9.9.9')
+    assert.equal(run(), `testpace antigravity ${PLUGIN_NAME} 0.12.0 status\n`, '别的插件版本再高也不算')
+
+    // Claude Code 装的更新：用它的
+    const claudeDir = join(home, '.claude', 'plugins', 'cache', 'm', PLUGIN_NAME, '0.13.0')
+    mkdirSync(join(claudeDir, 'bin'), { recursive: true })
+    writeFileSync(join(claudeDir, 'bin', 'testpace'), '#!/bin/sh\necho "testpace claude 0.13.0 $*"\n', { mode: 0o755 })
+    mkdirSync(join(claudeDir, 'src'), { recursive: true })
+    writeFileSync(join(claudeDir, 'src', 'cli.ts'), '')
+    writeFileSync(
+      join(home, '.claude', 'plugins', 'installed_plugins.json'),
+      JSON.stringify({ version: 2, plugins: { [`${PLUGIN_NAME}@m`]: [{ scope: 'user', installPath: claudeDir, version: '0.13.0' }] } }, null, 2),
+    )
+    assert.equal(run(), 'testpace claude 0.13.0 status\n')
+    // Antigravity 那份升了版本（目录名不变）：按清单里的版本比，又轮到它
+    antigravityPlugin(real, PLUGIN_NAME, '0.14.0')
+    assert.equal(run(), `testpace antigravity ${PLUGIN_NAME} 0.14.0 status\n`)
+  })
+
+  test('找不到插件时退出码 2，分两种说：Claude Code、Codex、Antigravity 的目录有在的、却一个都读不了，说多半在沙箱里；其余说没装', () => {
+    const home = tempDir('testpace-home-')
+    const env = { ...ENV, HOME: home }
+    const entry = placedEntry(home)
+    const run = (): { code: number | null; err: string } => {
+      const r = spawnSync(entry, ['status'], { env, encoding: 'utf8' })
+      return { code: r.status, err: r.stderr }
+    }
+    const claude = join(home, '.claude')
+    const codex = join(home, '.codex')
+    const antigravity = join(home, '.gemini', 'config')
+    const missing = 'testpace：这台机器上没找到装着的、完整的 gatelight 插件（Claude Code、Codex、Antigravity 里都没有）。\n'
+    const sandboxed = `testpace：读不了插件的安装目录（${claude}、${codex}、${antigravity} 都读不了），多半是在 agent 的沙箱里。申请在沙箱外重新运行这条命令。\n`
+    assert.deepEqual(run(), { code: 2, err: missing }, '三处都没有：没装')
+
+    mkdirSync(claude)
+    mkdirSync(antigravity, { recursive: true })
+    mkdirSync(codex)
+    const locked = [claude, antigravity]
+    try {
+      // 在的都读不了（Antigravity 的沙箱里实测如此）；不在的不算读得了
+      for (const dir of locked) chmodSync(dir, 0o000)
+      rmSync(codex, { recursive: true })
+      assert.deepEqual(run(), { code: 2, err: sandboxed })
+      // 有一处读得了：不是沙箱，是没装
+      mkdirSync(codex)
+      assert.deepEqual(run(), { code: 2, err: missing })
+      chmodSync(codex, 0o000)
+      locked.push(codex)
+      assert.deepEqual(run(), { code: 2, err: sandboxed }, '三处都在、都读不了')
+    } finally {
+      for (const dir of locked) chmodSync(dir, 0o755)
+    }
+  })
+
+  test('C 语言环境、UTF-8 环境里提示开头都是完整的 "testpace："：命令名后面紧跟中文标点时不吞字节', () => {
+    const home = tempDir('testpace-home-')
+    const entry = placedEntry(home)
+    const prefix = Buffer.from('testpace：')
+    const head = (locale: string): string => {
+      const r = spawnSync(entry, ['status'], { env: { ...ENV, HOME: home, LC_ALL: locale } })
+      assert.equal(r.status, 2)
+      return r.stderr.subarray(0, prefix.length).toString('hex')
+    }
+    for (const locale of ['C', 'en_US.UTF-8']) assert.equal(head(locale), prefix.toString('hex'), `没装时（${locale}）`)
+    // 沙箱里的说法：话里还有好几个变量紧跟着中文标点
+    const claude = join(home, '.claude')
+    mkdirSync(claude)
+    chmodSync(claude, 0o000)
+    try {
+      for (const locale of ['C', 'en_US.UTF-8']) {
+        const r = spawnSync(entry, ['status'], { env: { ...ENV, HOME: home, LC_ALL: locale } })
+        assert.equal(r.stderr.toString('utf8'), `testpace：读不了插件的安装目录（${claude}、${join(home, '.codex')}、${join(home, '.gemini', 'config')} 都读不了），多半是在 agent 的沙箱里。申请在沙箱外重新运行这条命令。\n`, locale)
+      }
+    } finally {
+      chmodSync(claude, 0o755)
+    }
+  })
+
   test('status 用一行说三条命令的固定入口，状态一样的并在一起', () => {
     const home = tempDir('testpace-home-')
     const env = { ...ENV, HOME: home, GIT_CONFIG_GLOBAL: globalGitConfig() }
@@ -368,7 +470,7 @@ describe('固定命令入口', () => {
       `固定命令入口（${dir}）：testpace 是旧版本放的，跑 testpace install 更新；` +
         'modwall、testcraft 没放：插件的 bin 目录不在 PATH 上的地方（Codex 的命令、合并门的钩子）找不到。用户同意后跑 testpace install 放上',
     )
-    writeFileSync(join(dir, 'testpace'), readFileSync(join(PLUGIN, 'entry', 'command')))
+    writeFileSync(join(dir, 'testpace'), placed())
     writeFileSync(join(dir, 'testcraft'), '#!/bin/sh\necho 别的工具\n')
     assert.equal(
       line(),
@@ -378,10 +480,22 @@ describe('固定命令入口', () => {
     )
   })
 
+  test('status 对更新的版本放的入口说照常用，不叫人重放', () => {
+    const home = tempDir('testpace-home-')
+    const env = { ...ENV, HOME: home, GIT_CONFIG_GLOBAL: globalGitConfig() }
+    const repo = sampleRepo()
+    const dir = join(home, '.local', 'bin')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'testpace'), placed('99.0.0', `${SOURCE}# 更新的版本改过\n`), { mode: 0o755 })
+    for (const command of ['modwall', 'testcraft']) writeFileSync(join(dir, command), placed(), { mode: 0o755 })
+    const line = testpace(repo, ['status'], env).out.split('\n').find(l => l.startsWith('固定命令入口'))
+    assert.equal(line, `固定命令入口（${dir}）：modwall、testcraft 已放好；testpace 是更新的版本放的（别的 agent 里装的插件更新），照常用`)
+  })
+
   test('会话开始时：旧版本放的入口换成这一版的；没放过的不放（只放过 testpace 的机器上，modwall、testcraft 也不放）；同名的别的文件不动', () => {
     const home = tempDir('testpace-home-')
     const entry = (command: string): string => join(home, '.local', 'bin', command)
-    const current = readFileSync(join(PLUGIN, 'entry', 'command'), 'utf8')
+    const current = placed()
     const old = '#!/bin/sh\n# testpace 固定入口：旧版本放的\nexit 2\n'
     withEnv({ CLAUDE_PLUGIN_DATA: tempDir('testpace-data-'), HOME: home, GIT_CONFIG_GLOBAL: globalGitConfig() }, () => {
       const repo = sampleRepo()
@@ -418,12 +532,38 @@ describe('固定命令入口', () => {
     })
   })
 
-  test('两份插件清单版本一致；插件的名字各处一样（两份市场清单、确认工具所在的服务）；Codex 的 marketplace 指向 plugin 目录', () => {
+  test('入口只升不降：更新的版本放的，会话开始、install 都不换回这一版；同一版本内容不同的、旧版本放的换成这一版的；更新的版本放的算放好了', () => {
+    const home = tempDir('testpace-home-')
+    const entry = (command: string): string => join(home, '.local', 'bin', command)
+    const newer = placed('99.0.0', `${SOURCE}# 更新的版本改过\n`)
+    withEnv({ CLAUDE_PLUGIN_DATA: tempDir('testpace-data-'), HOME: home, GIT_CONFIG_GLOBAL: globalGitConfig() }, () => {
+      const repo = sampleRepo()
+      mkdirSync(join(home, '.local', 'bin'), { recursive: true })
+      writeFileSync(entry('testpace'), newer, { mode: 0o755 })
+      writeFileSync(entry('modwall'), placed(VERSION, `${SOURCE}# 同一版本、内容不同\n`), { mode: 0o755 })
+      writeFileSync(entry('testcraft'), placed('0.0.1'), { mode: 0o755 })
+      const told = handle({ hook_event_name: 'SessionStart', session_id: 'up1', cwd: repo }, Date.now(), 'codex') as Output
+      assert.equal(readFileSync(entry('testpace'), 'utf8'), newer, '另一个 agent 里装的更新版本放的，不换回去')
+      assert.equal(readFileSync(entry('modwall'), 'utf8'), placed(), '同一版本、内容不同的刷新成这一版的')
+      assert.equal(readFileSync(entry('testcraft'), 'utf8'), placed(), '旧版本放的升到这一版')
+      assert.doesNotMatch(String(told?.hookSpecificOutput?.additionalContext), /固定命令入口/, '更新的版本放的算放好了，会话说明不叫人去放')
+
+      const installed = testpace(repo, ['install'], { ...ENV, HOME: home, GIT_CONFIG_GLOBAL: globalGitConfig() })
+      assert.equal(installed.code, 0, installed.out)
+      assert.equal(readFileSync(entry('testpace'), 'utf8'), newer, 'install 也不降')
+    })
+  })
+
+  test('三份插件清单（Claude Code、Codex、Antigravity）版本一致、和 VERSION 一样；插件的名字各处一样（两份市场清单、确认工具所在的服务）；Codex 的 marketplace 指向 plugin 目录', () => {
     const claude = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8'))
     const codex = JSON.parse(readFileSync(join(PLUGIN, '.codex-plugin', 'plugin.json'), 'utf8'))
-    assert.equal(codex.version, claude.version)
+    const antigravity = JSON.parse(readFileSync(join(PLUGIN, '.antigravity-plugin', 'plugin.json'), 'utf8'))
+    assert.equal(claude.version, VERSION)
+    assert.equal(codex.version, VERSION)
+    assert.equal(antigravity.version, VERSION)
     assert.equal(claude.name, 'gatelight')
     assert.equal(codex.name, claude.name)
+    assert.equal(antigravity.name, claude.name)
     assert.equal(PLUGIN_NAME, claude.name)
     // agent 看到的确认工具全名里带着插件名和服务名：服务名和插件名一样，提示里说"调用 <插件名> 的工具"才对得上
     const mcp = JSON.parse(readFileSync(join(PLUGIN, '.mcp.json'), 'utf8'))

@@ -1,0 +1,16 @@
+{
+  "gatelight": {
+    "SessionStart": [
+      { "type": "command", "command": "sh ./hooks/antigravity.sh", "timeout": 30 }
+    ],
+    "PreToolUse": [
+      { "matcher": "run_command", "hooks": [{ "type": "command", "command": "sh ./hooks/antigravity.sh", "timeout": 30 }] },
+      { "matcher": "write_file", "hooks": [{ "type": "command", "command": "sh ./hooks/antigravity.sh", "timeout": 30 }] },
+      { "matcher": "edit_file", "hooks": [{ "type": "command", "command": "sh ./hooks/antigravity.sh", "timeout": 30 }] },
+      { "matcher": "call_mcp_tool", "hooks": [{ "type": "command", "command": "sh ./hooks/antigravity.sh", "timeout": 30 }] }
+    ],
+    "Stop": [
+      { "type": "command", "command": "sh ./hooks/antigravity.sh", "timeout": 60 }
+    ]
+  }
+}
