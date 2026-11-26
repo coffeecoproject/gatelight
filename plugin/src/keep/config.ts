@@ -1,6 +1,6 @@
 // "代码规范"在项目里的配置：.codekeep/config.json。没有 .codekeep/ 目录的仓库没接入，它不出声、不加检查。
-//   checks     规范检查的命令（类型检查、lint、格式），直接写工具命令，不经过项目的脚本；整组里依次跑
-//   eslint     拿来比"生效的规则"的 eslint：config 是配置文件（按它对每个代码文件算生效的规则）
+//   checks     规范检查的命令（类型检查、格式），直接写工具命令，不经过项目的脚本；整组里依次跑。lint 不写在这里
+//   eslint     项目的 eslint：config 是配置文件。codekeep 按它对每个代码文件算生效的规则来比，也用它直接跑 lint（check.ts）
 //   prettier   开着时比格式检查查哪些文件（prettier 在仓库根目录跑，查 git 收的文件）
 //   tsconfig   拿来比严格选项的 tsconfig 文件
 //   secrets    开着时整组里用 gitleaks 扫这次的提交和没提交的改动
@@ -41,6 +41,8 @@ export interface Config {
 export interface Parsed {
   config?: Config
   problems: string[]
+  /** 读的时候跳过的未知字段（只有 lenient 时有）。 */
+  skipped: string[]
 }
 
 /** 接入了：分叉点或工作区里有 .codekeep/。 */
@@ -66,28 +68,31 @@ function relativePath(value: unknown): string | undefined {
 /**
  * 读配置的文字，只看写法（字段、类型、路径的写法），不看文件在不在：分叉点那一版也用它读。
  * 工作区这一版另用 missingFiles 查写到的文件在不在。
+ * lenient：未知字段跳过、记在 skipped 里，不算写错。分叉点那一版用它：配置去掉过的字段（比如升级后不认的）不让整份读不出来。
  */
-export function parseConfig(text: string): Parsed {
+export function parseConfig(text: string, lenient = false): Parsed {
   let raw: unknown
   try {
     raw = JSON.parse(text)
   } catch (error) {
-    return { problems: [`${CONFIG_PATH} 不是合法的 JSON：${(error as Error).message}`] }
+    return { problems: [`${CONFIG_PATH} 不是合法的 JSON：${(error as Error).message}`], skipped: [] }
   }
-  if (!isRecord(raw)) return { problems: [`${CONFIG_PATH} 应该是一个对象`] }
+  if (!isRecord(raw)) return { problems: [`${CONFIG_PATH} 应该是一个对象`], skipped: [] }
   const problems: string[] = []
+  const skipped: string[] = []
+  const unknownField = (text: string): void => void (lenient ? skipped : problems).push(text)
   const extra = Object.keys(raw).filter(key => !KEYS.includes(key))
-  if (extra.length) problems.push(`${CONFIG_PATH} 有未知字段 ${extra.map(key => `"${key}"`).join('、')}（认得的有 ${KEYS.join('、')}）`)
+  if (extra.length) unknownField(`${CONFIG_PATH} 有未知字段 ${extra.map(key => `"${key}"`).join('、')}（认得的有 ${KEYS.join('、')}）`)
 
   const checks: Check[] = []
-  if (!Array.isArray(raw.checks) || raw.checks.length === 0) {
-    problems.push(`${CONFIG_PATH} 的 "checks" 要写成非空数组，每条 { "name": 名字, "command": 命令 }`)
+  if (!Array.isArray(raw.checks) || (raw.checks.length === 0 && raw.eslint === undefined)) {
+    problems.push(`${CONFIG_PATH} 的 "checks" 要写成数组，每条 { "name": 名字, "command": 命令 }；没配 eslint 的不能是空的`)
   } else {
     raw.checks.forEach((item: unknown, index) => {
       const where = `checks 的第 ${index + 1} 条`
       if (!isRecord(item)) return void problems.push(`${where} 应该是 { "name": 名字, "command": 命令 }`)
       const unknown = Object.keys(item).filter(key => key !== 'name' && key !== 'command')
-      if (unknown.length) problems.push(`${where} 有未知字段 ${unknown.map(key => `"${key}"`).join('、')}`)
+      if (unknown.length) unknownField(`${where} 有未知字段 ${unknown.map(key => `"${key}"`).join('、')}`)
       const { name, command } = item
       if (typeof name !== 'string' || name.trim() === '' || /[\n\r]/.test(name)) return void problems.push(`${where} 要写名字（name，一行）`)
       if (typeof command !== 'string' || command.trim() === '') return void problems.push(`${where}（${name}）要写命令（command）`)
@@ -102,7 +107,7 @@ export function parseConfig(text: string): Parsed {
     if (!isRecord(value)) problems.push(`${CONFIG_PATH} 的 "eslint" 应该是 { "config": 配置文件 }`)
     else {
       const unknown = Object.keys(value).filter(key => !ESLINT_KEYS.includes(key))
-      if (unknown.length) problems.push(`${CONFIG_PATH} 的 "eslint" 有未知字段 ${unknown.map(key => `"${key}"`).join('、')}`)
+      if (unknown.length) unknownField(`${CONFIG_PATH} 的 "eslint" 有未知字段 ${unknown.map(key => `"${key}"`).join('、')}`)
       const config = relativePath(value.config)
       if (config === undefined) problems.push(`${CONFIG_PATH} 的 "eslint.config" 要写 eslint 配置文件（仓库里的相对路径，比如 "eslint.config.mjs"）`)
       if (config !== undefined) eslint = { config }
@@ -114,21 +119,22 @@ export function parseConfig(text: string): Parsed {
     if (raw[key] !== undefined && typeof raw[key] !== 'boolean') problems.push(`${CONFIG_PATH} 的 "${key}" 要写 true 或 false`)
   }
 
-  const styles = raw.styles === undefined ? undefined : stylesOf(raw.styles, problems)
+  const styles = raw.styles === undefined ? undefined : stylesOf(raw.styles, problems, unknownField)
 
-  if (problems.length || tsconfig === undefined) return { problems }
+  if (problems.length || tsconfig === undefined) return { problems, skipped }
   return {
     config: { checks, ...(eslint ? { eslint } : {}), tsconfig, prettier: raw.prettier === true, secrets: raw.secrets === true, ...(styles ? { styles } : {}) },
     problems,
+    skipped,
   }
 }
 
 /** "styles"：theme、ui 各是一组路径，至少写一组。 */
-function stylesOf(value: unknown, problems: string[]): StylesConfig | undefined {
+function stylesOf(value: unknown, problems: string[], unknownField: (text: string) => void): StylesConfig | undefined {
   const shape = `{ "theme": [主题文件], "ui": [组件层目录] }`
   if (!isRecord(value)) return void problems.push(`${CONFIG_PATH} 的 "styles" 应该是 ${shape}`)
   const unknown = Object.keys(value).filter(key => !STYLES_KEYS.includes(key))
-  if (unknown.length) problems.push(`${CONFIG_PATH} 的 "styles" 有未知字段 ${unknown.map(key => `"${key}"`).join('、')}`)
+  if (unknown.length) unknownField(`${CONFIG_PATH} 的 "styles" 有未知字段 ${unknown.map(key => `"${key}"`).join('、')}`)
   if (value.theme === undefined && value.ui === undefined) return void problems.push(`${CONFIG_PATH} 的 "styles" 要写 theme、ui 里的至少一项：${shape}`)
   const theme = value.theme === undefined ? [] : paths(value.theme, 'styles.theme', '主题文件', problems)
   const ui = value.ui === undefined ? [] : paths(value.ui, 'styles.ui', '组件层目录', problems)

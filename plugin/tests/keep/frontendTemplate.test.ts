@@ -112,7 +112,11 @@ describe('提示、确认框正文、报错按正文算：16 个字、一句话'
   const entries: Record<string, (text: string) => string> = {
     'message.* 的文字': text => `<span onClick={() => message.error('${text}')} />`,
     'message.* 的模板字符串': text => `<span onClick={() => message.error(\`${text}\`)} />`,
-    'notification.* 的文字': text => `<span onClick={() => notification.warning({ message: '${text}' })} />`,
+    'message.* 参数对象的 content': text => `<span onClick={() => message.open({ type: 'error', content: '${text}' })} />`,
+    'notification.* 参数对象的 message': text => `<span onClick={() => notification.warning({ message: '${text}' })} />`,
+    'notification.* 参数对象的 title': text => `<span onClick={() => notification.error({ title: '${text}' })} />`,
+    'notification.* 参数对象的 description': text => `<span onClick={() => notification.error({ message: '保存没成功', description: '${text}' })} />`,
+    'message.* 的直接参数写成二选一': text => `<span onClick={() => message.error(a ? '${text}' : '已保存')} />`,
     'Modal.confirm 的 content': text => `<span onClick={() => Modal.confirm({ title: '删除订单', content: '${text}' })} />`,
     'Modal.info/success/error/warning 的 content': text => `<span onClick={() => Modal.warning({ content: '${text}' })} />`,
     '表单 rules 的 message': text => `<Form.Item name='name' rules={[{ required: true, message: '${text}' }]} />`,
@@ -121,6 +125,7 @@ describe('提示、确认框正文、报错按正文算：16 个字、一句话'
     'Result 的 subTitle': text => `<Result title='没找到' subTitle='${text}' />`,
     '出错横幅 Alert（type="error"）的 title': text => `<Alert type='error' title='${text}' />`,
     '出错横幅 Alert（type="warning"）的 title': text => `<Alert type='warning' title={\`${text}\`} />`,
+    "出错横幅 Alert（type={'error'}）的 title": text => `<Alert type={'error'} title='${text}' />`,
     'Alert 的 type 写成 error、warning 二选一': text => `<Alert type={late ? 'warning' : 'error'} title='${text}' />`,
     // 入口里的文字写成二选一、带条件的，也按正文算
     '表单 rules 的 message 写成二选一': text => `<Form.Item name='name' rules={[{ required: true, message: a ? '${text}' : '必填' }]} />`,
@@ -139,6 +144,53 @@ describe('提示、确认框正文、报错按正文算：16 个字、一句话'
     assert.deepEqual(
       await lint(PAGE, page(`<span onClick={() => Modal.open({ content: '${OK}' })} />`, `<span onClick={() => show({ content: '${OK}' })} />`, `<span title={a ? '${OK}' : '无'} />`)),
       ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点'],
+    )
+  })
+
+  test('message.*、notification.* 只认直接参数和参数对象里放正文的字段（message 的 content，notification 的 message、title、description）：别的字段、函数参数、更深的对象按名字查', async () => {
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page(
+          `<span onClick={() => notification.warning({ content: '${OK}' })} />`,
+          `<span onClick={() => message.open({ title: '${OK}' })} />`,
+          `<span onClick={() => message.error(fmt('${OK}'))} />`,
+          `<span onClick={() => message.open({ content: fmt('${OK}') })} />`,
+          `<span onClick={() => message.open({ content: { text: '${OK}' } })} />`,
+        ),
+      ),
+      ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点', '5 文字带了句子标点', '6 文字带了句子标点'],
+    )
+  })
+
+  test('Modal.confirm 这些只认参数对象直接的 content：content 里的函数参数、回调里别的 content 按名字查', async () => {
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page(
+          `<span onClick={() => Modal.confirm({ title: '删除订单', content: fmt('${OK}') })} />`,
+          `<span onClick={() => Modal.confirm({ title: '删除订单', onOk: () => show({ content: '${OK}' }) })} />`,
+          `<span onClick={() => Modal.warning({ footer: { content: '${OK}' } })} />`,
+        ),
+      ),
+      ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点'],
+    )
+  })
+
+  test('嵌在入口里的标签、按钮文字、函数参数、数组按名字查（12 个字、不准句子标点）', async () => {
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page(
+          "<Result title='没找到' subTitle={ok && <Tag title='没找到订单，请换个条件' />} />",
+          "<Result title='没找到' subTitle={ok && <Button>{'这是按钮的名字超过十二个字'}</Button>} />",
+          '<Result title=\'没找到\' subTitle={ok && <Button>按钮的名字超过了十二个字啊</Button>} />',
+          "<Empty description={x ?? fmt('函数参数里的说明文字写得长')} />",
+          "<Empty description={true && ['没有订单。', '先新建']} />",
+          "<Alert type='error' title={ok && <Tag title='没找到订单，请换个条件' />} />",
+        ),
+      ),
+      ['2 文字带了句子标点', '3 文字超过 12 个字', '4 文字超过 12 个字', '5 文字超过 12 个字', '6 文字带了句子标点', '7 文字带了句子标点'],
     )
   })
 })
@@ -192,6 +244,22 @@ describe('专门放说明的位置：短也不准', () => {
         ),
       ),
       ['2 说明用的横幅', '3 说明用的横幅', '4 说明用的横幅', '5 说明用的横幅', '6 说明用的横幅'],
+    )
+  })
+
+  test('Alert 的 type 写了两次、带展开写法（{...x}）的看不出最后是哪种：报"说明用的横幅"，title 按名字算；只写一次的 type={\'error\'} 不报', async () => {
+    const TITLE = '保存没成功，请稍后再试。'
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page(
+          `<Alert type='error' type='info' title='${TITLE}' />`,
+          `<Alert type='error' {...props} title='${TITLE}' />`,
+          `<Alert {...props} type='error' title='${TITLE}' />`,
+          `<Alert type={'error'} title='${TITLE}' />`,
+        ),
+      ),
+      ['2 说明用的横幅', '2 文字带了句子标点', '3 说明用的横幅', '3 文字带了句子标点', '4 说明用的横幅', '4 文字带了句子标点'],
     )
   })
 
@@ -275,9 +343,47 @@ describe('不写具体的值', () => {
     )
   })
 
-  test('rgba(…)、hsl(…) 这类颜色函数也报"写死的颜色或长度"', async () => {
-    const code = "export const shadow = 'rgba(0, 0, 0, 0.45)'\nexport const solid = 'rgb(22, 119, 255)'\nexport const soft = 'hsl(210, 50%, 40%)'\n"
-    assert.deepEqual(await lint('src/pages/colors.ts', code), ['1 写死的颜色或长度', '2 写死的颜色或长度', '3 写死的颜色或长度'])
+  test('颜色函数（rgb、rgba、hsl、hsla、hwb、lab、lch、oklab、oklch、color）也报，不分大小写；前后的空格不算', async () => {
+    const values = [
+      'rgba(0, 0, 0, 0.45)',
+      'rgb(22, 119, 255)',
+      'hsl(210, 50%, 40%)',
+      'hsla(210, 50%, 40%, 0.5)',
+      'hwb(210 10% 20%)',
+      'lab(50% 40 59)',
+      'lch(52% 72 50)',
+      'oklab(59% 0.1 0.1)',
+      'oklch(70% 0.1 200)',
+      'color(display-p3 1 0 0)',
+      'RGB(1,2,3)',
+      'OKLCH(70% 0.1 200)',
+      '#FFF',
+      '#fff ',
+      ' 12px',
+      ' rgb(1, 2, 3)',
+    ]
+    const code = `${values.map((value, index) => `export const v${index} = '${value}'`).join('\n')}\nexport const word = 'colorful'\nexport const lab = 'lab results'\n`
+    assert.deepEqual(
+      await lint('src/pages/colors.ts', code),
+      values.map((_, index) => `${index + 1} 写死的颜色或长度`),
+    )
+  })
+
+  test('模板字符串拼的颜色（`rgb(${r}, 0, 0)`）和长度（`${w}px`、rem、vh、vw）也报；不是颜色、长度的拼接不报', async () => {
+    const code = [
+      'export const a = `rgb(${r}, 0, 0)`',
+      'export const b = `oklch(${l} 0.1 200)`',
+      'export const c = `${w}px`',
+      'export const d = `${w}rem`',
+      'export const e = `${h}vh`',
+      'export const f = `${w}vw`',
+      'export const g = `${a}-${b}`',
+      'export const h = `${count} 个`',
+      'export const i = `${w}pixels`',
+      'export const Tag2 = () => <Tag color={`rgb(${x},0,0)`} width={`${x}px`} />',
+      '',
+    ].join('\n')
+    assert.deepEqual(await lint(PAGE, code), ['1 写死的颜色或长度', '2 写死的颜色或长度', '3 写死的颜色或长度', '4 写死的颜色或长度', '5 写死的颜色或长度', '6 写死的颜色或长度', '10 写死的颜色或长度', '10 写死的颜色或长度'])
   })
 })
 
@@ -301,6 +407,33 @@ describe('不写样式', () => {
   test('引 .css、.less、.scss、.sass、.styl 报"引样式文件"；引别的不报', async () => {
     const code = "import './a.css'\nimport s from './a.less'\nimport './a.scss'\nimport './a.sass'\nimport './a.styl'\nimport { theme } from '../theme'\nexport { s, theme }\n"
     assert.deepEqual(await lint(PAGE, code), ['1 引样式文件', '2 引样式文件', '3 引样式文件', '4 引样式文件', '5 引样式文件'])
+  })
+})
+
+describe('页面、组件层不用测试目录里的代码', () => {
+  const code = [
+    "import Panel from '../components/__tests__/Panel'",
+    "import { fake } from './Orders.test'",
+    "import { mock } from './mock.spec.tsx'",
+    "export { helper } from './__tests__/helper'",
+    "export * from '../fixtures.test.js'",
+    "export const load = () => import('./__tests__/Lazy')",
+    "import { useTest } from './testing'",
+    "import contest from './contest'",
+    "import { latest } from '../latest.ts'",
+    "export * from './spec'",
+    'export { Panel, fake, mock, useTest, contest, latest }',
+    '',
+  ].join('\n')
+  const EXPECTED = ['1 页面不用测试目录里的代码', '2 页面不用测试目录里的代码', '3 页面不用测试目录里的代码', '4 页面不用测试目录里的代码', '5 页面不用测试目录里的代码', '6 页面不用测试目录里的代码']
+
+  test('import、动态 import、export from 测试路径（__tests__/、.test、.spec）报；名字里只是带 test、spec 的不报', async () => {
+    assert.deepEqual(await lint(PAGE, code), EXPECTED)
+  })
+
+  test('组件层也报；测试文件自己引测试目录的不报', async () => {
+    assert.deepEqual(await lint('src/ui/Button.tsx', code), EXPECTED)
+    assert.deepEqual(await lint('src/pages/__tests__/Orders.tsx', code), [])
   })
 })
 
@@ -387,35 +520,41 @@ describe('后台（BACK）', () => {
 })
 
 describe('导出、画图的代码（OUTPUT）', () => {
-  const POSTER = 'src/export/Poster.tsx'
+  const POSTER = 'src/export/poster.ts'
   const OUTPUT = project({ OUTPUT: "['src/export/**']" })
   const code = [
     "import './poster.css'",
     "export const columns = [{ title: '名称', dataIndex: 'name', width: 120 }]",
     'export const font = { fontSize: 14, padding: 8 }',
-    "export const colors = ['#fff', 'rgba(0, 0, 0, 0.45)', '12px']",
-    'export const Size = () => <Space size={4} />',
-    'export const Hint = () => <span style={s}>保存没成功，请稍后再试。</span>',
-    'export const Note = () => <p>名称</p>',
-    'export const Theme = () => <ConfigProvider theme={t}><Button>新建</Button></ConfigProvider>',
+    "export const colors = ['#fff', 'rgba(0, 0, 0, 0.45)', '12px', `${w}px`]",
+    "export const tip = '保存没成功，请稍后再试。'",
+    "export const sheet = '一二三四五六七八九十十一二'",
     '',
   ].join('\n')
-  const OTHERS = ['1 引样式文件', '6 写样式', '6 文字带了句子标点', '7 段落是放说明的', '8 就地改主题']
-  const VALUES = ['2 写死的列宽', '3 写死的尺寸', '3 写死的尺寸', '4 写死的颜色或长度', '4 写死的颜色或长度', '4 写死的颜色或长度', '5 写死的数字']
+  const OTHERS = ['1 引样式文件', '5 文字带了句子标点', '6 文字超过 12 个字']
+  const VALUES = ['2 写死的列宽', '3 写死的尺寸', '3 写死的尺寸', '4 写死的颜色或长度', '4 写死的颜色或长度', '4 写死的颜色或长度', '4 写死的颜色或长度']
   const byLine = (list: string[]): string[] => [...list].sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
 
-  test('填了以后：这些文件里写死的数字、颜色、长度、尺寸、列宽不报；文字、说明位置、写样式、ConfigProvider、引样式文件照报', async () => {
+  test('填了以后：这些文件里写死的数字、颜色、长度、尺寸、列宽不报；文字、引样式文件照报', async () => {
     assert.deepEqual(await lint(POSTER, code, OUTPUT), OTHERS)
   })
 
   test('同一段代码放在页面文件里照报具体的值；OUTPUT 为空（默认）时导出的文件也照报', async () => {
-    assert.deepEqual(await lint('src/pages/Poster.tsx', code, OUTPUT), byLine([...OTHERS, ...VALUES]))
+    assert.deepEqual(await lint('src/pages/poster.ts', code, OUTPUT), byLine([...OTHERS, ...VALUES]))
     assert.deepEqual(await lint(POSTER, code), byLine([...OTHERS, ...VALUES]))
   })
 
+  test('不准写 JSX（标签、<></>），每个标签都报；具体的值照旧不查', async () => {
+    const jsx = ['export const Size = () => <Space size={4} />', 'export const Hint = () => <><Button>新建</Button></>', "export const fill = '#fff'", ''].join('\n')
+    assert.deepEqual(await lint('src/export/Poster.tsx', jsx, OUTPUT), ['1 导出、画图的代码里不写页面组件', '2 导出、画图的代码里不写页面组件', '2 导出、画图的代码里不写页面组件'])
+    assert.deepEqual(await lint('src/export/Poster.tsx', jsx), ['1 写死的数字', '3 写死的颜色或长度'], 'OUTPUT 为空时照页面查')
+  })
+
   test('OUTPUT 文件里就地关规则的注释照样不起作用', async () => {
-    assert.deepEqual(await lint(POSTER, `/* eslint-disable ${RESTRICTED} */\n${page('<p>名称</p>')}`, OUTPUT), ['3 段落是放说明的'])
-    assert.deepEqual(await lint(POSTER, `/* eslint ${RESTRICTED}: off */\n${page('<p>名称</p>')}`, OUTPUT), ['3 段落是放说明的'])
+    const tip = "export const tip = '名称，编号'\n"
+    assert.deepEqual(await lint(POSTER, `/* eslint-disable ${RESTRICTED} */\n${tip}`, OUTPUT), ['2 文字带了句子标点'])
+    assert.deepEqual(await lint(POSTER, `/* eslint ${RESTRICTED}: off */\n${tip}`, OUTPUT), ['2 文字带了句子标点'])
+    assert.deepEqual(await lint('src/export/Poster.tsx', `// eslint-disable-next-line ${RESTRICTED}\nexport const P = () => <p />\n`, OUTPUT), ['2 导出、画图的代码里不写页面组件', '2 段落是放说明的'])
   })
 })
 

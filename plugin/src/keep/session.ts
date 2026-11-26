@@ -11,8 +11,8 @@ import { CONFIG_PATH, KEEP_DIR, parseConfig, type StylesConfig } from './config.
 export function guide(label = '这个仓库', styles?: StylesConfig): string[] {
   return [
     `${label}用 codekeep 管代码规范（${KEEP_DIR}/）：`,
-    `1. 类型检查、lint、格式检查由 codekeep 在整组（testpace full）里跑，命令和要比的配置写在 ${CONFIG_PATH}。`,
-    '2. 不改松规范：不关规则、不把 error 降成 warn、不调高长度和复杂度上限、不加忽略的路径、不关严格类型选项；不用 eslint 的批量豁免（eslint-suppressions.json），超标的改代码。确实要改，整组会要用户确认：先在对话里用白话讲清改了哪条、为什么只能这样。',
+    `1. 类型检查、lint、格式检查由 codekeep 在整组（testpace full）里跑：lint 由它用项目的 eslint 直接查，别的命令和要比的配置写在 ${CONFIG_PATH}。`,
+    '2. 不改松规范：不关规则、不把 error 降成 warn、不调高长度和复杂度上限、不加忽略的路径、不关严格类型选项；eslint 的批量豁免（eslint-suppressions.json）在整组里不起作用，超标的改代码。确实要改，整组会要用户确认：先在对话里用白话讲清改了哪条、为什么只能这样。',
     '3. 代码里"这里不查"的注释（eslint-disable、@ts-expect-error 这类）必须写理由，比如 // eslint-disable-next-line 规则名 -- 理由；能改代码就改代码，不加这种注释。',
     '4. 提交里不放密钥、密码；测试用的假值写得一眼能看出是假的（比如 test-password-not-real）。',
     ...(styles ? [frontend(styles)] : []),

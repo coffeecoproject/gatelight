@@ -1,4 +1,4 @@
-// codekeep check 的主流程：接没接入、配置写得对不对、先比放松再跑检查、首次接入不问、删掉配置要用户同意、沙箱里不跑。
+// codekeep check 的主流程：接没接入、配置写得对不对、先比放松再跑 lint 和检查、首次接入不问、分叉点配置有不认的字段、删掉配置要用户同意、沙箱里不跑。
 
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
@@ -31,14 +31,14 @@ describe('接入', () => {
   test('首次接入（分叉点上还没有配置）：不比、不问，直接跑检查', () => {
     const { check, ran } = ranLog()
     const repo = keepRepo({ ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'error' }), 'tsconfig.json': TSCONFIG })
-    write(repo, '.codekeep/config.json', keepConfig({ checks: [check('types'), check('lint')], eslint: { config: 'eslint.config.mjs' }, tsconfig: ['tsconfig.json'], secrets: false }))
+    write(repo, '.codekeep/config.json', keepConfig({ checks: [check('types'), check('format')], eslint: { config: 'eslint.config.mjs' }, tsconfig: ['tsconfig.json'], secrets: false }))
     // 同一次改动里 eslint、tsconfig 也放松了：首次接入照样不问
     write(repo, 'eslint.config.mjs', eslintConfig({}))
     write(repo, 'tsconfig.json', TSCONFIG.replace('"strict":true', '"strict":false'))
     const r = codekeep(repo, ['check'])
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /codekeep check：通过。规范配置没有改松（和分叉点上的比）；规范检查都过了（types、lint）。/)
-    assert.deepEqual(ran(), ['types', 'lint'])
+    assert.match(r.out, /codekeep check：通过。规范配置没有改松（和分叉点上的比）；规范检查都过了（lint、types、format）。/)
+    assert.deepEqual(ran(), ['types', 'format'])
   })
 })
 
@@ -124,56 +124,113 @@ describe('先比放松，再依次跑检查', () => {
   })
 })
 
-describe('不用 eslint 的批量豁免：见到就没通过，不问用户', () => {
-  const HEAD = 'codekeep check：没通过，用了 eslint 的批量豁免：'
+describe('lint：配了 eslint 的，codekeep 用项目的 eslint 直接查，跑在检查命令之前', () => {
+  const LINTED = { '.codekeep/config.json': keepConfig({ checks: [{ name: 'types', command: 'true' }], eslint: { config: 'eslint.config.mjs' } }) }
+  const BAD = 'var b = 1\nexport { b }\n'
 
-  test('工作区里任何路径下的 eslint-suppressions.json（git 收的、没被忽略的新文件）：退出码 1，逐个列出，不弹窗、不跑检查；被忽略的不算', () => {
+  test('有错误：退出码 1，说 lint 有几个错误、列出错误（不列警告），检查命令不跑', () => {
     const { check, ran } = ranLog()
-    const repo = keepRepo({ ...CODE, '.gitignore': 'node_modules\ntmp/\n', '.codekeep/config.json': keepConfig({ checks: [check('lint')] }), 'eslint-suppressions.json': '{}\n' })
-    write(repo, 'web/eslint-suppressions.json', '{}\n')
+    const repo = keepRepo({ ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-var': 'error', 'no-console': 'warn' }) })
+    write(repo, '.codekeep/config.json', keepConfig({ checks: [check('types')], eslint: { config: 'eslint.config.mjs' } }))
+    write(repo, 'src/bad.js', `${BAD}console.log(b)\nvar c = 2\nexport { c }\n`)
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /src\/bad\.js\n\s+1:1\s+error\s+.*no-var\n\s+4:1\s+error\s+.*no-var/)
+    assert.doesNotMatch(r.out, /no-console/, '警告不列')
+    assert.match(r.out, /codekeep check：没通过，lint 有 2 个错误（上面列出）/)
+    assert.deepEqual(ran(), [], '检查命令不跑')
+  })
+
+  test('只有警告：通过，通过那一行写"lint，N 条警告"；被忽略的文件、不是代码的文件不查', () => {
+    const { check, ran } = ranLog()
+    const repo = keepRepo({ ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-var': 'error', 'no-console': 'warn' }, "{ ignores: ['src/legacy/**'] }") })
+    write(repo, '.codekeep/config.json', keepConfig({ checks: [check('types')], eslint: { config: 'eslint.config.mjs' } }))
+    write(repo, 'src/warn.js', 'console.log(1)\nconsole.log(2)\n')
+    write(repo, 'src/legacy/old.js', BAD)
+    write(repo, 'notes.txt', 'var x = 1\n')
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /codekeep check：通过。规范配置没有改松（和分叉点上的比）；规范检查都过了（lint，2 条警告、types）。/)
+    assert.deepEqual(ran(), ['types'])
+  })
+
+  test('eslint --suppress-all 生成的豁免文件不起作用：仓库根目录的、被 git 忽略的、名字大小写不同的、建成目录的，lint 有错照样没通过', () => {
+    const repo = keepRepo({ ...CODE, ...LINTED, '.gitignore': 'node_modules\nignored/\n', 'eslint.config.mjs': eslintConfig({ 'no-var': 'error' }) })
+    write(repo, 'src/bad.js', BAD)
+    // 豁免文件是真的：eslint 命令行读了它就不报
+    sh(repo, 'node_modules/.bin/eslint --suppress-all . >/dev/null')
+    assert.equal(sh(repo, 'node_modules/.bin/eslint . >/dev/null && echo ok').trim(), 'ok', '命令行读了豁免文件就过')
+    const generated = readFileSync(join(repo, 'eslint-suppressions.json'), 'utf8')
+    assert.match(generated, /no-var/)
+
+    const fails = (where: string): void => {
+      const r = codekeep(repo, ['check'])
+      assert.equal(r.code, 1, `${where}：${r.out}`)
+      assert.match(r.out, /codekeep check：没通过，lint 有 1 个错误/, where)
+    }
+    fails('根目录')
+    for (const [where, path] of [
+      ['被 git 忽略的', 'ignored/eslint-suppressions.json'],
+      ['名字大小写不同的', 'ESLint-Suppressions.json'],
+      ['建成目录的', 'eslint-suppressions.json/eslint-suppressions.json'],
+    ] as const) {
+      rmSync(join(repo, 'eslint-suppressions.json'), { recursive: true, force: true })
+      rmSync(join(repo, 'ignored'), { recursive: true, force: true })
+      write(repo, path, generated)
+      fails(where)
+    }
+  })
+
+  test('检查命令里带 --suppress-all 本身不算没通过；lint 有错照样不过', () => {
+    const checks = [{ name: 'lint-cli', command: 'true eslint . --suppress-all --suppressions-location lint/suppressions.json' }]
+    const repo = keepRepo({ ...CODE, '.codekeep/config.json': keepConfig({ checks, eslint: { config: 'eslint.config.mjs' } }), 'eslint.config.mjs': eslintConfig({ 'no-var': 'error' }) })
+    let r = codekeep(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /规范检查都过了（lint、lint-cli）/)
+
+    write(repo, 'src/bad.js', BAD)
+    r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /lint 有 1 个错误/)
+  })
+
+  test('lint 跑不起来（规则在 lint 时出错）：退出码 2', () => {
+    const boom = "{ files: ['**/*.js'], plugins: { boom: { rules: { x: { create() { throw new Error('规则坏了') } } } } }, rules: { 'boom/x': 'error' } }"
+    const repo = keepRepo({ ...CODE, ...LINTED, 'eslint.config.mjs': eslintConfig({}, boom) })
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 2, r.out)
+    assert.match(r.out, /codekeep check：lint 没跑成（eslint\.config\.mjs）：.*规则坏了/)
+  })
+})
+
+describe('分叉点上的配置有现在不认的字段', () => {
+  test('老版本的 eslint.suppressions 去掉了、同时 lint 规则改松：照常比，改松的照样列出，另列一项不认的字段，都要用户同意', () => {
+    const before = keepConfig({ checks: [{ name: 'types', command: 'true' }], eslint: { config: 'eslint.config.mjs', suppressions: 'eslint-suppressions.json' } })
+    const repo = keepRepo({ ...CODE, '.codekeep/config.json': before, 'eslint.config.mjs': eslintConfig({ 'no-console': 'error' }) })
+    write(repo, '.codekeep/config.json', keepConfig({ checks: [{ name: 'types', command: 'true' }], eslint: { config: 'eslint.config.mjs' } }))
+    write(repo, 'eslint.config.mjs', eslintConfig({ 'no-console': 'off' }))
     let r = codekeep(repo, ['check'])
     assert.equal(r.code, 1, r.out)
-    assert.ok(r.out.startsWith(`${HEAD}\n`), r.out)
-    assert.match(r.out, /^ {2}✗ 豁免文件 eslint-suppressions\.json$/m)
-    assert.match(r.out, /^ {2}✗ 豁免文件 web\/eslint-suppressions\.json$/m)
-    assert.doesNotMatch(r.out, /^id：/m, '不交给确认工具')
-    assert.deepEqual(ran(), [])
+    const asked = pendingOf(r.out)
+    assert.deepEqual(asked.items, [
+      '分叉点上的 .codekeep/config.json 有现在不认的字段，这几处程序看不出是改松还是改紧（别的照常比了）：',
+      'lint 规则 不许留调试用的 console（no-console） 关掉了：以后不再查这一条',
+    ])
+    assert.match(asked.text, /"eslint" 有未知字段 "suppressions"/)
 
-    rmSync(join(repo, 'eslint-suppressions.json'))
-    rmSync(join(repo, 'web'), { recursive: true })
-    write(repo, 'tmp/eslint-suppressions.json', '{}\n')
+    userAgrees(repo, asked.id, asked.text)
     r = codekeep(repo, ['check'])
     assert.equal(r.code, 0, r.out)
-    assert.deepEqual(ran(), ['lint'])
+    assert.match(r.out, /规范改松 2 项，用户都同意过/)
   })
 
-  test('检查命令带了豁免参数（--suppress-all、--suppress-rule、--suppressions-location）：退出码 1，列出是哪几条检查', () => {
-    const { check, ran } = ranLog()
-    const checks = [
-      { name: 'lint', command: 'eslint . --suppress-all' },
-      { name: 'web-lint', command: 'eslint web --suppress-rule no-console' },
-      { name: 'admin-lint', command: 'eslint admin --suppressions-location lint/suppressions.json' },
-      check('types'),
-    ]
-    const repo = keepRepo({ ...CODE, '.codekeep/config.json': keepConfig({ checks }) })
+  test('配置被删掉、分叉点上的配置有不认的字段：照样读得出来，问删掉配置的那一项', () => {
+    const before = keepConfig({ checks: [{ name: 'types', command: 'true' }], eslint: { config: 'eslint.config.mjs', suppressions: 'eslint-suppressions.json' } })
+    const repo = keepRepo({ ...CODE, '.codekeep/config.json': before, 'eslint.config.mjs': eslintConfig({}) })
+    rmSync(join(repo, '.codekeep'), { recursive: true })
     const r = codekeep(repo, ['check'])
     assert.equal(r.code, 1, r.out)
-    assert.ok(r.out.startsWith(`${HEAD}\n`), r.out)
-    for (const name of ['lint', 'web-lint', 'admin-lint']) assert.match(r.out, new RegExp(`^ {2}✗ 规范检查"${name}"的命令带了豁免参数$`, 'm'))
-    assert.doesNotMatch(r.out, /规范检查"types"的命令带了豁免参数/)
-    assert.doesNotMatch(r.out, /^id：/m, '不交给确认工具')
-    assert.deepEqual(ran(), [])
-  })
-
-  test('首次接入（分叉点上还没有 .codekeep/）也一样没通过', () => {
-    const { check, ran } = ranLog()
-    const repo = keepRepo({ ...CODE, 'eslint-suppressions.json': '{}\n' })
-    write(repo, '.codekeep/config.json', keepConfig({ checks: [check('lint')] }))
-    const r = codekeep(repo, ['check'])
-    assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /^ {2}✗ 豁免文件 eslint-suppressions\.json$/m)
-    assert.doesNotMatch(r.out, /^id：/m)
-    assert.deepEqual(ran(), [])
+    assert.deepEqual(pendingOf(r.out).items, ['删掉了整个 .codekeep/ 目录：以后不再跑规范检查（类型检查、lint、格式），规范改松了也没人发现'])
   })
 })
 
