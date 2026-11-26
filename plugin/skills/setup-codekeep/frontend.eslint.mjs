@@ -29,6 +29,8 @@ const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 
 const DESC_PROPS = []
 /** 前端提示：[调用的对象名, 参数对象里放正文的字段]（message.success('…')、notification.error({ message, description }) 这种）。直接写在参数里的文字都算。 */
 const NOTICE_CALLS = [['message', ['content']], ['notification', ['message', 'title', 'description']]]
+/** 确认框的调用对象：静态的 Modal，和 App.useApp()、Modal.useModal() 拿到的实例（项目里给实例起了别的名字的加进来）。 */
+const CONFIRM_CALLS = ['Modal', 'modal']
 /** 确认框、出错和空状态的正文：[组件名, 参数名]。项目自己封装的确认框、出错条、空状态组件加进来。 */
 const ENTRY_PROPS = [['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle']]
 /** 正文写在子元素里的项目组件（<ErrorBar>连不上服务</ErrorBar>）。 */
@@ -49,7 +51,7 @@ const longer = max => `/^[\\s\\S]{${max + 1},}$/`
 
 // 入口：写在这几处的文字按正文算（16 个字、一句话），不按名字算
 // 放行只对准那一处：都是直接子节点，不用后代（后代会把嵌在里面的标签、按钮、函数参数也放成正文）
-const confirm = "CallExpression[callee.object.name='Modal'][callee.property.name=/^(confirm|info|success|error|warning)$/] > ObjectExpression > Property[key.name='content']"
+const confirm = `CallExpression[callee.object.name=/^(${names(CONFIRM_CALLS)})$/][callee.property.name=/^(confirm|info|success|error|warning)$/] > ObjectExpression > Property[key.name='content']`
 // 写在 parent 下的固定文字：直接写的，和写成二选一（a ? '…' : '…'）、带条件（a && '…'）的，再套一层二选一的也算
 const branch = ':matches(ConditionalExpression, LogicalExpression)'
 const strings = parent =>

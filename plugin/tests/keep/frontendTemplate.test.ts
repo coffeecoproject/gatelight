@@ -119,6 +119,8 @@ describe('提示、确认框正文、报错按正文算：16 个字、一句话'
     'message.* 的直接参数写成二选一': text => `<span onClick={() => message.error(a ? '${text}' : '已保存')} />`,
     'Modal.confirm 的 content': text => `<span onClick={() => Modal.confirm({ title: '删除订单', content: '${text}' })} />`,
     'Modal.info/success/error/warning 的 content': text => `<span onClick={() => Modal.warning({ content: '${text}' })} />`,
+    'App.useApp()、Modal.useModal() 拿到的 modal.confirm 的 content': text => `<span onClick={() => modal.confirm({ title: '删除订单', content: '${text}' })} />`,
+    'modal.info/success/error/warning 的 content': text => `<span onClick={() => modal.warning({ content: '${text}' })} />`,
     '表单 rules 的 message': text => `<Form.Item name='name' rules={[{ required: true, message: '${text}' }]} />`,
     'Popconfirm 的 description': text => `<Popconfirm title='删除订单' description='${text}' />`,
     'Empty 的 description': text => `<Empty description={'${text}'} />`,
@@ -140,10 +142,18 @@ describe('提示、确认框正文、报错按正文算：16 个字、一句话'
     })
   }
 
-  test('Modal 别的方法、别的对象的 content、不在入口里的二选一不算入口：按名字查', async () => {
+  test('Modal 别的方法、别的对象的 content、不在 CONFIRM_CALLS 里的对象的 confirm、不在入口里的二选一不算入口：按名字查', async () => {
     assert.deepEqual(
-      await lint(PAGE, page(`<span onClick={() => Modal.open({ content: '${OK}' })} />`, `<span onClick={() => show({ content: '${OK}' })} />`, `<span title={a ? '${OK}' : '无'} />`)),
-      ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点'],
+      await lint(
+        PAGE,
+        page(
+          `<span onClick={() => Modal.open({ content: '${OK}' })} />`,
+          `<span onClick={() => show({ content: '${OK}' })} />`,
+          `<span onClick={() => other.confirm({ content: '${OK}' })} />`,
+          `<span title={a ? '${OK}' : '无'} />`,
+        ),
+      ),
+      ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点', '5 文字带了句子标点'],
     )
   })
 
@@ -285,6 +295,16 @@ describe('项目自己的入口组件（按项目填）', () => {
     assert.deepEqual(await lint(PAGE, code), ['2 文字带了句子标点', '3 文字超过 12 个字', '4 这个参数是放说明的', '5 文字带了句子标点'])
     const eslint = project({ ENTRY_PROPS: "[['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle'], ['ConfirmBar', 'text'], ['Tip', 'description']]" })
     assert.deepEqual(await lint(PAGE, code, eslint), ['3 正文超过 16 个字', '5 文字带了句子标点'])
+  })
+
+  test('CONFIRM_CALLS 加上的实例名，它的 confirm 这些的 content 按正文算', async () => {
+    const code = page(
+      "<span onClick={() => dialog.confirm({ content: '删掉后找不回来，要删吗？' })} />",
+      "<span onClick={() => dialog.warning({ content: '删掉后就再也找不回来了请先导出一份' })} />",
+      "<span onClick={() => dialog.confirm({ content: '删掉后找不回来。要删吗' })} />",
+    )
+    assert.deepEqual(await lint(PAGE, code), ['2 文字带了句子标点', '3 文字超过 12 个字', '4 文字带了句子标点'])
+    assert.deepEqual(await lint(PAGE, code, project({ CONFIRM_CALLS: "['Modal', 'modal', 'dialog']" })), ['3 正文超过 16 个字', '4 正文不止一句'])
   })
 
   test('ENTRY_CHILDREN 加上的组件，子元素里的文字按正文算', async () => {
