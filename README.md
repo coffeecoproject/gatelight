@@ -117,7 +117,7 @@ claude plugin uninstall modwall@modwall
 
 - **前端规则**：有前端代码的项目，接入时照技能里的模板（`plugin/skills/setup-codekeep/frontend.eslint.mjs`，先做 React 加 antd）加 lint 规则：页面上不加无必要的说明文字；用了组件不在页面里写样式、写具体的值去补，具体的值只写在主题和组件层；这些文件里不能用注释就地关规则。方案见 [前端规范方案.md](前端规范方案.md)。
 
-从 0.22 以前升级的项目：删掉 `eslint-suppressions.json`，把旧代码改到 lint 全过；`.codekeep/config.json` 里去掉 `eslint.suppressions`（现在算写错）和 `checks` 里的 lint 命令（codekeep 自己跑，留着会跑两遍；删掉它整组会问一次）。前端规则模板的 `DESC_PROPS` 改成了 `[组件名, 参数名]`，`NOTICE_CALLS` 改成了 `[对象名, 正文字段]`，新加了 `OUTPUT`、`TEST_IMPORTS` 两项，照新模板改。接入了 testcraft 的项目补上默认清单条目 `docs-rules.md`（见 `gatelight:setup-testcraft` 技能）。
+从 0.22 以前升级的项目：删掉 `eslint-suppressions.json`，把旧代码改到 lint 全过；`.codekeep/config.json` 里去掉 `eslint.suppressions`（现在算写错）和 `checks` 里的 lint 命令（codekeep 自己跑，留着会跑两遍；删掉它整组会问一次）。前端规则模板的 `DESC_PROPS` 改成了 `[组件名, 参数名]`，`NOTICE_CALLS` 改成了 `[对象名, 正文字段]`，新加了 `OUTPUT`、`TEST_IMPORTS`、`CONFIRM_CALLS`（0.22.1）三项，照新模板改。接入了 testcraft 的项目补上默认清单条目 `docs-rules.md`（见 `gatelight:setup-testcraft` 技能）。
 
 不在改文件时拦（lint 自己会报），也没有停止门（整组兜底）。接入步骤见 [plugin/skills/setup-codekeep/SKILL.md](plugin/skills/setup-codekeep/SKILL.md)（`gatelight:setup-codekeep` 技能）。
 
