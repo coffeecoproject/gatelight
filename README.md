@@ -110,10 +110,12 @@ claude plugin uninstall modwall@modwall
 
 仓库里有 `.codekeep/` 目录才启用。启用后会话开始时说明规范的约定（不改松规范，"这里不查"的注释要写理由，提交里不放密钥），`testpace full` 在测试之前跑一次 `codekeep check`，不用另外登记。它依次做：
 
-- **配置**：`.codekeep/config.json` 写得对不对：`checks` 是规范检查的命令（直接写工具命令，不经过项目的脚本），`eslint` 写配置文件，`tsconfig` 写要比的 tsconfig，`prettier` 开着时比格式检查查哪些文件，`secrets` 开着时扫密钥。
-- **改松要你同意**：和分叉点那一版比。eslint 对每个代码文件算实际生效的规则（用项目自己装的 eslint），规则关了、没了、error 降成 warn、长度和复杂度上限调大、文件不再被 lint 算改松；prettier 对每个文件算格式检查查不查，原来查、现在不查了（加进了忽略文件）算改松；tsconfig 用 `tsc --showConfig` 比，严格选项关了、开了 `skipLibCheck`、`include` 少了、`exclude` 多了算改松；还有批量豁免文件（`eslint-suppressions.json`）多了豁免、`.gitleaksignore` 多了条目、gitleaks 或 biome 的配置改了、检查命令改了或删了、关了密钥扫描、删了配置。分叉点那一版在系统临时目录的临时 worktree 里算（链接现在的 `node_modules`），算不出来的不当成没改松，列成"程序看不出"的一项。改松的要你在弹窗里同意，同意按项记；加规则、调严不问；首次接入不问。
+- **配置**：`.codekeep/config.json` 写得对不对：`checks` 是规范检查的命令（直接写工具命令，不经过项目的脚本），`eslint` 写配置文件，`tsconfig` 写要比的 tsconfig，`prettier` 开着时比格式检查查哪些文件，`secrets` 开着时扫密钥，`styles` 写前端的主题文件和组件层目录。
+- **改松要你同意**：和分叉点那一版比。eslint 对每个代码文件算实际生效的规则（用项目自己装的 eslint），规则关了、没了、error 降成 warn、长度和复杂度上限调大、文件不再被 lint、关掉 `noInlineConfig`（代码里的注释又能就地关规则）算改松；prettier 对每个文件算格式检查查不查，原来查、现在不查了（加进了忽略文件）算改松；tsconfig 用 `tsc --showConfig` 比，严格选项关了、开了 `skipLibCheck`、`include` 少了、`exclude` 多了算改松；写了 `styles` 的，主题文件、组件层目录里的样式文件新加、删掉、改了也要同意（具体的颜色、尺寸只准写在这两处）；还有批量豁免文件（`eslint-suppressions.json`）多了豁免、`.gitleaksignore` 多了条目、gitleaks 或 biome 的配置改了、检查命令改了或删了、关了密钥扫描、删了配置。分叉点那一版在系统临时目录的临时 worktree 里算（链接现在的 `node_modules`），算不出来的不当成没改松，列成"程序看不出"的一项。改松的要你在弹窗里同意，同意按项记；加规则、调严不问；首次接入不问。
 - **跑检查**：依次跑 `checks` 里的命令，一条没过就停。
 - **扫密钥**：用 gitleaks 扫分叉点之后的提交和没提交的改动，输出里打码。没装 gitleaks 算没通过，说怎么装，不替你装。
+
+- **前端规则**：有前端代码的项目，接入时照技能里的模板（`plugin/skills/setup-codekeep/frontend.eslint.mjs`，先做 React 加 antd）加 lint 规则：前端代码里的中文默认只是短名字（12 个字、不带句子标点），提示、确认框正文、出错和空状态的那一句 16 个字，后台返回的 24 个字，都只准一句；段落、`extra`、`tooltip` 这类专门放说明的位置不准用；页面和业务组件里只准用组件和主题给的档位，不准写死数字、颜色、长度，`style`、`className` 这些写样式的路都堵上；这些文件开 `noInlineConfig`，不能用注释就地关规则。方案见 [前端规范方案.md](前端规范方案.md)。
 
 不在改文件时拦（lint 自己会报），也没有停止门（整组兜底）。接入步骤见 [plugin/skills/setup-codekeep/SKILL.md](plugin/skills/setup-codekeep/SKILL.md)（`gatelight:setup-codekeep` 技能）。
 

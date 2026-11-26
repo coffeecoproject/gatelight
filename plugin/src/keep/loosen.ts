@@ -74,6 +74,12 @@ export function configItems(before: Config, now: Config): ConfirmItem[] {
     items.push({ before: stable(['prettier', true]), after: stable(['prettier', false]), text: '不再比格式检查查哪些文件（关掉了 prettier 一项）：以后往忽略文件里加路径、躲开格式检查，程序看不出来' })
   }
   if (before.secrets && !now.secrets) items.push({ before: stable(['secrets', true]), after: stable(['secrets', false]), text: '关掉了密钥扫描（secrets）：以后提交里带了密钥、密码，整组不再拦' })
+  for (const path of before.styles?.theme.filter(item => !now.styles?.theme.includes(item)) ?? []) {
+    items.push({ before: stable(['styles.theme', path]), after: '', text: `不再管主题文件 ${path}（从 styles 里去掉了）：以后改它不再问你` })
+  }
+  for (const dir of before.styles?.ui.filter(item => !now.styles?.ui.includes(item)) ?? []) {
+    items.push({ before: stable(['styles.ui', dir]), after: '', text: `不再管组件层目录 ${dir} 里的样式文件（从 styles 里去掉了）：以后改这些样式不再问你` })
+  }
   return items
 }
 

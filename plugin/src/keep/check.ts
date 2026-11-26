@@ -1,6 +1,6 @@
 // codekeep check：整组里"代码规范"的那一段（见 full.ts），也可以单独跑。依次做四件事，一件没过就停：
 //   1. 配置写得对不对（.codekeep/config.json），写到的文件在不在；现在这一版 eslint、prettier、tsconfig 生效的配置算不算得出来。
-//   2. 和分叉点比，规范改松了哪些（loosen.ts、eslint.ts、prettier.ts、tsconfig.ts；biome 只看配置文件改没改）。放松的条目交给底座的用户确认（askUser），
+//   2. 和分叉点比，规范改松了哪些（loosen.ts、eslint.ts、prettier.ts、tsconfig.ts；biome 只看配置文件改没改），主题、组件层的样式改了哪些（styles.ts）。放松的条目交给底座的用户确认（askUser），
 //      还没同意的这一段不过，照底座给的话让 agent 调确认工具。分叉点上还没有配置（首次接入）的不比、不问。
 //      分叉点那一版算不出来的（工具在那一版上跑不起来），不当成没放松，列成"程序看不出"的一项，问。
 //   3. 依次跑 checks 里的命令（从仓库根目录用 sh 跑），一条没过就停。
@@ -23,6 +23,7 @@ import { withForkTree } from './forktree.ts'
 import { BIOME_CONFIGS, biomeItem, configItems, GITLEAKS_CONFIG, GITLEAKS_IGNORE, gitleaksItems, removedItem, suppressionsItem } from './loosen.ts'
 import { checkedFiles, loadPrettier, prettierItem } from './prettier.ts'
 import { scanSecrets } from './secrets.ts'
+import { stylesItems } from './styles.ts'
 import { findTsc, type TsSettings, tsconfigItem, tsSettings } from './tsconfig.ts'
 
 /** 弹窗开头说这是什么的半句。 */
@@ -164,6 +165,7 @@ async function loosened(root: string, fork: string, beforeText: string | undefin
     const item = biomeItem(path, judgingFile(root, fork, path))
     if (item) items.push(item)
   }
+  if (before.styles && now.styles) items.push(...stylesItems(root, fork, before.styles, now.styles))
   return { items, reasons: tools.reasons }
 }
 

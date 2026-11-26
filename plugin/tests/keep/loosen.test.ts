@@ -54,6 +54,33 @@ describe('.codekeep/config.json 改松了哪些', () => {
   })
 })
 
+describe('styles（主题文件、组件层目录）去掉了哪些', () => {
+  const STYLES = { theme: ['src/theme.ts', 'admin/src/theme.ts'], ui: ['src/ui', 'admin/src/ui'] }
+
+  test('从 styles 里去掉一个主题文件、一个组件层目录：各算一项', () => {
+    const before = config({ styles: STYLES })
+    const texts = configItems(before, config({ styles: { theme: ['src/theme.ts'], ui: ['admin/src/ui'] } })).map(item => item.text)
+    assert.deepEqual(texts, [
+      '不再管主题文件 admin/src/theme.ts（从 styles 里去掉了）：以后改它不再问你',
+      '不再管组件层目录 src/ui 里的样式文件（从 styles 里去掉了）：以后改这些样式不再问你',
+    ])
+  })
+
+  test('整个去掉 styles：写着的每个路径各算一项', () => {
+    assert.deepEqual(configItems(config({ styles: STYLES }), config()).map(item => item.text), [
+      '不再管主题文件 src/theme.ts（从 styles 里去掉了）：以后改它不再问你',
+      '不再管主题文件 admin/src/theme.ts（从 styles 里去掉了）：以后改它不再问你',
+      '不再管组件层目录 src/ui 里的样式文件（从 styles 里去掉了）：以后改这些样式不再问你',
+      '不再管组件层目录 admin/src/ui 里的样式文件（从 styles 里去掉了）：以后改这些样式不再问你',
+    ])
+  })
+
+  test('新写上 styles、往里加路径：不问', () => {
+    assert.deepEqual(configItems(config(), config({ styles: STYLES })), [])
+    assert.deepEqual(configItems(config({ styles: { theme: ['src/theme.ts'] } }), config({ styles: STYLES })), [])
+  })
+})
+
 describe('eslint 的批量豁免文件', () => {
   const file = (counts: Record<string, Record<string, number>>): string =>
     JSON.stringify(Object.fromEntries(Object.entries(counts).map(([path, rules]) => [path, Object.fromEntries(Object.entries(rules).map(([rule, count]) => [rule, { count }]))])))
