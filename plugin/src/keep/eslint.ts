@@ -27,8 +27,18 @@ export type FileRules = Map<string, Effective | undefined>
 /** eslint 查的代码文件。 */
 export const isCode = (path: string): boolean => /\.[cm]?[jt]sx?$/.test(path)
 
+interface LintMessage {
+  severity: number
+}
+interface LintResult {
+  errorCount: number
+  warningCount: number
+  messages: LintMessage[]
+}
 interface EslintInstance {
   isPathIgnored(path: string): Promise<boolean>
+  lintFiles(paths: string[]): Promise<LintResult[]>
+  loadFormatter(name: string): Promise<{ format(results: LintResult[]): string | Promise<string> }>
   calculateConfigForFile(path: string): Promise<{ rules?: Record<string, unknown>; linterOptions?: { reportUnusedDisableDirectives?: unknown; noInlineConfig?: unknown } } | undefined>
 }
 type EslintClass = new (options: { cwd: string; overrideConfigFile: string }) => EslintInstance
@@ -81,6 +91,30 @@ export async function fileRules(eslint: EslintClass, tree: string, config: strin
   return result
 }
 
+/** lint 的结果：错误、警告各几条，有错误时是只列错误的报告。 */
+export interface Linted {
+  errors: number
+  warnings: number
+  report: string
+}
+
+/**
+ * 用项目自己的 eslint 程序接口跑一遍 lint，查 files（相对 root、被 lint 的代码文件）。程序接口不读批量豁免文件
+ * （eslint-suppressions.json 只在 eslint 命令行里起作用），所以豁免文件放在哪、叫什么都不影响结果。跑不起来时抛错。
+ */
+export async function lint(eslint: EslintClass, root: string, config: string, files: string[]): Promise<Linted> {
+  const instance = new eslint({ cwd: root, overrideConfigFile: join(root, config) })
+  const results = await instance.lintFiles(files.map(file => join(root, file)))
+  const errors = results.reduce((sum, result) => sum + result.errorCount, 0)
+  const warnings = results.reduce((sum, result) => sum + result.warningCount, 0)
+  if (errors === 0) return { errors, warnings, report: '' }
+  const onlyErrors = results
+    .filter(result => result.errorCount > 0)
+    .map(result => ({ ...result, warningCount: 0, fixableWarningCount: 0, messages: result.messages.filter(message => message.severity === 2) }))
+  const formatter = await instance.loadFormatter('stylish')
+  return { errors, warnings, report: await formatter.format(onlyErrors) }
+}
+
 /** 键按字母排的 JSON：参数一样、写的顺序不同算一样。 */
 export function stable(value: unknown): string {
   return JSON.stringify(value, (_key, item: unknown) =>
@@ -117,7 +151,7 @@ const RULE_PLAIN: Record<string, string> = {
 }
 
 /** 规则在弹窗里的叫法：白话（规则名），没有白话的只写规则名。 */
-export function ruleName(rule: string): string {
+function ruleName(rule: string): string {
   const plain = RULE_PLAIN[rule] ?? LIMITS[rule]?.what
   return plain ? `${plain}（${rule}）` : rule
 }
@@ -194,51 +228,76 @@ function changesOf(before: Effective, now: Effective): Change[] {
 const WHOLE = 300
 /** 改了的地方前后各带几个字。 */
 const AROUND = 30
-/** 改了的地方最多列几处。 */
-const PLACES = 5
 
-/** 两段只差一部分的文字：各取第一处不同的地方，前后带几个字。 */
+/** 两段只差一部分的文字：从第一处不同到最后一处不同，前后各带几个字。按字算，不切坏 emoji。 */
 function around(was: string, is: string): [string, string] {
+  const [a, b] = [[...was], [...is]]
   let start = 0
-  while (start < was.length && start < is.length && was[start] === is[start]) start++
+  while (start < a.length && start < b.length && a[start] === b[start]) start++
   let end = 0
-  while (end < was.length - start && end < is.length - start && was[was.length - 1 - end] === is[is.length - 1 - end]) end++
-  const cut = (text: string): string => {
+  while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++
+  const cut = (chars: string[]): string => {
     const from = Math.max(0, start - AROUND)
-    const to = Math.min(text.length, text.length - end + AROUND)
-    return `${from > 0 ? '…' : ''}${text.slice(from, to)}${to < text.length ? '…' : ''}`
+    const to = Math.min(chars.length, chars.length - end + AROUND)
+    return `${from > 0 ? '…' : ''}${chars.slice(from, to).join('')}${to < chars.length ? '…' : ''}`
   }
-  return [cut(was), cut(is)]
+  return [cut(a), cut(b)]
 }
 
-/** 一条参数太长时的简写：前面一段。 */
-const head = (text: string): string => (text.length > AROUND * 4 ? `${text.slice(0, AROUND * 4)}…` : text)
-
-/** 参数很长（比如一长串选择器）时只列改了的几处：个数一样的逐个对，个数不一样的列多了、少了的。 */
-function placesChanged(was: unknown[], is: unknown[]): string[] {
-  const lines: string[] = []
-  let count = 0
-  if (was.length === is.length) {
-    for (let index = 0; index < was.length; index++) {
-      const [before, after] = [stable(was[index]), stable(is[index])]
-      if (before === after) continue
-      count++
-      if (count > PLACES) continue
-      const [shortBefore, shortAfter] = around(before, after)
-      lines.push(`第 ${index + 1} 项 原来：${shortBefore}`, `第 ${index + 1} 项 现在：${shortAfter}`)
-    }
-  } else {
-    const after = new Set(is.map(item => stable(item)))
-    const before = new Set(was.map(item => stable(item)))
-    for (const [mark, list, other] of [['少了', was, after], ['多了', is, before]] as const) {
-      for (const item of list.map(entry => stable(entry))) {
-        if (other.has(item)) continue
-        count++
-        if (count <= PLACES) lines.push(`${mark}：${head(item)}`)
-      }
+/** 两串逐项对齐（最长公共子序列）：没变的项对上，剩下的是删掉的和加上的。 */
+function align(was: string[], is: string[]): { kind: 'same' | 'gone' | 'new'; text: string; at: number }[] {
+  const longest = was.map(() => new Array<number>(is.length + 1).fill(0))
+  longest.push(new Array<number>(is.length + 1).fill(0))
+  for (let i = was.length - 1; i >= 0; i--) {
+    for (let j = is.length - 1; j >= 0; j--) {
+      longest[i]![j] = was[i] === is[j] ? longest[i + 1]![j + 1]! + 1 : Math.max(longest[i + 1]![j]!, longest[i]![j + 1]!)
     }
   }
-  if (count > PLACES) lines.push(`……还有 ${count - PLACES} 处`)
+  const steps: { kind: 'same' | 'gone' | 'new'; text: string; at: number }[] = []
+  let [i, j] = [0, 0]
+  while (i < was.length || j < is.length) {
+    if (i < was.length && j < is.length && was[i] === is[j]) {
+      steps.push({ kind: 'same', text: was[i]!, at: j })
+      i++
+      j++
+    } else if (j < is.length && (i === was.length || longest[i + 1]![j]! < longest[i]![j + 1]!)) {
+      steps.push({ kind: 'new', text: is[j]!, at: j })
+      j++
+    } else {
+      steps.push({ kind: 'gone', text: was[i]!, at: i })
+      i++
+    }
+  }
+  return steps
+}
+
+/**
+ * 参数很长（比如一长串选择器）时只列改了的地方，一处不漏：两版逐项对齐，没变的不列；
+ * 同一段里删一项、加一项的配成"改了"，只列改了的那段，前后带几个字；多出来的整项列出来。
+ */
+function placesChanged(was: unknown[], is: unknown[]): string[] {
+  const lines: string[] = []
+  const steps = align(was.map(item => stable(item)), is.map(item => stable(item)))
+  let index = 0
+  while (index < steps.length) {
+    if (steps[index]!.kind === 'same') {
+      index++
+      continue
+    }
+    const gone: { text: string; at: number }[] = []
+    const added: { text: string; at: number }[] = []
+    while (index < steps.length && steps[index]!.kind !== 'same') {
+      const step = steps[index++]!
+      ;(step.kind === 'gone' ? gone : added).push(step)
+    }
+    const pairs = Math.min(gone.length, added.length)
+    for (let k = 0; k < pairs; k++) {
+      const [shortBefore, shortAfter] = around(gone[k]!.text, added[k]!.text)
+      lines.push(`第 ${added[k]!.at + 1} 项 原来：${shortBefore}`, `第 ${added[k]!.at + 1} 项 现在：${shortAfter}`)
+    }
+    for (const item of gone.slice(pairs)) lines.push(`少了原来的第 ${item.at + 1} 项：${item.text}`)
+    for (const item of added.slice(pairs)) lines.push(`多了现在的第 ${item.at + 1} 项：${item.text}`)
+  }
   return lines
 }
 

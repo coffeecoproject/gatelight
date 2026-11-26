@@ -14,7 +14,10 @@ const THEME = ['src/theme.ts']
 const UI = ['src/ui/**']
 /** 前端里的测试和测试用的辅助代码：不管。 */
 const TESTS = ['**/*.{test,spec}.{ts,tsx,js,jsx}', '**/__tests__/**']
-/** 生成下载文件、画图的代码（导出 Excel、canvas 画的海报这类）：做出来的不在页面上，不查具体的值，文字照查；没有就留空。 */
+/** 上面那几处在 import 里的写法（正则）：页面不准 import 它们，不然放进测试目录的组件就绕开了规则。TESTS 里加了别的目录的，这里也加上；斜杠写成 \\x2F（规则的写法里不能有 /）。 */
+const TEST_IMPORTS = '(^|\\x2F)__tests__(\\x2F|$)|\\.(test|spec)(\\.[cm]?[jt]sx?)?$'
+
+/** 生成下载文件、画图的代码（导出 Excel、canvas 画的海报这类）：做出来的不在页面上，不查具体的值，文字照查；不准写 JSX（页面组件放进来就绕开了）。没有就留空。 */
 const OUTPUT = []
 /** 后台代码；没有就留空。 */
 const BACK = []
@@ -24,8 +27,8 @@ const BACK_SKIP = []
 const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 'step', 'tabIndex', 'count', 'defaultValue', 'pageSize', 'mouseEnterDelay', 'mouseLeaveDelay', 'duration', 'maxCount', 'level']
 /** 项目自己组件里专门放说明的参数（副标题、帮助文字这类）：[组件名, 参数名]。确认框、出错和空状态组件的正文参数不放这里，放 ENTRY_PROPS。 */
 const DESC_PROPS = []
-/** 前端提示：调用的对象名（message.success(...) 这种）。 */
-const NOTICE_CALLS = ['message', 'notification']
+/** 前端提示：[调用的对象名, 参数对象里放正文的字段]（message.success('…')、notification.error({ message, description }) 这种）。直接写在参数里的文字都算。 */
+const NOTICE_CALLS = [['message', ['content']], ['notification', ['message', 'title', 'description']]]
 /** 确认框、出错和空状态的正文：[组件名, 参数名]。项目自己封装的确认框、出错条、空状态组件加进来。 */
 const ENTRY_PROPS = [['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle']]
 /** 正文写在子元素里的项目组件（<ErrorBar>连不上服务</ErrorBar>）。 */
@@ -45,24 +48,26 @@ const names = list => list.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&
 const longer = max => `/^[\\s\\S]{${max + 1},}$/`
 
 // 入口：写在这几处的文字按正文算（16 个字、一句话），不按名字算
-const callee = `CallExpression[callee.object.name=/^(${names(NOTICE_CALLS)})$/]`
-const confirm = "CallExpression[callee.object.name='Modal'][callee.property.name=/^(confirm|info|success|error|warning)$/] Property[key.name='content']"
-// 写在 parent 下的固定文字：直接写的，和写成二选一（a ? '…' : '…'）、带条件（a && '…'）的
-const strings = parent => [
-  `${parent} > Literal`,
-  `${parent} > TemplateLiteral > TemplateElement`,
-  `${parent} > :matches(ConditionalExpression, LogicalExpression) Literal`,
-  `${parent} > :matches(ConditionalExpression, LogicalExpression) TemplateElement`,
-]
-// 出错条：antd 的 Alert 只准 error、warning 两种（写成两者二选一的也算），它的 title 就是出错那一句；description 照样禁
+// 放行只对准那一处：都是直接子节点，不用后代（后代会把嵌在里面的标签、按钮、函数参数也放成正文）
+const confirm = "CallExpression[callee.object.name='Modal'][callee.property.name=/^(confirm|info|success|error|warning)$/] > ObjectExpression > Property[key.name='content']"
+// 写在 parent 下的固定文字：直接写的，和写成二选一（a ? '…' : '…'）、带条件（a && '…'）的，再套一层二选一的也算
+const branch = ':matches(ConditionalExpression, LogicalExpression)'
+const strings = parent =>
+  [parent, `${parent} > ${branch}`, `${parent} > ${branch} > ${branch}`].flatMap(at => [`${at} > Literal`, `${at} > TemplateLiteral > TemplateElement`])
+// 出错条：antd 的 Alert 只准 error、warning 两种（写成两者二选一的也算），它的 title 就是出错那一句；description 照样禁。
+// type 只写一次、没有展开写法（{...props}）的才算：React 取最后一个值，写两次、展开的看不出最后是哪种
 const ERROR_LEVEL = '/^(error|warning)$/'
-const errorType = `JSXAttribute[name.name='type']:matches([value.value=${ERROR_LEVEL}], :has(JSXExpressionContainer > ConditionalExpression[consequent.value=${ERROR_LEVEL}][alternate.value=${ERROR_LEVEL}]))`
-const errorTitle = `JSXOpeningElement[name.name='Alert']:has(> ${errorType}) > JSXAttribute[name.name='title']`
+const errorType = `JSXAttribute[name.name='type']:matches([value.value=${ERROR_LEVEL}], [value.expression.value=${ERROR_LEVEL}], [value.expression.type='ConditionalExpression'][value.expression.consequent.value=${ERROR_LEVEL}][value.expression.alternate.value=${ERROR_LEVEL}])`
+const typeTwice = "JSXAttribute[name.name='type'] ~ JSXAttribute[name.name='type']"
+const errorAlert = `JSXOpeningElement[name.name='Alert']:has(> ${errorType}):not(:has(> JSXSpreadAttribute)):not(:has(> ${typeTwice}))`
+const errorTitle = `${errorAlert} > JSXAttribute[name.name='title']`
 const ENTRY = [
   `${errorTitle} > Literal`,
   ...strings(`${errorTitle} > JSXExpressionContainer`),
-  `${callee} Literal`,
-  `${callee} TemplateElement`,
+  ...NOTICE_CALLS.flatMap(([object, fields]) => {
+    const call = `CallExpression[callee.object.name='${object}']`
+    return [...strings(call), ...strings(`${call} > ObjectExpression > Property[key.name=/^(${names(fields)})$/]`)]
+  }),
   ...strings(confirm),
   // 表单校验没过时的那一句
   ...strings("JSXAttribute[name.name='rules'] Property[key.name='message']"),
@@ -107,12 +112,14 @@ const descPlaces = [
     message: `这个参数是放说明的${NAME_HINT}`,
   },
   {
-    selector: `JSXOpeningElement[name.name='Alert']:not(:has(> ${errorType}))`,
+    selector: `JSXOpeningElement[name.name='Alert']:matches(:not(:has(> ${errorType})), :has(> JSXSpreadAttribute), :has(> ${typeTwice}))`,
     message: `说明用的横幅${NAME_HINT}`,
   },
 ]
 
 const NUMBER = 'Literal[raw=/^\\d/]'
+/** 颜色（#fff、rgb()、oklch() 这类，大小写都算）和带单位的长度；前后的空格不算。 */
+const COLOR_OR_LENGTH = '/^\\s*(#[0-9a-f]{3,8}|-?\\d+(\\.\\d+)?(px|%|rem|em|vh|vw))\\s*$|^\\s*(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\\(/i'
 const values = [
   { selector: `JSXAttribute:not([name.name=/^(${names(NUMBER_OK)})$/]) > JSXExpressionContainer > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
   { selector: `JSXAttribute:not([name.name=/^(${names(NUMBER_OK)})$/]) > JSXExpressionContainer > UnaryExpression > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
@@ -122,7 +129,9 @@ const values = [
     selector: `ObjectExpression:has(> Property[key.name=/^(dataIndex|render)$/]) > Property[key.name='width'] > ${NUMBER}`,
     message: `写死的列宽（用主题里的几档，或不写）${STYLE_HINT}`,
   },
-  { selector: 'Literal[value=/^(#[0-9a-fA-F]{3,8}$|(rgb|hsl)a?\\(|-?\\d+(\\.\\d+)?(px|%|rem|em|vh|vw)$)/]', message: `写死的颜色或长度${STYLE_HINT}` },
+  { selector: `Literal[value=${COLOR_OR_LENGTH}]`, message: `写死的颜色或长度${STYLE_HINT}` },
+  // 模板字符串拼的：`rgb(${r}, 0, 0)`、`${width}px`
+  { selector: `TemplateElement:matches([value.cooked=${COLOR_OR_LENGTH}], [value.cooked=/^(px|rem|vh|vw)\\b/])`, message: `写死的颜色或长度${STYLE_HINT}` },
 ]
 const STYLE_FILE = 'ImportDeclaration[source.value=/\\.(css|less|s[ac]ss|styl)$/]'
 const channels = (allowed = []) => [
@@ -133,6 +142,10 @@ const channels = (allowed = []) => [
   { selector: "JSXOpeningElement[name.name='br']", message: `占位${STYLE_HINT}` },
   { selector: "JSXElement[children.length=0] > JSXOpeningElement[name.name=/^(div|span)$/][attributes.length=0]", message: `占位${STYLE_HINT}` },
 ]
+const fromTests = {
+  selector: `:matches(ImportDeclaration, ImportExpression, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/${TEST_IMPORTS}/]`,
+  message: '页面不用测试目录里的代码：测试目录不查规则，组件放进去就绕开了（codekeep 前端规则）',
+}
 
 const RESTRICTED = 'no-restricted-syntax'
 const noDisable = { '@eslint-community/eslint-comments/no-restricted-disable': ['error', RESTRICTED] }
@@ -142,14 +155,15 @@ const front = {
   linterOptions: { noInlineConfig: true },
 }
 
-/** 页面和业务组件的规则；checkValues 为 false 时不查具体的值（导出、画图的代码）。 */
-const pageRules = checkValues => ({
+/** 页面和业务组件的规则；output 为 true 时是导出、画图的代码：不查具体的值，不准写 JSX。 */
+const pageRules = output => ({
   [RESTRICTED]: [
     'error',
     ...nameText,
     ...entryText,
     ...descPlaces,
-    ...(checkValues ? values : []),
+    ...(output ? [{ selector: ':matches(JSXElement, JSXFragment)', message: '导出、画图的代码里不写页面组件：这里不查具体的值，页面上的放回页面目录（codekeep 前端规则）' }] : values),
+    fromTests,
     ...channels(),
     { selector: "JSXOpeningElement[name.name='ConfigProvider']", message: `就地改主题${STYLE_HINT}` },
     { selector: STYLE_FILE, message: `引样式文件${STYLE_HINT}` },
@@ -159,9 +173,9 @@ const pageRules = checkValues => ({
 
 export default [
   // 页面和业务组件：只准用组件和主题给的档位
-  { ...front, files: FRONT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(true) },
+  { ...front, files: FRONT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(false) },
   // 导出、画图：做出来的文件和图片不在页面上，具体的值不查
-  ...(OUTPUT.length ? [{ ...front, files: OUTPUT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(false) }] : []),
+  ...(OUTPUT.length ? [{ ...front, files: OUTPUT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(true) }] : []),
   // 组件层：可以用 className 指向同目录的样式文件、在根上包 ConfigProvider 接主题；不准写行内样式和具体的值
   {
     ...front,
@@ -174,6 +188,7 @@ export default [
         ...entryText,
         ...descPlaces,
         ...values,
+        fromTests,
         ...channels(['className', 'classNames', 'rootClassName']),
         { selector: `${STYLE_FILE}:not([source.value=/^\\.\\x2F[^\\x2F]+$/])`, message: `只引同目录的样式文件${STYLE_HINT}` },
       ],

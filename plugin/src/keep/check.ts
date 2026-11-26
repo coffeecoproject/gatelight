@@ -1,16 +1,17 @@
 // codekeep check：整组里"代码规范"的那一段（见 full.ts），也可以单独跑。依次做四件事，一件没过就停：
 //   1. 配置写得对不对（.codekeep/config.json），写到的文件在不在；现在这一版 eslint、prettier、tsconfig 生效的配置算不算得出来；
-//      没用 eslint 的批量豁免（旧代码超标的改代码，不记豁免）。
 //   2. 和分叉点比，规范改松了哪些（loosen.ts、eslint.ts、prettier.ts、tsconfig.ts；biome 只看配置文件改没改），主题、组件层的样式改了哪些（styles.ts）。放松的条目交给底座的用户确认（askUser），
 //      还没同意的这一段不过，照底座给的话让 agent 调确认工具。分叉点上还没有配置（首次接入）的不比、不问。
 //      分叉点那一版算不出来的（工具在那一版上跑不起来），不当成没放松，列成"程序看不出"的一项，问。
-//   3. 依次跑 checks 里的命令（从仓库根目录用 sh 跑），一条没过就停。
-//   4. secrets 开着时用 gitleaks 扫这次改动（secrets.ts）。
+//   3. 配了 eslint 的，用项目自己的 eslint 程序接口跑一遍 lint，有错误就不过（警告不拦）。不跑项目写的 lint 命令：
+//      命令行会读批量豁免文件（放在哪、叫什么、写成目录都行），从外面猜不全；程序接口不读，查出来的就是代码按规则过没过。
+//   4. 依次跑 checks 里的命令（从仓库根目录用 sh 跑），一条没过就停。
+//   5. secrets 开着时用 gitleaks 扫这次改动（secrets.ts）。
 // 退出码用底座的：0 通过；1 没通过；2 配置、环境问题（配置写错、工具没装、算不出分叉点）。
 
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join, posix } from 'node:path'
+import { join } from 'node:path'
 import { askUser, type ConfirmItem } from '../base/confirm.ts'
 import { EXIT } from '../base/exit.ts'
 import { PROJECT_ENV } from '../base/execute.ts'
@@ -19,7 +20,7 @@ import { judgingFile } from '../base/judging.ts'
 import { hash } from '../base/records.ts'
 import type { Repo } from '../base/repo.ts'
 import { type Config, CONFIG_PATH, joined, KEEP_DIR, missingFiles, parseConfig } from './config.ts'
-import { eslintItems, type FileRules, fileRules, isCode, loadEslint, stable } from './eslint.ts'
+import { eslintItems, type FileRules, fileRules, isCode, lint, type Linted, loadEslint, stable } from './eslint.ts'
 import { withForkTree } from './forktree.ts'
 import { BIOME_CONFIGS, biomeItem, configItems, GITLEAKS_CONFIG, GITLEAKS_IGNORE, gitleaksItems, removedItem } from './loosen.ts'
 import { checkedFiles, loadPrettier, prettierItem } from './prettier.ts'
@@ -31,17 +32,6 @@ import { findTsc, type TsSettings, tsconfigItem, tsSettings } from './tsconfig.t
 const HEADING = '这次改动里放松代码规范的地方'
 
 const firstLine = (error: unknown): string => (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? ''
-
-/** eslint 批量豁免文件的名字：eslint 跑的时候自己读当前目录下的这个文件，在哪个目录跑就读哪个目录的。 */
-const SUPPRESSIONS = 'eslint-suppressions.json'
-
-/** 用了批量豁免的地方：仓库里的豁免文件，检查命令里的豁免参数（--suppress-all、--suppressions-location 这类）。 */
-function suppressionsUsed(files: string[], config: Config): string[] {
-  return [
-    ...files.filter(path => posix.basename(path) === SUPPRESSIONS).map(path => `豁免文件 ${path}`),
-    ...config.checks.filter(check => /--suppress/.test(check.command)).map(check => `规范检查"${check.name}"的命令带了豁免参数`),
-  ]
-}
 
 /** 现在这一版 eslint、prettier、tsconfig 生效的配置。files 是工作区里现有的文件。 */
 interface NowSide {
@@ -159,15 +149,26 @@ async function toolItems(root: string, fork: string, before: Config, now: Config
 /** 和分叉点那一版比，放松了哪些。beforeText 是分叉点上的配置文件（没有就是首次接入，不比）。 */
 async function loosened(root: string, fork: string, beforeText: string | undefined, now: Config, side: NowSide): Promise<Loosened> {
   if (beforeText === undefined) return { items: [], reasons: [] }
-  const before = parseConfig(beforeText).config
+  // 分叉点那一版跳过现在不认的字段读：升级后去掉的字段不让整份比较落空，跳过的单列一项问
+  const parsed = parseConfig(beforeText, true)
+  const before = parsed.config
   if (!before) {
     return {
       items: [{ before: stable(['config-unknown', beforeText]), after: stable(['config-unknown', now]), text: `分叉点上的 ${CONFIG_PATH} 写得不对、读不出来，程序看不出这次规范是改松还是改紧` }],
-      reasons: [`分叉点上的 ${CONFIG_PATH} 读不出来：${parseConfig(beforeText).problems.join('；')}`],
+      reasons: [`分叉点上的 ${CONFIG_PATH} 读不出来：${parsed.problems.join('；')}`],
     }
   }
+  const skipped: ConfirmItem[] = parsed.skipped.length
+    ? [
+        {
+          before: stable(['config-skipped', beforeText]),
+          after: stable(['config-skipped', now]),
+          text: [`分叉点上的 ${CONFIG_PATH} 有现在不认的字段，这几处程序看不出是改松还是改紧（别的照常比了）：`, ...parsed.skipped].join('\n'),
+        },
+      ]
+    : []
   const tools = await toolItems(root, fork, before, now, side)
-  const items = [...configItems(before, now), ...tools.items]
+  const items = [...skipped, ...configItems(before, now), ...tools.items]
   if (before.secrets) items.push(...gitleaksItems(judgingFile(root, fork, GITLEAKS_IGNORE), judgingFile(root, fork, GITLEAKS_CONFIG)))
   for (const path of BIOME_CONFIGS) {
     const item = biomeItem(path, judgingFile(root, fork, path))
@@ -221,7 +222,7 @@ export async function check(repo: Repo): Promise<number> {
 
   // 配置删掉了：分叉点上有能用的配置的，删掉算放松，用户同意过就退出 codekeep
   if (judging.now === undefined) {
-    const before = judging.before === undefined ? undefined : parseConfig(judging.before).config
+    const before = judging.before === undefined ? undefined : parseConfig(judging.before, true).config
     if (!before) {
       const hasDir = existsSync(join(root, KEEP_DIR))
       console.error(
@@ -254,17 +255,6 @@ export async function check(repo: Repo): Promise<number> {
     console.error([`codekeep check：现在这一版的规范配置算不出来，先修好（依赖没装的先装好）：`, ...side.problems.map(text => `  ✗ ${text}`)].join('\n'))
     return EXIT.usage
   }
-  const suppressed = suppressionsUsed(side.files, config)
-  if (suppressed.length) {
-    console.log(
-      [
-        'codekeep check：没通过，用了 eslint 的批量豁免：',
-        ...suppressed.map(text => `  ✗ ${text}`),
-        '旧代码超标的不记豁免：删掉豁免文件、去掉命令里的豁免参数，按规则把代码改好。',
-      ].join('\n'),
-    )
-    return EXIT.fail
-  }
 
   // 2. 放松
   const found = await loosened(root, fork.commit, judging.before, config, side)
@@ -275,16 +265,35 @@ export async function check(repo: Repo): Promise<number> {
   }
   const loosenedLine = found.items.length ? `规范改松 ${found.items.length} 项，用户都同意过` : '规范配置没有改松（和分叉点上的比）'
 
-  // 3. 规范检查
+  // 3. lint
+  let linted: Linted | undefined
+  if (config.eslint) {
+    console.log(`== lint：codekeep 用项目的 eslint 查（${config.eslint.config}）`)
+    try {
+      const files = [...side.eslint!].filter(([, rules]) => rules).map(([file]) => file)
+      linted = await lint(await loadEslint(root, config.eslint.config), root, config.eslint.config, files)
+    } catch (error) {
+      console.error(`\ncodekeep check：lint 没跑成（${config.eslint.config}）：${firstLine(error)}`)
+      return EXIT.usage
+    }
+    if (linted.errors > 0) {
+      console.log(
+        `${linted.report}\ncodekeep check：没通过，lint 有 ${linted.errors} 个错误（上面列出）。按规则改代码；不要为了过关改松规范（关规则、降级、调高上限、加忽略），确实要改的先用白话跟用户讲清。批量豁免文件在这里不起作用。`,
+      )
+      return EXIT.fail
+    }
+  }
+
+  // 4. 规范检查
   const failed = runChecks(root, config)
   if (failed) {
     console.log(
-      `\ncodekeep check：没通过，规范检查"${failed.name}"没过（${failed.cause}）。按上面的输出改代码；不要为了过关改松规范（关规则、降级、调高上限、加忽略）或加批量豁免，确实要改的先用白话跟用户讲清。`,
+      `\ncodekeep check：没通过，规范检查"${failed.name}"没过（${failed.cause}）。按上面的输出改代码；不要为了过关改松规范（关规则、降级、调高上限、加忽略），确实要改的先用白话跟用户讲清。`,
     )
     return EXIT.fail
   }
 
-  // 4. 密钥
+  // 5. 密钥
   if (config.secrets) {
     const secrets = scanSecrets(root, fork.commit)
     if ('missing' in secrets) {
@@ -311,7 +320,7 @@ export async function check(repo: Repo): Promise<number> {
     }
   }
 
-  const names = config.checks.map(item => item.name).join('、')
+  const names = [...(linted ? [`lint${linted.warnings ? `，${linted.warnings} 条警告` : ''}`] : []), ...config.checks.map(item => item.name)].join('、')
   console.log(`\ncodekeep check：通过。${loosenedLine}；规范检查都过了（${names}）${config.secrets ? '；这次改动里没扫出密钥' : ''}。`)
   return EXIT.ok
 }

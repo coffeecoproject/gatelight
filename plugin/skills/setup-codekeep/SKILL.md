@@ -10,9 +10,10 @@ codekeep 管代码本身的规范：类型查得严不严、lint 和格式检查
 `codekeep check` 依次做：
 
 1. 配置写得对不对（`.codekeep/config.json`）。
-2. 和分叉点比，规范改松了哪些：关规则、error 降成 warn、调高上限、文件不再被 lint、关掉 `noInlineConfig`、关严格类型选项、开 `skipLibCheck`、`include` 少了或 `exclude` 多了、`.gitleaksignore` 多了条目、改了 gitleaks 或 biome 的配置、改了或删了检查命令；配了前端规则的，还有主题文件、组件层目录里的样式文件改了。这些要用户在弹窗里同意；分叉点上还没有 `.codekeep/`（首次接入）的不问。用了 eslint 的批量豁免（仓库里有 `eslint-suppressions.json`、检查命令带 `--suppress` 一类的参数）直接不过，不问。
-3. 依次跑 `checks` 里的命令，一条没过就停。
-4. `secrets` 开着时用 gitleaks 扫分叉点之后的提交和没提交的改动。
+2. 和分叉点比，规范改松了哪些：关规则、error 降成 warn、调高上限、文件不再被 lint、关掉 `noInlineConfig`、关严格类型选项、开 `skipLibCheck`、`include` 少了或 `exclude` 多了、`.gitleaksignore` 多了条目、改了 gitleaks 或 biome 的配置、改了或删了检查命令；配了前端规则的，还有主题文件、组件层目录里的样式文件改了。这些要用户在弹窗里同意；分叉点上还没有 `.codekeep/`（首次接入）的不问。
+3. 配了 `eslint` 的，用项目自己装的 eslint 跑一遍 lint，有错误就不过。它走 eslint 的程序接口，不读批量豁免文件（`eslint-suppressions.json`），旧代码超标的只能改代码。
+4. 依次跑 `checks` 里的命令，一条没过就停。
+5. `secrets` 开着时用 gitleaks 扫分叉点之后的提交和没提交的改动。
 
 第一期只做 TypeScript、JavaScript，lint 只比 eslint。
 
@@ -42,14 +43,13 @@ codekeep 管代码本身的规范：类型查得严不严、lint 和格式检查
 
    - "这里不查"的注释要写理由、没用了的要删：`linterOptions: { reportUnusedDisableDirectives: 'error' }`；`@eslint-community/eslint-plugin-eslint-comments` 的 `require-description`（`eslint-disable` 一类的注释要带 `-- 理由`）；TypeScript 项目用 `@typescript-eslint/ban-ts-comment` 的默认设置（`@ts-ignore`、`@ts-nocheck` 不许用，`@ts-expect-error` 要写理由）。没装这几个插件的，装之前先问用户。
 4. **格式检查**：项目有 prettier 的用它；没有的问用户要不要加。检查命令把 git 收的文件交给 prettier（`git ls-files -z --cached --others --exclude-standard | xargs -0 pnpm -s exec prettier --check --ignore-unknown --no-error-on-unmatched-pattern`），不用 `prettier --check .`：prettier 只读仓库根目录的 `.gitignore` 和 `.prettierignore`，会查到上面说的本机工具目录。新加的照项目现有的写法配（分号、引号、行宽），让改动尽量小，排之前先找出脚本生成的文件和被脚本当数据读的文件（生成的接口定义、生成的样式、生成器回读的目录这类；看项目的生成脚本写到哪、读哪），写进 `.prettierignore`：排了会和生成的对不上，或让读它的脚本读错。再 `prettier --write .` 把全部代码排一遍（改动大，先和用户说清；有别的分支正在做的，排完它们合进来会冲突，先问）。`.prettierignore` 里写上锁文件。
-5. **旧代码超标的改到全过**：类型检查、lint、格式检查都过了才算接入完，接入分支在这之前不合进默认分支。不用 eslint 的批量豁免（`--suppress-all`，codekeep check 见到豁免文件、豁免参数直接不过），也不为旧代码调高上限、关规则、加忽略。先把超标的数量按规则、按目录列给用户，量大的由用户定先改哪块、分几次在接入分支上改；改法只按规则改代码，改到业务行为的（比如拆函数时要动逻辑）先问用户。
+5. **旧代码超标的改到全过**：类型检查、lint、格式检查都过了才算接入完，接入分支在这之前不合进默认分支。不用 eslint 的批量豁免（`--suppress-all`；codekeep 自己跑 lint，豁免文件不起作用），也不为旧代码调高上限、关规则、加忽略。先把超标的数量按规则、按目录列给用户，量大的由用户定先改哪块、分几次在接入分支上改；改法只按规则改代码，改到业务行为的（比如拆函数时要动逻辑）先问用户。
 6. **写 `.codekeep/config.json`**：
 
    ```json
    {
      "checks": [
        { "name": "类型检查", "command": "pnpm -s exec tsc -p apps/server --noEmit" },
-       { "name": "lint", "command": "pnpm -s exec eslint ." },
        { "name": "格式", "command": "git ls-files -z --cached --others --exclude-standard | xargs -0 pnpm -s exec prettier --check --ignore-unknown --no-error-on-unmatched-pattern" }
      ],
      "eslint": { "config": "eslint.config.mjs" },
@@ -59,13 +59,13 @@ codekeep 管代码本身的规范：类型查得严不严、lint 和格式检查
    }
    ```
 
-   - `checks`：规范检查直接写工具命令，从仓库根目录用 sh 跑，不经过项目的脚本（脚本里删掉一行，codekeep 看不到）。每个要类型检查的 tsconfig 各写一条。
-   - `eslint.config`：eslint 的配置文件，codekeep 按它对每个代码文件算"生效的规则"来比。不用 eslint 的项目不写 `eslint`。
+   - `checks`：规范检查直接写工具命令，从仓库根目录用 sh 跑，不经过项目的脚本（脚本里删掉一行，codekeep 看不到）。每个要类型检查的 tsconfig 各写一条。lint 不写在这里。
+   - `eslint.config`：eslint 的配置文件。codekeep 按它对每个代码文件算"生效的规则"来比，也按它直接跑 lint（查仓库里 git 没忽略、eslint 也没忽略的代码文件）。不用 eslint 的项目不写 `eslint`。
    - `prettier`：用 prettier 做格式检查的写 `true`，codekeep 比每个文件查不查（往 `.prettierignore` 里加路径算改松）。
    - `tsconfig`：`checks` 里类型检查用到的 tsconfig，codekeep 比它们的严格选项。只写引用别的 tsconfig 的（`tsc -b` 用的那种总的）不用写它，写它引用的那几份。
    - `secrets`：开着时扫密钥（下一步）。
    - 路径都从仓库根目录写起。
-   - 把这几条检查从项目的 `full`（`testpace.json` 的 `full`，或它调用的脚本）里挪出来，不要两边都跑。先用白话告诉用户挪了什么：`full` 直接写在 `testpace.json` 里的，改了整组会照 testpace 原有的流程弹窗；`full` 调的是脚本的，testpace 看不到脚本里删了哪行，不会弹窗，只靠这一句告诉用户。`fast` 里的 lint 和类型检查照旧留着；`fast` 没有 lint 的加上（整个仓库 lint 一遍一般几秒）。
+   - 把这几条检查和 lint 从项目的 `full`（`testpace.json` 的 `full`，或它调用的脚本）里挪出来，不要两边都跑。先用白话告诉用户挪了什么：`full` 直接写在 `testpace.json` 里的，改了整组会照 testpace 原有的流程弹窗；`full` 调的是脚本的，testpace 看不到脚本里删了哪行，不会弹窗，只靠这一句告诉用户。`fast` 里的 lint 和类型检查照旧留着；`fast` 没有 lint 的加上（整个仓库 lint 一遍一般几秒）。
    - 接入了 modwall 的仓库：新加的 `eslint.config.mjs` 这类配置文件没有归属，`modwall check` 会报，把它加进 `.modwall/config.json` 的 `outside`（放宽规则，整组会弹窗要用户同意一次）。
 7. **密钥扫描**：`gitleaks version` 看装没装。没装的问用户要不要装（`brew install gitleaks`，别的系统见 https://github.com/gitleaks/gitleaks#installing），这是装在这台机器上的工具，用户同意了再装；用户不要的，`secrets` 写 `false`。gitleaks 用仓库根目录的 `.gitleaks.toml`、`.gitleaksignore`（有的话），旧提交里的不管，只扫这次改动。代码里的 `gitleaks:allow` 注释不认：确实不是密钥的，把那一条的 Fingerprint 加进 `.gitleaksignore`（算放松，要用户同意）。
 8. **有前端代码的**，加上前端规则（下一节）。
@@ -89,8 +89,8 @@ codekeep 管代码本身的规范：类型查得严不严、lint 和格式检查
    - 要自己画的组件（图表、时间线这类）放组件层目录，样式写在同目录的样式文件里；组件层可以用 `className` 指向同目录的样式文件、在根上包 `ConfigProvider` 接主题，不准写行内 `style` 和具体的值。全局的基础样式也放组件层目录。
 2. **填模板里"按项目填"的几项**：
    - `FRONT`、`THEME`、`UI`：前端代码、主题文件、组件层目录（从仓库根目录写起，lint 不在根目录跑的照它的位置写）。
-   - `OUTPUT`：生成下载文件、画图的代码（导出 Excel 的单元格样式、canvas 画的海报这类），做出来的不在页面上，具体的值不查，文字照查。只放这类文件，页面不放；往里加文件算改松，要用户同意。没有就留空。
-   - `TESTS`：前端里的测试和测试用的辅助代码（默认是 `*.test.*`、`*.spec.*`、`__tests__/`），项目另有测试辅助目录的加进来。
+   - `OUTPUT`：生成下载文件、画图的代码（导出 Excel 的单元格样式、canvas 画的海报这类），做出来的不在页面上，具体的值不查，文字照查，不准写 JSX（页面组件放进来就绕开了）。只放这类文件，页面不放；往里加文件算改松，要用户同意。没有就留空。
+   - `TESTS`：前端里的测试和测试用的辅助代码（默认是 `*.test.*`、`*.spec.*`、`__tests__/`），项目另有测试辅助目录的加进来，`TEST_IMPORTS` 里同时加上它在 import 里的写法：页面不准 import 测试目录里的代码。
    - `BACK`、`BACK_SKIP`：后台代码，和后台里不管的种子数据、演示数据、测试、迁移目录。没有后台代码的留空。
    - `NUMBER_OK`：能写数字的参数，只放和外观无关的。项目自己组件里和外观无关的数字参数（名字最长几个字、最早哪一年）加进来；管外观的（图标尺寸、列数、间距）不加，改成主题里的几档。
    - `ENTRY_PROPS`、`ENTRY_CHILDREN`：项目自己封装的确认框、出错条、空状态组件，正文写在哪个参数或子元素里，加进来，按正文（16 个字、一句）算。

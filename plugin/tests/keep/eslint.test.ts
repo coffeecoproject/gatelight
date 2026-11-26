@@ -43,7 +43,7 @@ describe('比较生效的规则', () => {
     assert.deepEqual(between({ 'id-length': [2, { min: 2, exceptions: ['i'] }] }, { 'id-length': [2, { exceptions: ['i'], min: 2 }] }), [])
   })
 
-  describe('参数很长时只列改了的几处', () => {
+  describe('参数很长时只列改了的地方', () => {
     const RULE = 'no-restricted-syntax'
     const TITLE = `lint 规则 ${RULE} 的参数改了，程序看不出是改松还是改紧`
     const FILES = '影响的代码：src/a.js'
@@ -73,24 +73,49 @@ describe('比较生效的规则', () => {
       )
     })
 
-    test('个数不一样：列少了的、多了的，每条最多 120 个字，超过的截断加"…"', () => {
-      const keep = long('KEEP')
-      assert.deepEqual(changed([keep, 'b'.repeat(200)], [keep, 'd'.repeat(10), 'e'.repeat(200)]), [
-        `${TITLE}\n少了："${'b'.repeat(119)}…\n多了："${'d'.repeat(10)}"\n多了："${'e'.repeat(119)}…\n${FILES}`,
+    test('个数不一样：逐项对齐，没变的不列；同一段里删一项、加一项的配成"改了"，只列改了的那段；多出来的整项列出来，不截断', () => {
+      // 第 1 项改在 120 个字以后，后面又多了一项
+      const deep = (middle: string): { selector: string } => ({ selector: `${'X'.repeat(150)}${middle}${'Y'.repeat(20)}` })
+      assert.deepEqual(changed([deep('LIMIT12'), long('KEEP')], [deep('LIMIT20'), long('KEEP'), deep('NEW')]), [
+        [
+          TITLE,
+          `第 1 项 原来：…${'X'.repeat(25)}LIMIT12${'Y'.repeat(20)}"}`,
+          `第 1 项 现在：…${'X'.repeat(25)}LIMIT20${'Y'.repeat(20)}"}`,
+          `多了现在的第 3 项：${JSON.stringify(deep('NEW'))}`,
+          FILES,
+        ].join('\n'),
       ])
     })
 
-    test('最多列 5 处，多的写"……还有 K 处"', () => {
-      const same = Array.from({ length: 7 }, (_, index) => long(`OLD${index}`))
-      const [text] = changed(same, Array.from({ length: 7 }, (_, index) => long(`NEW${index}`)))
-      const lines = (text ?? '').split('\n')
-      assert.equal(lines.filter(line => / 项 原来：/.test(line)).length, 5)
-      assert.deepEqual(lines.slice(-2), ['……还有 2 处', FILES])
+    test('加了一项、少了一项：列"多了现在的第 N 项""少了原来的第 N 项"和整项，没变的项不列', () => {
+      const [a, b, c] = [long('A'), long('B'), long('C')]
+      const x = { selector: 'x'.repeat(300) }
+      assert.deepEqual(changed([a, b, c], [a, x, b, c]), [`${TITLE}\n多了现在的第 2 项：${JSON.stringify(x)}\n${FILES}`])
+      assert.deepEqual(changed([a, b, c], [a, c]), [`${TITLE}\n少了原来的第 2 项：${JSON.stringify(b)}\n${FILES}`])
+    })
 
-      const [more] = changed([long('KEEP')], [long('KEEP'), ...Array.from({ length: 7 }, (_, index) => long(`ADD${index}`))])
-      const moreLines = (more ?? '').split('\n')
-      assert.equal(moreLines.filter(line => line.startsWith('多了：')).length, 5)
-      assert.deepEqual(moreLines.slice(-2), ['……还有 2 处', FILES])
+    test('重复的项删掉一个（[A, A, B] 改成 [A, B]）：也列出少了的那一项', () => {
+      const [a, b] = [long('A'), long('B')]
+      assert.deepEqual(changed([a, a, b], [a, b]), [`${TITLE}\n少了原来的第 2 项：${JSON.stringify(a)}\n${FILES}`])
+    })
+
+    test('不设处数上限：改了 7 项就列 7 项', () => {
+      const [text] = changed(
+        Array.from({ length: 7 }, (_, index) => long(`OLD${index}`)),
+        Array.from({ length: 7 }, (_, index) => long(`NEW${index}`)),
+      )
+      const lines = (text ?? '').split('\n')
+      assert.deepEqual(
+        lines.filter(line => / 项 现在：/.test(line)).map(line => /NEW\d/.exec(line)?.[0]),
+        Array.from({ length: 7 }, (_, index) => `NEW${index}`),
+      )
+      assert.ok(!lines.some(line => line.includes('还有')), text)
+    })
+
+    test('按字截，不切坏 emoji', () => {
+      assert.deepEqual(changed(['😀'.repeat(200)], [`${'😀'.repeat(100)}😁${'😀'.repeat(99)}`]), [
+        `${TITLE}\n第 1 项 原来：…${'😀'.repeat(61)}…\n第 1 项 现在：…${'😀'.repeat(30)}😁${'😀'.repeat(30)}…\n${FILES}`,
+      ])
     })
   })
 
@@ -125,7 +150,7 @@ describe('比较生效的规则', () => {
   })
 })
 
-const CHECKS = [{ name: 'lint', command: 'true' }]
+const CHECKS = [{ name: 'types', command: 'true' }]
 const TEMPLATE = fileURLToPath(new URL('../../skills/setup-codekeep/frontend.eslint.mjs', import.meta.url))
 const JOINED = { '.codekeep/config.json': keepConfig({ checks: CHECKS, eslint: { config: 'eslint.config.mjs' } }) }
 const CODE = { 'src/a.js': 'export const a = 1\n', 'src/b.js': 'export const b = 1\n', 'src/legacy/old.js': 'export const old = 1\n', 'src/legacy/older.js': 'export const older = 1\n' }
@@ -180,13 +205,13 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     assert.match(asked.text, /\n {3}src\/legacy\/old\.js\n {3}src\/legacy\/older\.js\n/)
   })
 
-  test('加规则、调严：不问，照常跑检查；这次新加的文件不比', () => {
+  test('加规则、调严：不问，照常跑 lint 和检查；这次新加的文件不比', () => {
     const repo = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'warn', 'max-depth': ['error', 5] }) })
     write(repo, 'eslint.config.mjs', eslintConfig({ 'no-console': 'error', 'max-depth': ['error', 2], eqeqeq: 'error' }, "{ ignores: ['src/new/**'] }"))
     write(repo, 'src/new/fresh.js', 'export const fresh = 1\n')
     const r = codekeep(repo, ['check'])
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /规范配置没有改松（和分叉点上的比）；规范检查都过了（lint）/)
+    assert.match(r.out, /规范配置没有改松（和分叉点上的比）；规范检查都过了（lint、types）/)
   })
 
   test('biome 的配置改了：和 eslint 规则的放松一起列出来问', () => {
@@ -215,6 +240,21 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     assert.match(asked.text, /超过 20 个字/)
     assert.doesNotMatch(asked.text, /原来：\[/, '不整段列参数')
     assert.ok(asked.text.length < 10_000, `整项 ${asked.text.length} 个字`)
+  })
+
+  test('前端规则模板的 ENTRY_PROPS 加一项（选择器后面多一段、条目个数也变了）：加的那段出现在弹窗文字里', () => {
+    const template = readFileSync(TEMPLATE, 'utf8')
+    const repo = keepRepo({ ...JOINED, 'src/pages/Orders.js': 'export const a = 1\n', 'eslint.config.mjs': template })
+    const entryProps = /^const ENTRY_PROPS = \[(.*)\]$/m
+    assert.match(template, entryProps)
+    write(repo, 'eslint.config.mjs', template.replace(entryProps, "const ENTRY_PROPS = [$1, ['Card', 'title']]"))
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    const asked = pendingOf(r.out)
+    assert.equal(asked.items.length, 1, asked.text)
+    assert.match(asked.items[0] ?? '', /no-restricted-syntax.* 的参数改了/)
+    assert.match(asked.text, /JSXOpeningElement\[name\.name='Card'\] > JSXAttribute\[name\.name='title'\]/)
+    assert.doesNotMatch(asked.text, /原来：\[/, '不整段列参数')
   })
 
   test('分叉点那一版的 eslint 配置算不出来：不当成没放松，列成"程序看不出"的一项问', () => {

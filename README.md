@@ -112,10 +112,12 @@ claude plugin uninstall modwall@modwall
 
 - **配置**：`.codekeep/config.json` 写得对不对：`checks` 是规范检查的命令（直接写工具命令，不经过项目的脚本），`eslint` 写配置文件，`tsconfig` 写要比的 tsconfig，`prettier` 开着时比格式检查查哪些文件，`secrets` 开着时扫密钥，`styles` 写前端的主题文件和组件层目录。
 - **改松要你同意**：和分叉点那一版比，规范改松了的（关规则、调高上限、文件不再被 lint、关严格类型选项、加忽略、改了检查命令，配了前端规则的还有改主题和组件层的样式等）要你在弹窗里同意，同意按项记；加规则、调严不问，首次接入不问。分叉点那一版算不出来的不当成没改松，也问。不用批量豁免，旧代码超标的改代码。
-- **跑检查**：依次跑 `checks` 里的命令，一条没过就停。
+- **跑检查**：配了 `eslint` 的先由 codekeep 用项目的 eslint 跑一遍 lint（走程序接口，批量豁免文件不起作用），再依次跑 `checks` 里的命令，一条没过就停。
 - **扫密钥**：用 gitleaks 扫分叉点之后的提交和没提交的改动，输出里打码。没装 gitleaks 算没通过，说怎么装，不替你装。
 
 - **前端规则**：有前端代码的项目，接入时照技能里的模板（`plugin/skills/setup-codekeep/frontend.eslint.mjs`，先做 React 加 antd）加 lint 规则：页面上不加无必要的说明文字；用了组件不在页面里写样式、写具体的值去补，具体的值只写在主题和组件层；这些文件里不能用注释就地关规则。方案见 [前端规范方案.md](前端规范方案.md)。
+
+从 0.22 以前升级的项目：删掉 `eslint-suppressions.json`，把旧代码改到 lint 全过；`.codekeep/config.json` 里去掉 `eslint.suppressions`（现在算写错）和 `checks` 里的 lint 命令（codekeep 自己跑，留着会跑两遍；删掉它整组会问一次）。前端规则模板的 `DESC_PROPS` 改成了 `[组件名, 参数名]`，`NOTICE_CALLS` 改成了 `[对象名, 正文字段]`，新加了 `OUTPUT`、`TEST_IMPORTS` 两项，照新模板改。接入了 testcraft 的项目补上默认清单条目 `docs-rules.md`（见 `gatelight:setup-testcraft` 技能）。
 
 不在改文件时拦（lint 自己会报），也没有停止门（整组兜底）。接入步骤见 [plugin/skills/setup-codekeep/SKILL.md](plugin/skills/setup-codekeep/SKILL.md)（`gatelight:setup-codekeep` 技能）。
 
