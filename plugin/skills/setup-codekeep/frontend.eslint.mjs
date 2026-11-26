@@ -14,13 +14,15 @@ const THEME = ['src/theme.ts']
 const UI = ['src/ui/**']
 /** 前端里的测试和测试用的辅助代码：不管。 */
 const TESTS = ['**/*.{test,spec}.{ts,tsx,js,jsx}', '**/__tests__/**']
+/** 生成下载文件、画图的代码（导出 Excel、canvas 画的海报这类）：做出来的不在页面上，不查具体的值，文字照查；没有就留空。 */
+const OUTPUT = []
 /** 后台代码；没有就留空。 */
 const BACK = []
 /** 后台不管的：种子数据、演示数据、测试、迁移。 */
 const BACK_SKIP = []
 /** 能写数字的参数：和外观无关的。项目自己组件里的（名字最长几个字、最早哪一年）也加进来。 */
 const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 'step', 'tabIndex', 'count', 'defaultValue', 'pageSize', 'mouseEnterDelay', 'mouseLeaveDelay', 'duration', 'maxCount', 'level']
-/** 项目自己组件里专门放说明的参数（副标题、帮助文字这类）。确认框、出错和空状态组件的正文参数不放这里，放 ENTRY_PROPS。 */
+/** 项目自己组件里专门放说明的参数（副标题、帮助文字这类）：[组件名, 参数名]。确认框、出错和空状态组件的正文参数不放这里，放 ENTRY_PROPS。 */
 const DESC_PROPS = []
 /** 前端提示：调用的对象名（message.success(...) 这种）。 */
 const NOTICE_CALLS = ['message', 'notification']
@@ -45,7 +47,13 @@ const longer = max => `/^[\\s\\S]{${max + 1},}$/`
 // 入口：写在这几处的文字按正文算（16 个字、一句话），不按名字算
 const callee = `CallExpression[callee.object.name=/^(${names(NOTICE_CALLS)})$/]`
 const confirm = "CallExpression[callee.object.name='Modal'][callee.property.name=/^(confirm|info|success|error|warning)$/] Property[key.name='content']"
-const strings = parent => [`${parent} > Literal`, `${parent} > TemplateLiteral > TemplateElement`]
+// 写在 parent 下的固定文字：直接写的，和写成二选一（a ? '…' : '…'）、带条件（a && '…'）的
+const strings = parent => [
+  `${parent} > Literal`,
+  `${parent} > TemplateLiteral > TemplateElement`,
+  `${parent} > :matches(ConditionalExpression, LogicalExpression) Literal`,
+  `${parent} > :matches(ConditionalExpression, LogicalExpression) TemplateElement`,
+]
 // 出错条：antd 的 Alert 只准 error、warning 两种（写成两者二选一的也算），它的 title 就是出错那一句；description 照样禁
 const ERROR_LEVEL = '/^(error|warning)$/'
 const errorType = `JSXAttribute[name.name='type']:matches([value.value=${ERROR_LEVEL}], :has(JSXExpressionContainer > ConditionalExpression[consequent.value=${ERROR_LEVEL}][alternate.value=${ERROR_LEVEL}]))`
@@ -62,7 +70,10 @@ const ENTRY = [
     const attr = `JSXOpeningElement[name.name='${component}'] > JSXAttribute[name.name='${prop}']`
     return [`${attr} > Literal`, ...strings(`${attr} > JSXExpressionContainer`)]
   }),
-  ...ENTRY_CHILDREN.map(component => `JSXElement[openingElement.name.name='${component}'] > JSXText`),
+  ...ENTRY_CHILDREN.flatMap(component => {
+    const element = `JSXElement[openingElement.name.name='${component}']`
+    return [`${element} > JSXText`, ...strings(`${element} > JSXExpressionContainer`)]
+  }),
 ]
 const notEntry = `:not(${ENTRY.join(', ')})`
 const value = { Literal: 'value', TemplateElement: 'value.cooked', JSXText: 'value' }
@@ -90,7 +101,7 @@ const descPlaces = [
   { selector: "JSXOpeningElement > JSXMemberExpression[object.name='Typography'][property.name='Paragraph']", message: `段落是放说明的${NAME_HINT}` },
   // 表单项的 extra、tooltip 是帮助文字；别的组件的 extra 是放按钮的地方（Card、Result、Drawer），不管
   { selector: "JSXOpeningElement[name.object.name='Form'][name.property.name='Item'] > JSXAttribute[name.name=/^(extra|tooltip)$/]", message: `这个参数是放说明的${NAME_HINT}` },
-  ...(DESC_PROPS.length ? [{ selector: `JSXAttribute[name.name=/^(${names(DESC_PROPS)})$/]`, message: `这个参数是放说明的${NAME_HINT}` }] : []),
+  ...DESC_PROPS.map(([component, prop]) => ({ selector: `JSXOpeningElement[name.name='${component}'] > JSXAttribute[name.name='${prop}']`, message: `这个参数是放说明的${NAME_HINT}` })),
   {
     selector: `JSXOpeningElement:not([name.name=/^(${names(ENTRY_PROPS.filter(([, prop]) => prop === 'description').map(([component]) => component))})$/]) > JSXAttribute[name.name='description']`,
     message: `这个参数是放说明的${NAME_HINT}`,
@@ -131,26 +142,26 @@ const front = {
   linterOptions: { noInlineConfig: true },
 }
 
+/** 页面和业务组件的规则；checkValues 为 false 时不查具体的值（导出、画图的代码）。 */
+const pageRules = checkValues => ({
+  [RESTRICTED]: [
+    'error',
+    ...nameText,
+    ...entryText,
+    ...descPlaces,
+    ...(checkValues ? values : []),
+    ...channels(),
+    { selector: "JSXOpeningElement[name.name='ConfigProvider']", message: `就地改主题${STYLE_HINT}` },
+    { selector: STYLE_FILE, message: `引样式文件${STYLE_HINT}` },
+  ],
+  ...noDisable,
+})
+
 export default [
   // 页面和业务组件：只准用组件和主题给的档位
-  {
-    ...front,
-    files: FRONT,
-    ignores: [...THEME, ...UI, ...TESTS],
-    rules: {
-      [RESTRICTED]: [
-        'error',
-        ...nameText,
-        ...entryText,
-        ...descPlaces,
-        ...values,
-        ...channels(),
-        { selector: "JSXOpeningElement[name.name='ConfigProvider']", message: `就地改主题${STYLE_HINT}` },
-        { selector: STYLE_FILE, message: `引样式文件${STYLE_HINT}` },
-      ],
-      ...noDisable,
-    },
-  },
+  { ...front, files: FRONT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(true) },
+  // 导出、画图：做出来的文件和图片不在页面上，具体的值不查
+  ...(OUTPUT.length ? [{ ...front, files: OUTPUT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(false) }] : []),
   // 组件层：可以用 className 指向同目录的样式文件、在根上包 ConfigProvider 接主题；不准写行内样式和具体的值
   {
     ...front,

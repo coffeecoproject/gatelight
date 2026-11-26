@@ -2,7 +2,9 @@
 // 先在比较这一层把各种放松说清（不跑 eslint），再用真的 eslint 在临时仓库里走几遍：按目录的覆盖、按目录的忽略都要抓到。
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { describe, test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { type Effective, eslintItems, type FileRules } from '../../src/keep/eslint.ts'
 import { userAgrees } from '../helpers.ts'
 import { codekeep, eslintConfig, keepConfig, keepRepo, pendingOf, write } from './helpers.ts'
@@ -41,6 +43,57 @@ describe('比较生效的规则', () => {
     assert.deepEqual(between({ 'id-length': [2, { min: 2, exceptions: ['i'] }] }, { 'id-length': [2, { exceptions: ['i'], min: 2 }] }), [])
   })
 
+  describe('参数很长时只列改了的几处', () => {
+    const RULE = 'no-restricted-syntax'
+    const TITLE = `lint 规则 ${RULE} 的参数改了，程序看不出是改松还是改紧`
+    const FILES = '影响的代码：src/a.js'
+    const changed = (was: unknown[], is: unknown[]): string[] => between({ [RULE]: [2, ...was] }, { [RULE]: [2, ...is] })
+    /** 一条很长的选择器，middle 是中间那一段。 */
+    const long = (middle: string): { selector: string } => ({ selector: `${'a'.repeat(50)}${middle}${'b'.repeat(50)}` })
+
+    test('原来、现在两段参数加起来不超过 300 个字：照旧整段列；超过的不再整段列', () => {
+      // 一项字符串的参数整段是 ["…"]，比文字多 4 个字
+      assert.deepEqual(changed(['x'.repeat(146)], ['y'.repeat(146)]), [`${TITLE}\n原来：["${'x'.repeat(146)}"]\n现在：["${'y'.repeat(146)}"]\n${FILES}`])
+      assert.deepEqual(changed(['x'.repeat(147)], ['y'.repeat(146)]), [`${TITLE}\n第 1 项 原来："${'x'.repeat(147)}"\n第 1 项 现在："${'y'.repeat(146)}"\n${FILES}`])
+    })
+
+    test('个数一样：逐项对，只列改了的项，取不同的地方前后各 30 个字，截掉的用"…"', () => {
+      const was = [long('ONE'), long('TWO'), long('SIX')]
+      const is = [long('ONE'), long('XYZ'), long('SIX')]
+      assert.deepEqual(changed(was, is), [`${TITLE}\n第 2 项 原来：…${'a'.repeat(30)}TWO${'b'.repeat(30)}…\n第 2 项 现在：…${'a'.repeat(30)}XYZ${'b'.repeat(30)}…\n${FILES}`])
+    })
+
+    test('一项里有两处不同：从第一处列到最后一处，中间不变的也带上，后面那处不漏', () => {
+      const item = (first: string, second: string): { selector: string } => ({ selector: `${'a'.repeat(50)}${first}${'c'.repeat(100)}${second}${'b'.repeat(50)}` })
+      const [text] = changed([item('X', 'Y'), long('ONE')], [item('P', 'Q'), long('ONE')])
+      const middle = 'c'.repeat(100)
+      assert.equal(
+        text,
+        `${TITLE}\n第 1 项 原来：…${'a'.repeat(30)}X${middle}Y${'b'.repeat(30)}…\n第 1 项 现在：…${'a'.repeat(30)}P${middle}Q${'b'.repeat(30)}…\n${FILES}`,
+      )
+    })
+
+    test('个数不一样：列少了的、多了的，每条最多 120 个字，超过的截断加"…"', () => {
+      const keep = long('KEEP')
+      assert.deepEqual(changed([keep, 'b'.repeat(200)], [keep, 'd'.repeat(10), 'e'.repeat(200)]), [
+        `${TITLE}\n少了："${'b'.repeat(119)}…\n多了："${'d'.repeat(10)}"\n多了："${'e'.repeat(119)}…\n${FILES}`,
+      ])
+    })
+
+    test('最多列 5 处，多的写"……还有 K 处"', () => {
+      const same = Array.from({ length: 7 }, (_, index) => long(`OLD${index}`))
+      const [text] = changed(same, Array.from({ length: 7 }, (_, index) => long(`NEW${index}`)))
+      const lines = (text ?? '').split('\n')
+      assert.equal(lines.filter(line => / 项 原来：/.test(line)).length, 5)
+      assert.deepEqual(lines.slice(-2), ['……还有 2 处', FILES])
+
+      const [more] = changed([long('KEEP')], [long('KEEP'), ...Array.from({ length: 7 }, (_, index) => long(`ADD${index}`))])
+      const moreLines = (more ?? '').split('\n')
+      assert.equal(moreLines.filter(line => line.startsWith('多了：')).length, 5)
+      assert.deepEqual(moreLines.slice(-2), ['……还有 2 处', FILES])
+    })
+  })
+
   test('新加规则、从警告升成报错、原来就关着的规则删掉：不问', () => {
     assert.deepEqual(between({ 'no-console': [1], 'no-var': [0] }, { 'no-console': [2], eqeqeq: [2] }), [])
   })
@@ -73,6 +126,7 @@ describe('比较生效的规则', () => {
 })
 
 const CHECKS = [{ name: 'lint', command: 'true' }]
+const TEMPLATE = fileURLToPath(new URL('../../skills/setup-codekeep/frontend.eslint.mjs', import.meta.url))
 const JOINED = { '.codekeep/config.json': keepConfig({ checks: CHECKS, eslint: { config: 'eslint.config.mjs' } }) }
 const CODE = { 'src/a.js': 'export const a = 1\n', 'src/b.js': 'export const b = 1\n', 'src/legacy/old.js': 'export const old = 1\n', 'src/legacy/older.js': 'export const older = 1\n' }
 
@@ -135,16 +189,32 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     assert.match(r.out, /规范配置没有改松（和分叉点上的比）；规范检查都过了（lint）/)
   })
 
-  test('批量豁免文件多豁免了、biome 的配置改了：和规则一起列出来问', () => {
+  test('biome 的配置改了：和 eslint 规则的放松一起列出来问', () => {
     const repo = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'error' }), 'biome.json': '{}\n' })
-    write(repo, 'eslint-suppressions.json', JSON.stringify({ 'src/a.js': { 'no-console': { count: 2 } } }))
+    write(repo, 'eslint.config.mjs', eslintConfig({}))
     write(repo, 'biome.json', '{"linter":{"enabled":false}}\n')
     const r = codekeep(repo, ['check'])
     assert.equal(r.code, 1, r.out)
     assert.deepEqual(pendingOf(r.out).items, [
-      'eslint 的批量豁免文件 eslint-suppressions.json 多豁免了 1 处：这些地方违反了规则也照样通过',
+      'lint 规则 不许留调试用的 console（no-console） 没了：以后不再查这一条',
       'biome 的配置 biome.json 改了，程序看不出 lint、格式规则是改松还是改紧',
     ])
+  })
+
+  test('前端规则模板的 NAME_MAX 从 12 改成 20：只列改了的几处，看得到"超过 12 个字"和"超过 20 个字"，不整段列', () => {
+    const template = readFileSync(TEMPLATE, 'utf8')
+    const page = { 'src/pages/Orders.js': 'export const a = 1\n' }
+    const repo = keepRepo({ ...JOINED, ...page, 'eslint.config.mjs': template })
+    write(repo, 'eslint.config.mjs', template.replace(/^const NAME_MAX = 12$/m, 'const NAME_MAX = 20'))
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    const asked = pendingOf(r.out)
+    assert.equal(asked.items.length, 1, asked.text)
+    assert.match(asked.items[0] ?? '', /no-restricted-syntax.* 的参数改了，程序看不出是改松还是改紧/)
+    assert.match(asked.text, /超过 12 个字/)
+    assert.match(asked.text, /超过 20 个字/)
+    assert.doesNotMatch(asked.text, /原来：\[/, '不整段列参数')
+    assert.ok(asked.text.length < 10_000, `整项 ${asked.text.length} 个字`)
   })
 
   test('分叉点那一版的 eslint 配置算不出来：不当成没放松，列成"程序看不出"的一项问', () => {

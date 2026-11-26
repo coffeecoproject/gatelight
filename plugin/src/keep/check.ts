@@ -1,5 +1,6 @@
 // codekeep check：整组里"代码规范"的那一段（见 full.ts），也可以单独跑。依次做四件事，一件没过就停：
-//   1. 配置写得对不对（.codekeep/config.json），写到的文件在不在；现在这一版 eslint、prettier、tsconfig 生效的配置算不算得出来。
+//   1. 配置写得对不对（.codekeep/config.json），写到的文件在不在；现在这一版 eslint、prettier、tsconfig 生效的配置算不算得出来；
+//      没用 eslint 的批量豁免（旧代码超标的改代码，不记豁免）。
 //   2. 和分叉点比，规范改松了哪些（loosen.ts、eslint.ts、prettier.ts、tsconfig.ts；biome 只看配置文件改没改），主题、组件层的样式改了哪些（styles.ts）。放松的条目交给底座的用户确认（askUser），
 //      还没同意的这一段不过，照底座给的话让 agent 调确认工具。分叉点上还没有配置（首次接入）的不比、不问。
 //      分叉点那一版算不出来的（工具在那一版上跑不起来），不当成没放松，列成"程序看不出"的一项，问。
@@ -9,7 +10,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { askUser, type ConfirmItem } from '../base/confirm.ts'
 import { EXIT } from '../base/exit.ts'
 import { PROJECT_ENV } from '../base/execute.ts'
@@ -20,7 +21,7 @@ import type { Repo } from '../base/repo.ts'
 import { type Config, CONFIG_PATH, joined, KEEP_DIR, missingFiles, parseConfig } from './config.ts'
 import { eslintItems, type FileRules, fileRules, isCode, loadEslint, stable } from './eslint.ts'
 import { withForkTree } from './forktree.ts'
-import { BIOME_CONFIGS, biomeItem, configItems, GITLEAKS_CONFIG, GITLEAKS_IGNORE, gitleaksItems, removedItem, suppressionsItem } from './loosen.ts'
+import { BIOME_CONFIGS, biomeItem, configItems, GITLEAKS_CONFIG, GITLEAKS_IGNORE, gitleaksItems, removedItem } from './loosen.ts'
 import { checkedFiles, loadPrettier, prettierItem } from './prettier.ts'
 import { scanSecrets } from './secrets.ts'
 import { stylesItems } from './styles.ts'
@@ -30,6 +31,17 @@ import { findTsc, type TsSettings, tsconfigItem, tsSettings } from './tsconfig.t
 const HEADING = '这次改动里放松代码规范的地方'
 
 const firstLine = (error: unknown): string => (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? ''
+
+/** eslint 批量豁免文件的名字：eslint 跑的时候自己读当前目录下的这个文件，在哪个目录跑就读哪个目录的。 */
+const SUPPRESSIONS = 'eslint-suppressions.json'
+
+/** 用了批量豁免的地方：仓库里的豁免文件，检查命令里的豁免参数（--suppress-all、--suppressions-location 这类）。 */
+function suppressionsUsed(files: string[], config: Config): string[] {
+  return [
+    ...files.filter(path => posix.basename(path) === SUPPRESSIONS).map(path => `豁免文件 ${path}`),
+    ...config.checks.filter(check => /--suppress/.test(check.command)).map(check => `规范检查"${check.name}"的命令带了豁免参数`),
+  ]
+}
 
 /** 现在这一版 eslint、prettier、tsconfig 生效的配置。files 是工作区里现有的文件。 */
 interface NowSide {
@@ -156,10 +168,6 @@ async function loosened(root: string, fork: string, beforeText: string | undefin
   }
   const tools = await toolItems(root, fork, before, now, side)
   const items = [...configItems(before, now), ...tools.items]
-  if (before.eslint && now.eslint) {
-    const item = suppressionsItem(now.eslint.suppressions, judgingFile(root, fork, now.eslint.suppressions))
-    if (item) items.push(item)
-  }
   if (before.secrets) items.push(...gitleaksItems(judgingFile(root, fork, GITLEAKS_IGNORE), judgingFile(root, fork, GITLEAKS_CONFIG)))
   for (const path of BIOME_CONFIGS) {
     const item = biomeItem(path, judgingFile(root, fork, path))
@@ -246,6 +254,17 @@ export async function check(repo: Repo): Promise<number> {
     console.error([`codekeep check：现在这一版的规范配置算不出来，先修好（依赖没装的先装好）：`, ...side.problems.map(text => `  ✗ ${text}`)].join('\n'))
     return EXIT.usage
   }
+  const suppressed = suppressionsUsed(side.files, config)
+  if (suppressed.length) {
+    console.log(
+      [
+        'codekeep check：没通过，用了 eslint 的批量豁免：',
+        ...suppressed.map(text => `  ✗ ${text}`),
+        '旧代码超标的不记豁免：删掉豁免文件、去掉命令里的豁免参数，按规则把代码改好。',
+      ].join('\n'),
+    )
+    return EXIT.fail
+  }
 
   // 2. 放松
   const found = await loosened(root, fork.commit, judging.before, config, side)
@@ -260,7 +279,7 @@ export async function check(repo: Repo): Promise<number> {
   const failed = runChecks(root, config)
   if (failed) {
     console.log(
-      `\ncodekeep check：没通过，规范检查"${failed.name}"没过（${failed.cause}）。按上面的输出改代码；不要为了过关改松规范（关规则、降级、调高上限、加忽略、加豁免），确实要改的先用白话跟用户讲清。`,
+      `\ncodekeep check：没通过，规范检查"${failed.name}"没过（${failed.cause}）。按上面的输出改代码；不要为了过关改松规范（关规则、降级、调高上限、加忽略）或加批量豁免，确实要改的先用白话跟用户讲清。`,
     )
     return EXIT.fail
   }

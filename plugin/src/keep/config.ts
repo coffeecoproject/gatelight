@@ -1,7 +1,6 @@
 // "代码规范"在项目里的配置：.codekeep/config.json。没有 .codekeep/ 目录的仓库没接入，它不出声、不加检查。
 //   checks     规范检查的命令（类型检查、lint、格式），直接写工具命令，不经过项目的脚本；整组里依次跑
-//   eslint     拿来比"生效的规则"的 eslint：config 是配置文件（按它对每个代码文件算生效的规则），
-//              suppressions 是批量豁免文件（eslint --suppress-all 生成的，不写就是仓库根目录的 eslint-suppressions.json）
+//   eslint     拿来比"生效的规则"的 eslint：config 是配置文件（按它对每个代码文件算生效的规则）
 //   prettier   开着时比格式检查查哪些文件（prettier 在仓库根目录跑，查 git 收的文件）
 //   tsconfig   拿来比严格选项的 tsconfig 文件
 //   secrets    开着时整组里用 gitleaks 扫这次的提交和没提交的改动
@@ -14,8 +13,6 @@ import { fileNow, hasFile } from '../base/git.ts'
 
 export const KEEP_DIR = '.codekeep'
 export const CONFIG_PATH = `${KEEP_DIR}/config.json`
-/** eslint 批量豁免文件的默认位置（eslint 自己的默认名字，相对仓库根目录）。 */
-export const DEFAULT_SUPPRESSIONS = 'eslint-suppressions.json'
 
 export interface Check {
   name: string
@@ -24,7 +21,6 @@ export interface Check {
 
 export interface EslintConfig {
   config: string
-  suppressions: string
 }
 
 /** 主题文件和组件层目录：前端代码里具体的颜色、尺寸只准写在这两处。 */
@@ -53,7 +49,7 @@ export function joined(root: string, fork?: string): boolean {
 }
 
 const KEYS = ['checks', 'eslint', 'tsconfig', 'prettier', 'secrets', 'styles']
-const ESLINT_KEYS = ['config', 'suppressions']
+const ESLINT_KEYS = ['config']
 const STYLES_KEYS = ['theme', 'ui']
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -103,15 +99,13 @@ export function parseConfig(text: string): Parsed {
   let eslint: EslintConfig | undefined
   if (raw.eslint !== undefined) {
     const value = raw.eslint
-    if (!isRecord(value)) problems.push(`${CONFIG_PATH} 的 "eslint" 应该是 { "config": 配置文件, "suppressions": 豁免文件（可选） }`)
+    if (!isRecord(value)) problems.push(`${CONFIG_PATH} 的 "eslint" 应该是 { "config": 配置文件 }`)
     else {
       const unknown = Object.keys(value).filter(key => !ESLINT_KEYS.includes(key))
       if (unknown.length) problems.push(`${CONFIG_PATH} 的 "eslint" 有未知字段 ${unknown.map(key => `"${key}"`).join('、')}`)
       const config = relativePath(value.config)
       if (config === undefined) problems.push(`${CONFIG_PATH} 的 "eslint.config" 要写 eslint 配置文件（仓库里的相对路径，比如 "eslint.config.mjs"）`)
-      const suppressions = value.suppressions === undefined ? DEFAULT_SUPPRESSIONS : relativePath(value.suppressions)
-      if (suppressions === undefined) problems.push(`${CONFIG_PATH} 的 "eslint.suppressions" 要写批量豁免文件（仓库里的相对路径）`)
-      if (config !== undefined && suppressions !== undefined) eslint = { config, suppressions }
+      if (config !== undefined) eslint = { config }
     }
   }
 
@@ -158,7 +152,7 @@ function paths(value: unknown, name: string, what: string, problems: string[]): 
   return problems.length > found ? undefined : result
 }
 
-/** 工作区这一版配置里写到、却不在的文件和目录（批量豁免文件可以还没有）。 */
+/** 工作区这一版配置里写到、却不在的文件和目录。 */
 export function missingFiles(root: string, config: Config): string[] {
   const listed = [...(config.eslint ? [config.eslint.config] : []), ...config.tsconfig, ...(config.styles?.theme ?? [])]
   const dirs = config.styles?.ui ?? []

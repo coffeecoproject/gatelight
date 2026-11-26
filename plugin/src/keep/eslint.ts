@@ -190,8 +190,63 @@ function changesOf(before: Effective, now: Effective): Change[] {
   return changes
 }
 
+/** 参数整段列出来的长度上限：再长的只列改了的几处，整段列出来人看不出改了什么。 */
+const WHOLE = 300
+/** 改了的地方前后各带几个字。 */
+const AROUND = 30
+/** 改了的地方最多列几处。 */
+const PLACES = 5
+
+/** 两段只差一部分的文字：各取第一处不同的地方，前后带几个字。 */
+function around(was: string, is: string): [string, string] {
+  let start = 0
+  while (start < was.length && start < is.length && was[start] === is[start]) start++
+  let end = 0
+  while (end < was.length - start && end < is.length - start && was[was.length - 1 - end] === is[is.length - 1 - end]) end++
+  const cut = (text: string): string => {
+    const from = Math.max(0, start - AROUND)
+    const to = Math.min(text.length, text.length - end + AROUND)
+    return `${from > 0 ? '…' : ''}${text.slice(from, to)}${to < text.length ? '…' : ''}`
+  }
+  return [cut(was), cut(is)]
+}
+
+/** 一条参数太长时的简写：前面一段。 */
+const head = (text: string): string => (text.length > AROUND * 4 ? `${text.slice(0, AROUND * 4)}…` : text)
+
+/** 参数很长（比如一长串选择器）时只列改了的几处：个数一样的逐个对，个数不一样的列多了、少了的。 */
+function placesChanged(was: unknown[], is: unknown[]): string[] {
+  const lines: string[] = []
+  let count = 0
+  if (was.length === is.length) {
+    for (let index = 0; index < was.length; index++) {
+      const [before, after] = [stable(was[index]), stable(is[index])]
+      if (before === after) continue
+      count++
+      if (count > PLACES) continue
+      const [shortBefore, shortAfter] = around(before, after)
+      lines.push(`第 ${index + 1} 项 原来：${shortBefore}`, `第 ${index + 1} 项 现在：${shortAfter}`)
+    }
+  } else {
+    const after = new Set(is.map(item => stable(item)))
+    const before = new Set(was.map(item => stable(item)))
+    for (const [mark, list, other] of [['少了', was, after], ['多了', is, before]] as const) {
+      for (const item of list.map(entry => stable(entry))) {
+        if (other.has(item)) continue
+        count++
+        if (count <= PLACES) lines.push(`${mark}：${head(item)}`)
+      }
+    }
+  }
+  if (count > PLACES) lines.push(`……还有 ${count - PLACES} 处`)
+  return lines
+}
+
 function changedText(rule: string, was: unknown[], is: unknown[]): string {
-  return [`lint 规则 ${ruleName(rule)} 的参数改了，程序看不出是改松还是改紧`, `原来：${stable(was)}`, `现在：${stable(is)}`].join('\n')
+  const title = `lint 规则 ${ruleName(rule)} 的参数改了，程序看不出是改松还是改紧`
+  const [before, after] = [stable(was), stable(is)]
+  if (before.length + after.length <= WHOLE) return [title, `原来：${before}`, `现在：${after}`].join('\n')
+  return [title, ...placesChanged(was, is)].join('\n')
 }
 
 /** 列出来的文件最多几个。 */
