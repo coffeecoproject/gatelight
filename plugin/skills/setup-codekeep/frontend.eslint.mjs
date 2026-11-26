@@ -12,12 +12,14 @@ const FRONT = ['src/**/*.{ts,tsx,js,jsx}']
 const THEME = ['src/theme.ts']
 /** 组件层目录：要自己画的组件和它们同目录的样式文件。 */
 const UI = ['src/ui/**']
+/** 前端里的测试和测试用的辅助代码：不管。 */
+const TESTS = ['**/*.{test,spec}.{ts,tsx,js,jsx}', '**/__tests__/**']
 /** 后台代码；没有就留空。 */
 const BACK = []
 /** 后台不管的：种子数据、演示数据、测试、迁移。 */
 const BACK_SKIP = []
 /** 能写数字的参数：和外观无关的。项目自己组件里的（名字最长几个字、最早哪一年）也加进来。 */
-const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 'step', 'tabIndex', 'count', 'defaultValue', 'pageSize', 'mouseEnterDelay', 'mouseLeaveDelay', 'duration']
+const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 'step', 'tabIndex', 'count', 'defaultValue', 'pageSize', 'mouseEnterDelay', 'mouseLeaveDelay', 'duration', 'maxCount', 'level']
 /** 项目自己组件里专门放说明的参数（副标题、帮助文字这类）。确认框、出错和空状态组件的正文参数不放这里，放 ENTRY_PROPS。 */
 const DESC_PROPS = []
 /** 前端提示：调用的对象名（message.success(...) 这种）。 */
@@ -44,7 +46,13 @@ const longer = max => `/^[\\s\\S]{${max + 1},}$/`
 const callee = `CallExpression[callee.object.name=/^(${names(NOTICE_CALLS)})$/]`
 const confirm = "CallExpression[callee.object.name='Modal'][callee.property.name=/^(confirm|info|success|error|warning)$/] Property[key.name='content']"
 const strings = parent => [`${parent} > Literal`, `${parent} > TemplateLiteral > TemplateElement`]
+// 出错条：antd 的 Alert 只准 error、warning 两种（写成两者二选一的也算），它的 title 就是出错那一句；description 照样禁
+const ERROR_LEVEL = '/^(error|warning)$/'
+const errorType = `JSXAttribute[name.name='type']:matches([value.value=${ERROR_LEVEL}], :has(JSXExpressionContainer > ConditionalExpression[consequent.value=${ERROR_LEVEL}][alternate.value=${ERROR_LEVEL}]))`
+const errorTitle = `JSXOpeningElement[name.name='Alert']:has(> ${errorType}) > JSXAttribute[name.name='title']`
 const ENTRY = [
+  `${errorTitle} > Literal`,
+  ...strings(`${errorTitle} > JSXExpressionContainer`),
   `${callee} Literal`,
   `${callee} TemplateElement`,
   ...strings(confirm),
@@ -80,13 +88,15 @@ const entryText = ENTRY.flatMap(entry => {
 const descPlaces = [
   { selector: "JSXOpeningElement[name.name='p']", message: `段落是放说明的${NAME_HINT}` },
   { selector: "JSXOpeningElement > JSXMemberExpression[object.name='Typography'][property.name='Paragraph']", message: `段落是放说明的${NAME_HINT}` },
-  { selector: `JSXAttribute[name.name=/^(extra|tooltip${DESC_PROPS.length ? `|${names(DESC_PROPS)}` : ''})$/]`, message: `这个参数是放说明的${NAME_HINT}` },
+  // 表单项的 extra、tooltip 是帮助文字；别的组件的 extra 是放按钮的地方（Card、Result、Drawer），不管
+  { selector: "JSXOpeningElement[name.object.name='Form'][name.property.name='Item'] > JSXAttribute[name.name=/^(extra|tooltip)$/]", message: `这个参数是放说明的${NAME_HINT}` },
+  ...(DESC_PROPS.length ? [{ selector: `JSXAttribute[name.name=/^(${names(DESC_PROPS)})$/]`, message: `这个参数是放说明的${NAME_HINT}` }] : []),
   {
     selector: `JSXOpeningElement:not([name.name=/^(${names(ENTRY_PROPS.filter(([, prop]) => prop === 'description').map(([component]) => component))})$/]) > JSXAttribute[name.name='description']`,
     message: `这个参数是放说明的${NAME_HINT}`,
   },
   {
-    selector: "JSXOpeningElement[name.name='Alert']:not(:has(JSXAttribute[name.name='type'][value.value=/^(error|warning)$/]))",
+    selector: `JSXOpeningElement[name.name='Alert']:not(:has(> ${errorType}))`,
     message: `说明用的横幅${NAME_HINT}`,
   },
 ]
@@ -101,7 +111,7 @@ const values = [
     selector: `ObjectExpression:has(> Property[key.name=/^(dataIndex|render)$/]) > Property[key.name='width'] > ${NUMBER}`,
     message: `写死的列宽（用主题里的几档，或不写）${STYLE_HINT}`,
   },
-  { selector: 'Literal[value=/^(#[0-9a-fA-F]{3,8}|rgba?\\(|hsla?\\(|-?\\d+(\\.\\d+)?(px|%|rem|em|vh|vw))$/]', message: `写死的颜色或长度${STYLE_HINT}` },
+  { selector: 'Literal[value=/^(#[0-9a-fA-F]{3,8}$|(rgb|hsl)a?\\(|-?\\d+(\\.\\d+)?(px|%|rem|em|vh|vw)$)/]', message: `写死的颜色或长度${STYLE_HINT}` },
 ]
 const STYLE_FILE = 'ImportDeclaration[source.value=/\\.(css|less|s[ac]ss|styl)$/]'
 const channels = (allowed = []) => [
@@ -126,7 +136,7 @@ export default [
   {
     ...front,
     files: FRONT,
-    ignores: [...THEME, ...UI],
+    ignores: [...THEME, ...UI, ...TESTS],
     rules: {
       [RESTRICTED]: [
         'error',
@@ -145,6 +155,7 @@ export default [
   {
     ...front,
     files: UI.map(dir => `${dir.replace(/\/\*\*$/, '')}/**/*.{ts,tsx,js,jsx}`),
+    ignores: TESTS,
     rules: {
       [RESTRICTED]: [
         'error',
