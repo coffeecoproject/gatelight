@@ -7,7 +7,7 @@ import { type Effective, eslintItems, type FileRules } from '../../src/keep/esli
 import { userAgrees } from '../helpers.ts'
 import { codekeep, eslintConfig, keepConfig, keepRepo, pendingOf, write } from './helpers.ts'
 
-const rules = (map: Record<string, unknown[]>, unusedDirectives = 0): Effective => ({ rules: map, unusedDirectives })
+const rules = (map: Record<string, unknown[]>, unusedDirectives = 0, noInlineConfig = false): Effective => ({ rules: map, unusedDirectives, noInlineConfig })
 /** 每个文件都用同一份规则。 */
 const same = (files: string[], effective: Effective | undefined): FileRules => new Map(files.map(file => [file, effective]))
 const texts = (before: FileRules, now: FileRules): string[] => eslintItems(before, now).map(item => item.text)
@@ -52,6 +52,15 @@ describe('比较生效的规则', () => {
     assert.deepEqual(texts(same(ONE, rules({}, 0)), same(ONE, rules({}, 2))), [])
   })
 
+  test('代码里的"这里不查"注释从不起作用改成起作用（关掉 noInlineConfig）：算一项，影响的文件合成一项；打开、一直开着不问', () => {
+    const files = ['src/a.js', 'src/b.js']
+    assert.deepEqual(texts(same(files, rules({}, 0, true)), same(files, rules({}, 0, false))), [
+      '代码里就地关规则的注释（eslint-disable、/* eslint 规则: off */）从不起作用改成起作用（关掉了 noInlineConfig）：以后在代码里写一句注释就能关掉规则，不用改配置\n影响的代码：src/a.js、src/b.js',
+    ])
+    assert.deepEqual(texts(same(files, rules({}, 0, false)), same(files, rules({}, 0, true))), [])
+    assert.deepEqual(texts(same(files, rules({}, 0, true)), same(files, rules({}, 0, true))), [])
+  })
+
   test('同一处改动出现在很多文件上合成一项，写明多少个文件；不再被 lint 的文件合成一项；这次新加的文件不比', () => {
     const files = ['src/a.js', 'src/b.js', 'src/c.js', 'src/d.js', 'src/e.js']
     const before = same(files, rules({ 'no-console': [2] }))
@@ -89,6 +98,22 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     const again = pendingOf(r.out)
     assert.deepEqual(again.items, ['代码嵌套层数上限（max-depth）从 3 层调到 4 层：以后代码可以嵌套得更深，更难读'])
     assert.match(again.text, /影响的代码：src\/a\.js、src\/b\.js、src\/legacy\/old\.js 等 4 个文件/)
+  })
+
+  test('某个目录下的 noInlineConfig 关掉了：一项，列出那个目录下的文件；新打开 noInlineConfig 不问', () => {
+    const inline = "{ files: ['src/legacy/**'], linterOptions: { noInlineConfig: true } }"
+    const repo = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'error' }, inline) })
+    write(repo, 'eslint.config.mjs', eslintConfig({ 'no-console': 'error' }))
+    let r = codekeep(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    const asked = pendingOf(r.out)
+    assert.deepEqual(asked.items, ['代码里就地关规则的注释（eslint-disable、/* eslint 规则: off */）从不起作用改成起作用（关掉了 noInlineConfig）：以后在代码里写一句注释就能关掉规则，不用改配置'])
+    assert.match(asked.text, /影响的代码：src\/legacy\/old\.js、src\/legacy\/older\.js\n/)
+
+    const tighter = keepRepo({ ...JOINED, ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-console': 'error' }) })
+    write(tighter, 'eslint.config.mjs', eslintConfig({ 'no-console': 'error' }, "{ files: ['**/*.js'], linterOptions: { noInlineConfig: true } }"))
+    r = codekeep(tighter, ['check'])
+    assert.equal(r.code, 0, r.out)
   })
 
   test('按目录忽略：原来查、现在不查的文件合成一项，列出文件', () => {

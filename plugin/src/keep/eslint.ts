@@ -2,7 +2,8 @@
 // 算它实际用的规则，分叉点那一版和现在比（eslint 的配置是代码，读文件读不出规则）。路径都传绝对路径：相对路径会被当成忽略。
 // 每个文件都算，不挑代表文件：按目录加的覆盖、忽略，挑代表文件会漏。实测 1500 个文件 0.3 秒。
 // 算放松的：规则没了、关了、error 降成 warn；上限类规则（行数、复杂度、嵌套、参数）数字调大；别的规则改了参数（判断不了方向）；
-// 文件变成不被 lint（被忽略、配置不再覆盖它）；reportUnusedDisableDirectives 降级或关掉。新加规则、调严的不算。
+// 文件变成不被 lint（被忽略、配置不再覆盖它）；reportUnusedDisableDirectives 降级或关掉；noInlineConfig 关掉（代码里的注释又能就地关规则）。
+// 新加规则、调严的不算。
 // 只比两边都有的文件：这次新加的文件没有"原来"。
 
 import { createRequire } from 'node:module'
@@ -16,6 +17,8 @@ export interface Effective {
   rules: Record<string, unknown[]>
   /** 没用的 eslint-disable 注释报不报：0 关、1 警告、2 报错。 */
   unusedDirectives: number
+  /** 代码里就地关规则、改配置的注释（eslint-disable 和 eslint 规则: off 这类）不起作用。 */
+  noInlineConfig: boolean
 }
 
 /** 文件（相对仓库根目录）→ 生效的规则。 */
@@ -26,7 +29,7 @@ export const isCode = (path: string): boolean => /\.[cm]?[jt]sx?$/.test(path)
 
 interface EslintInstance {
   isPathIgnored(path: string): Promise<boolean>
-  calculateConfigForFile(path: string): Promise<{ rules?: Record<string, unknown>; linterOptions?: { reportUnusedDisableDirectives?: unknown } } | undefined>
+  calculateConfigForFile(path: string): Promise<{ rules?: Record<string, unknown>; linterOptions?: { reportUnusedDisableDirectives?: unknown; noInlineConfig?: unknown } } | undefined>
 }
 type EslintClass = new (options: { cwd: string; overrideConfigFile: string }) => EslintInstance
 
@@ -72,7 +75,8 @@ export async function fileRules(eslint: EslintClass, tree: string, config: strin
       const [severity, ...options] = Array.isArray(setting) ? setting : [setting]
       rules[name] = [level(severity), ...options]
     }
-    result.set(file, { rules, unusedDirectives: level(computed.linterOptions?.reportUnusedDisableDirectives) })
+    const options = computed.linterOptions
+    result.set(file, { rules, unusedDirectives: level(options?.reportUnusedDisableDirectives), noInlineConfig: options?.noInlineConfig === true })
   }
   return result
 }
@@ -174,6 +178,13 @@ function changesOf(before: Effective, now: Effective): Change[] {
       before: stable(['unusedDirectives', before.unusedDirectives]),
       after: stable(['unusedDirectives', now.unusedDirectives]),
       text: `没用了的"这里不查"注释（eslint-disable）从${LEVEL_NAMES[before.unusedDirectives]}改成${LEVEL_NAMES[now.unusedDirectives]}（reportUnusedDisableDirectives）：以后用不上的这类注释可以留在代码里`,
+    })
+  }
+  if (before.noInlineConfig && !now.noInlineConfig) {
+    changes.push({
+      before: stable(['noInlineConfig', true]),
+      after: stable(['noInlineConfig', false]),
+      text: '代码里就地关规则的注释（eslint-disable、/* eslint 规则: off */）从不起作用改成起作用（关掉了 noInlineConfig）：以后在代码里写一句注释就能关掉规则，不用改配置',
     })
   }
   return changes

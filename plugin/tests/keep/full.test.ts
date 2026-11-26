@@ -5,7 +5,7 @@ import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { runs } from '../helpers.ts'
-import { keepConfig, keepRepo, sessionBrief, testpace } from './helpers.ts'
+import { keepConfig, keepRepo, sessionBrief, testpace, write } from './helpers.ts'
 
 const TESTPACE_JSON = `${JSON.stringify({ fast: 'true', files: 'testpace run node-test', full: 'true', tests: ['tests/**/*.test.mjs'] })}\n`
 /** 接入了 testpace、testcraft 的小仓库；keep 为 true 时也接入 codekeep。 */
@@ -57,5 +57,15 @@ describe('会话开始时的说明', () => {
     assert.match(told, /"这里不查"的注释（eslint-disable、@ts-expect-error 这类）必须写理由/)
     assert.match(told, /提交里不放密钥、密码/)
     assert.doesNotMatch(sessionBrief(project(false)), /codekeep/)
+  })
+
+  test('配置里写了 styles 的多说第 5 条前端约定，写明主题和组件层在哪；没写 styles 的不说', () => {
+    const repo = project(true)
+    assert.doesNotMatch(sessionBrief(repo), /5\. 前端/)
+    write(repo, '.codekeep/config.json', keepConfig({ checks: [{ name: 'lint', command: 'true' }], styles: { theme: ['src/theme.ts'], ui: ['src/ui', 'admin/ui'] } }))
+    const told = sessionBrief(repo)
+    assert.match(told, /5\. 前端：页面上不加说明文字；组件不合适时不写样式、不写具体的值去补，告诉用户。/)
+    assert.match(told, /具体的颜色、尺寸只写在主题 src\/theme\.ts、组件层 src\/ui 里的样式文件、组件层 admin\/ui 里的样式文件；/)
+    assert.match(told, /前端文件里"这里不查"的注释不起作用，lint 报了就改代码。/)
   })
 })

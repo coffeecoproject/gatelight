@@ -53,6 +53,26 @@ describe('.codekeep/config.json 的写法', () => {
     assert.match(problems({ checks: CHECKS, tsconfig: ['tsconfig.json', './tsconfig.json'] }), /tsconfig 里的 "tsconfig\.json" 写了两次/)
   })
 
+  test('styles 可以只写 theme 或只写 ui，没写的一项是空的；不写 styles 就没有这一项', () => {
+    assert.deepEqual(parse({ checks: CHECKS, styles: { theme: ['./src/theme.ts'] } }).config?.styles, { theme: ['src/theme.ts'], ui: [] })
+    assert.deepEqual(parse({ checks: CHECKS, styles: { ui: ['src/ui', 'admin/src/ui'] } }).config?.styles, { theme: [], ui: ['src/ui', 'admin/src/ui'] })
+    assert.deepEqual(parse({ checks: CHECKS, styles: { theme: ['src/theme.ts'], ui: ['src/ui'] } }).config?.styles, { theme: ['src/theme.ts'], ui: ['src/ui'] })
+    assert.equal(parse({ checks: CHECKS }).config?.styles, undefined)
+  })
+
+  test('styles 写错算配置问题：不是对象、有别的字段、theme 和 ui 都没写、写成空数组、路径重复、绝对路径或通配', () => {
+    for (const bad of [['src/ui'], 'src/ui', true]) assert.match(problems({ checks: CHECKS, styles: bad }), /"styles" 应该是 \{ "theme": \[主题文件\], "ui": \[组件层目录\] \}/)
+    assert.match(problems({ checks: CHECKS, styles: { theme: ['src/theme.ts'], colors: ['src/colors.ts'] } }), /"styles" 有未知字段 "colors"/)
+    assert.match(problems({ checks: CHECKS, styles: {} }), /"styles" 要写 theme、ui 里的至少一项/)
+    assert.match(problems({ checks: CHECKS, styles: { theme: [] } }), /"styles\.theme" 要写成非空数组，每项是主题文件/)
+    assert.match(problems({ checks: CHECKS, styles: { ui: 'src/ui' } }), /"styles\.ui" 要写成非空数组，每项是组件层目录/)
+    assert.match(problems({ checks: CHECKS, styles: { ui: ['src/ui', './src/ui'] } }), /styles\.ui 里的 "src\/ui" 写了两次/)
+    for (const bad of ['/src/theme.ts', '../theme.ts', 'src/*.css', 'src/{a,b}.ts']) {
+      assert.match(problems({ checks: CHECKS, styles: { theme: [bad] } }), /styles\.theme 里的 .+ 要写主题文件（仓库里的相对路径，不用通配）/)
+      assert.match(problems({ checks: CHECKS, styles: { ui: [bad] } }), /styles\.ui 里的 .+ 要写组件层目录（仓库里的相对路径，不用通配）/)
+    }
+  })
+
   test('prettier、secrets 只认 true、false；不是 JSON 的读不出来', () => {
     assert.match(problems({ checks: CHECKS, prettier: 'yes' }), /"prettier" 要写 true 或 false/)
     assert.match(problems({ checks: CHECKS, secrets: 1 }), /"secrets" 要写 true 或 false/)
