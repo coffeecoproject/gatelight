@@ -50,10 +50,11 @@ describe('整组里的"代码规范"', () => {
 })
 
 describe('会话开始时的说明', () => {
-  test('工作区里有 .codekeep/ 才说：不改松规范、"这里不查"的注释写理由、不放密钥', () => {
+  test('工作区里有 .codekeep/ 才说：不改松规范、不用 eslint 的批量豁免、"这里不查"的注释写理由、不放密钥', () => {
     const told = sessionBrief(project(true))
     assert.match(told, /这个仓库用 codekeep 管代码规范（\.codekeep\/）/)
     assert.match(told, /不改松规范：不关规则、不把 error 降成 warn/)
+    assert.match(told, /不用 eslint 的批量豁免（eslint-suppressions\.json），超标的改代码/)
     assert.match(told, /"这里不查"的注释（eslint-disable、@ts-expect-error 这类）必须写理由/)
     assert.match(told, /提交里不放密钥、密码/)
     assert.doesNotMatch(sessionBrief(project(false)), /codekeep/)

@@ -111,7 +111,7 @@ claude plugin uninstall modwall@modwall
 仓库里有 `.codekeep/` 目录才启用。启用后会话开始时说明规范的约定（不改松规范，"这里不查"的注释要写理由，提交里不放密钥），`testpace full` 在测试之前跑一次 `codekeep check`，不用另外登记。它依次做：
 
 - **配置**：`.codekeep/config.json` 写得对不对：`checks` 是规范检查的命令（直接写工具命令，不经过项目的脚本），`eslint` 写配置文件，`tsconfig` 写要比的 tsconfig，`prettier` 开着时比格式检查查哪些文件，`secrets` 开着时扫密钥，`styles` 写前端的主题文件和组件层目录。
-- **改松要你同意**：和分叉点那一版比。eslint 对每个代码文件算实际生效的规则（用项目自己装的 eslint），规则关了、没了、error 降成 warn、长度和复杂度上限调大、文件不再被 lint、关掉 `noInlineConfig`（代码里的注释又能就地关规则）算改松；prettier 对每个文件算格式检查查不查，原来查、现在不查了（加进了忽略文件）算改松；tsconfig 用 `tsc --showConfig` 比，严格选项关了、开了 `skipLibCheck`、`include` 少了、`exclude` 多了算改松；写了 `styles` 的，主题文件、组件层目录里的样式文件新加、删掉、改了也要同意（具体的颜色、尺寸只准写在这两处）；还有批量豁免文件（`eslint-suppressions.json`）多了豁免、`.gitleaksignore` 多了条目、gitleaks 或 biome 的配置改了、检查命令改了或删了、关了密钥扫描、删了配置。分叉点那一版在系统临时目录的临时 worktree 里算（链接现在的 `node_modules`），算不出来的不当成没改松，列成"程序看不出"的一项。改松的要你在弹窗里同意，同意按项记；加规则、调严不问；首次接入不问。
+- **改松要你同意**：和分叉点那一版比。eslint 对每个代码文件算实际生效的规则（用项目自己装的 eslint），规则关了、没了、error 降成 warn、长度和复杂度上限调大、文件不再被 lint、关掉 `noInlineConfig`（代码里的注释又能就地关规则）算改松；prettier 对每个文件算格式检查查不查，原来查、现在不查了（加进了忽略文件）算改松；tsconfig 用 `tsc --showConfig` 比，严格选项关了、开了 `skipLibCheck`、`include` 少了、`exclude` 多了算改松；写了 `styles` 的，主题文件、组件层目录里的样式文件新加、删掉、改了也要同意（具体的颜色、尺寸只准写在这两处）；还有 `.gitleaksignore` 多了条目、gitleaks 或 biome 的配置改了、检查命令改了或删了、关了密钥扫描、删了配置。分叉点那一版在系统临时目录的临时 worktree 里算（链接现在的 `node_modules`），算不出来的不当成没改松，列成"程序看不出"的一项。改松的要你在弹窗里同意，同意按项记；加规则、调严不问；首次接入不问。不用批量豁免：仓库里有 `eslint-suppressions.json`、检查命令带 `--suppress` 一类参数的直接不过，旧代码超标的改代码。
 - **跑检查**：依次跑 `checks` 里的命令，一条没过就停。
 - **扫密钥**：用 gitleaks 扫分叉点之后的提交和没提交的改动，输出里打码。没装 gitleaks 算没通过，说怎么装，不替你装。
 

@@ -1,10 +1,10 @@
-// 读文件就比得出来的放松：.codekeep/config.json、eslint 的批量豁免文件、gitleaks 的忽略文件和配置、biome 的配置。
+// 读文件就比得出来的放松：.codekeep/config.json、gitleaks 的忽略文件和配置、biome 的配置。
 // 和分叉点那一版比，放松的才成为要用户确认的一项；收紧的不问。要跑工具才比得出来的见 eslint、tsconfig、prettier 的测试。
 
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { type Config, parseConfig } from '../../src/keep/config.ts'
-import { biomeItem, configItems, gitleaksItems, suppressionsItem } from '../../src/keep/loosen.ts'
+import { biomeItem, configItems, gitleaksItems } from '../../src/keep/loosen.ts'
 
 const BASE = {
   checks: [
@@ -37,12 +37,11 @@ describe('.codekeep/config.json 改松了哪些', () => {
     assert.deepEqual(loosened({ checks: [{ name: '类型检查', command: 'tsc --noEmit' }, { name: 'eslint', command: 'eslint . --max-warnings 0' }] }), [])
   })
 
-  test('删掉 eslint 一项、删掉一个 tsconfig、换 eslint 配置文件或豁免文件的位置：各算一项', () => {
+  test('删掉 eslint 一项、删掉一个 tsconfig、换 eslint 配置文件：各算一项', () => {
     assert.deepEqual(loosened({ eslint: undefined }), ['不再比 eslint 生效的规则（删掉了 eslint 一项）：以后 lint 规则改松了程序看不出来'])
     assert.deepEqual(loosened({ tsconfig: ['tsconfig.json'] }), ['不再比 web/tsconfig.json 的严格选项：以后这份类型检查配置改松了程序看不出来'])
-    assert.deepEqual(loosened({ eslint: { config: 'eslint.loose.mjs', suppressions: 'other.json' } }), [
+    assert.deepEqual(loosened({ eslint: { config: 'eslint.loose.mjs' } }), [
       '拿来比规则的 eslint 配置文件从 eslint.config.mjs 换成了 eslint.loose.mjs：程序看不出两份是不是一回事，lint 实际用的可能不是这一份',
-      'eslint 的批量豁免文件从 eslint-suppressions.json 换成了 other.json：换过去的那份里豁免了什么没和原来的比',
     ])
   })
 
@@ -78,38 +77,6 @@ describe('styles（主题文件、组件层目录）去掉了哪些', () => {
   test('新写上 styles、往里加路径：不问', () => {
     assert.deepEqual(configItems(config(), config({ styles: STYLES })), [])
     assert.deepEqual(configItems(config({ styles: { theme: ['src/theme.ts'] } }), config({ styles: STYLES })), [])
-  })
-})
-
-describe('eslint 的批量豁免文件', () => {
-  const file = (counts: Record<string, Record<string, number>>): string =>
-    JSON.stringify(Object.fromEntries(Object.entries(counts).map(([path, rules]) => [path, Object.fromEntries(Object.entries(rules).map(([rule, count]) => [rule, { count }]))])))
-  const BEFORE = file({ 'src/a.ts': { 'no-console': 2 } })
-
-  test('豁免数变多、新加文件或规则的条目：合成一项，逐处写明从几处变成几处', () => {
-    const now = file({ 'src/a.ts': { 'no-console': 3, '@typescript-eslint/no-explicit-any': 1 }, 'src/b.ts': { complexity: 1 } })
-    const item = suppressionsItem('eslint-suppressions.json', { before: BEFORE, now })
-    assert.equal(
-      item?.text,
-      [
-        'eslint 的批量豁免文件 eslint-suppressions.json 多豁免了 3 处：这些地方违反了规则也照样通过',
-        'src/a.ts：不许用 any 跳过类型（@typescript-eslint/no-explicit-any） 从 0 处变成 1 处',
-        'src/a.ts：不许留调试用的 console（no-console） 从 2 处变成 3 处',
-        'src/b.ts：函数复杂度上限（分支的多少）（complexity） 从 0 处变成 1 处',
-      ].join('\n'),
-    )
-    // 分叉点上还没有这个文件：现在有的都算新加的豁免
-    assert.match(suppressionsItem('eslint-suppressions.json', { before: undefined, now: BEFORE })?.text ?? '', /多豁免了 1 处/)
-  })
-
-  test('豁免变少、删掉条目、删掉整个文件：不问', () => {
-    assert.equal(suppressionsItem('eslint-suppressions.json', { before: BEFORE, now: file({ 'src/a.ts': { 'no-console': 1 } }) }), undefined)
-    assert.equal(suppressionsItem('eslint-suppressions.json', { before: BEFORE, now: file({}) }), undefined)
-    assert.equal(suppressionsItem('eslint-suppressions.json', { before: BEFORE, now: undefined }), undefined)
-  })
-
-  test('改了又读不出来：程序看不出是不是多豁免了，也算一项', () => {
-    assert.match(suppressionsItem('eslint-suppressions.json', { before: BEFORE, now: '{' })?.text ?? '', /现在这一版读不出来，程序看不出是不是多豁免了/)
   })
 })
 

@@ -1,5 +1,5 @@
-// 读文件就能比的放松：.codekeep/config.json、eslint 的批量豁免文件、gitleaks 的忽略文件和配置、biome 的配置。和分叉点那一版比，
-// 放松的列成条目交给底座的用户确认（base/confirm.ts）；收紧的（加检查、豁免变少）不问。
+// 读文件就能比的放松：.codekeep/config.json、gitleaks 的忽略文件和配置、biome 的配置。和分叉点那一版比，
+// 放松的列成条目交给底座的用户确认（base/confirm.ts）；收紧的（加检查）不问。
 // eslint、tsconfig 生效的配置要跑工具才算得出来，见 eslint.ts、tsconfig.ts。
 //
 // 每一项的改之前、改成什么写成能区分同一项改动的内容：同一条检查的同一次改命令在哪个分支上都是同一项，共用一次同意；
@@ -9,7 +9,7 @@ import type { ConfirmItem } from '../base/confirm.ts'
 import type { Judging } from '../base/judging.ts'
 import { hash } from '../base/records.ts'
 import { CONFIG_PATH, type Config, KEEP_DIR } from './config.ts'
-import { ruleName, stable } from './eslint.ts'
+import { stable } from './eslint.ts'
 
 /** gitleaks 的忽略文件和配置（仓库根目录；gitleaks 在仓库根目录跑时用的就是这两个）。 */
 export const GITLEAKS_IGNORE = '.gitleaksignore'
@@ -58,13 +58,6 @@ export function configItems(before: Config, now: Config): ConfirmItem[] {
           text: `拿来比规则的 eslint 配置文件从 ${before.eslint.config} 换成了 ${now.eslint.config}：程序看不出两份是不是一回事，lint 实际用的可能不是这一份`,
         })
       }
-      if (now.eslint.suppressions !== before.eslint.suppressions) {
-        items.push({
-          before: stable(['eslint.suppressions', before.eslint.suppressions]),
-          after: stable(['eslint.suppressions', now.eslint.suppressions]),
-          text: `eslint 的批量豁免文件从 ${before.eslint.suppressions} 换成了 ${now.eslint.suppressions}：换过去的那份里豁免了什么没和原来的比`,
-        })
-      }
     }
   }
   for (const tsconfig of before.tsconfig.filter(path => !now.tsconfig.includes(path))) {
@@ -83,64 +76,15 @@ export function configItems(before: Config, now: Config): ConfirmItem[] {
   return items
 }
 
-/** 批量豁免文件：文件 → 规则 → 豁免了几处。读不出来时是 undefined。 */
-type Suppressions = Map<string, number>
-
-function suppressionsOf(text: string): Suppressions | undefined {
-  try {
-    const raw = JSON.parse(text) as unknown
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
-    const counts: Suppressions = new Map()
-    for (const [file, rules] of Object.entries(raw as Record<string, unknown>)) {
-      if (typeof rules !== 'object' || rules === null) return undefined
-      for (const [rule, entry] of Object.entries(rules as Record<string, unknown>)) {
-        const count = (entry as { count?: unknown } | null)?.count
-        if (typeof count !== 'number') return undefined
-        counts.set(`${file}\0${rule}`, count)
-      }
-    }
-    return counts
-  } catch {
-    return undefined
-  }
-}
-
-/** 列出来的最多几处。 */
-const SHOWN = 20
-
-/** eslint 的批量豁免文件里，哪条规则、哪个文件豁免的数量变多了：合成一项。 */
-export function suppressionsItem(path: string, judging: Judging): ConfirmItem | undefined {
-  if (judging.now === undefined) return undefined
-  const now = suppressionsOf(judging.now)
-  const before = judging.before === undefined ? new Map<string, number>() : suppressionsOf(judging.before)
-  if (!now || !before) {
-    if (judging.before === judging.now) return undefined
-    return {
-      before: hash(judging.before),
-      after: hash(judging.now),
-      text: `eslint 的批量豁免文件 ${path} 改了，${!now ? '现在这一版' : '分叉点那一版'}读不出来，程序看不出是不是多豁免了`,
-    }
-  }
-  const more = [...now].filter(([key, count]) => count > (before.get(key) ?? 0)).sort(([a], [b]) => (a < b ? -1 : 1))
-  if (more.length === 0) return undefined
-  const lines = more.slice(0, SHOWN).map(([key, count]) => {
-    const [file, rule] = key.split('\0')
-    return `${file}：${ruleName(rule ?? '')} 从 ${before.get(key) ?? 0} 处变成 ${count} 处`
-  })
-  if (more.length > SHOWN) lines.push(`……还有 ${more.length - SHOWN} 处`)
-  return {
-    before: stable(more.map(([key]) => [key, before.get(key) ?? 0])),
-    after: stable(more),
-    text: [`eslint 的批量豁免文件 ${path} 多豁免了 ${more.length} 处：这些地方违反了规则也照样通过`, ...lines].join('\n'),
-  }
-}
-
 /** .gitleaksignore 的条目（每行一条，# 开头的是注释）。 */
 const entries = (text: string | undefined): string[] =>
   (text ?? '')
     .split('\n')
     .map(line => line.trim())
     .filter(line => line !== '' && !line.startsWith('#'))
+
+/** 列出来的最多几条。 */
+const SHOWN = 20
 
 /** gitleaks 的忽略文件多了条目、配置改了（配置是 TOML，程序看不出方向，改了就问）。 */
 export function gitleaksItems(ignore: Judging, config: Judging): ConfirmItem[] {
