@@ -16,12 +16,39 @@ const RESTRICTED = 'no-restricted-syntax'
 
 type Change = Record<string, string>
 
-/** 新建一个临时项目目录（node_modules 链好），把换掉了 change 里那几行常量的模板写成 eslint.frontend.mjs。 */
+/**
+ * 像项目那样改 LANGUAGES：field 有值时换掉 lang 那一套里的这一项（只认那一套里的）；没有时把 value 整套加进 LANGUAGES，名字叫 lang。
+ * value 写成代码。
+ */
+function language(text: string, lang: string, field: string | undefined, value: string): string {
+  if (!field) {
+    const start = /^const LANGUAGES = \{$/m
+    assert.match(text, start, '模板里没有 LANGUAGES 这一项')
+    return text.replace(start, head => `${head}\n  ${lang}: ${value},`)
+  }
+  const block = new RegExp(`^ {2}${lang}: \\{\\n[\\s\\S]*?^ {2}\\},$`, 'm')
+  const [set] = text.match(block) ?? []
+  assert.ok(set, `模板的 LANGUAGES 里没有 ${lang} 这一套`)
+  const line = new RegExp(`^ {4}${field}: .*,$`, 'm')
+  assert.match(set, line, `LANGUAGES.${lang} 里没有 ${field} 这一项`)
+  // 正则里有 $，换的时候不能让它当成替换写法
+  return text.replace(set, () => set.replace(line, () => `    ${field}: ${value},`))
+}
+
+/**
+ * 新建一个临时项目目录（node_modules 链好），把换掉了 change 里那几行常量的模板写成 eslint.frontend.mjs。
+ * 名字写成 LANGUAGES.<语言>.<项> 的换掉 LANGUAGES 里那一套的一项，写成 LANGUAGES.<语言> 的整套加进去。
+ */
 function filled(change: Change): { dir: string; file: string } {
   const dir = tempDir('codekeep-frontend-')
   symlinkSync(NODE_MODULES, join(dir, 'node_modules'), 'dir')
   let text = readFileSync(TEMPLATE, 'utf8')
   for (const [name, value] of Object.entries(change)) {
+    const [constant, lang, field] = name.split('.')
+    if (constant === 'LANGUAGES' && lang) {
+      text = language(text, lang, field, value)
+      continue
+    }
     const line = new RegExp(`^const ${name} = .*$`, 'm')
     assert.match(text, line, `模板里没有 ${name} 这一项`)
     text = text.replace(line, `const ${name} = ${value}`)
@@ -31,31 +58,23 @@ function filled(change: Change): { dir: string; file: string } {
 }
 
 /**
- * 一个接好模板的项目：change 是要换掉的"按项目填"的常量（名字 → 新的值，写成代码）；不换时直接引模板本身。
+ * 一个接好模板的项目：change 是要换掉的"按项目填"的常量（名字 → 新的值，写成代码）。模板不填 UI_LANGUAGE、COMPONENT_LIBRARY 载入就报错，原样用不了。
  * 项目自己的配置只加一项：.ts、.tsx 用 typescript-eslint 的 parser。
  */
-function project(change: Change = {}): ESLint {
-  let dir: string
-  let from: string
-  if (Object.keys(change).length) {
-    dir = filled(change).dir
-    from = './eslint.frontend.mjs'
-  } else {
-    dir = tempDir('codekeep-frontend-')
-    symlinkSync(NODE_MODULES, join(dir, 'node_modules'), 'dir')
-    from = pathToFileURL(TEMPLATE).href
-  }
+function project(change: Change): ESLint {
+  const { dir } = filled(change)
   write(
     dir,
     'eslint.config.mjs',
-    `import tseslint from 'typescript-eslint'\nimport frontend from '${from}'\n\nexport default [\n  { files: ['**/*.{ts,tsx}'], languageOptions: { parser: tseslint.parser } },\n  ...frontend,\n]\n`,
+    `import tseslint from 'typescript-eslint'\nimport frontend from './eslint.frontend.mjs'\n\nexport default [\n  { files: ['**/*.{ts,tsx}'], languageOptions: { parser: tseslint.parser } },\n  ...frontend,\n]\n`,
   )
   return new ESLint({ cwd: dir, overrideConfigFile: join(dir, 'eslint.config.mjs') })
 }
 
 const MODAL_METHODS = "['confirm', 'info', 'success', 'error', 'warning']"
-/** 用 antd 的项目照技能填的组件库那几项。 */
+/** 用 antd 的项目照技能填的组件库那几项，页面文字是中文。 */
 const ANTD_FILL: Change = {
+  UI_LANGUAGE: "'zh'",
   COMPONENT_LIBRARY: "'antd'",
   DESC_ELEMENTS: "['Typography.Paragraph']",
   DESC_PROPS: "[['Form.Item', 'extra'], ['Form.Item', 'tooltip']]",
@@ -73,8 +92,8 @@ const ANTD_FILL: Change = {
 }
 /** antd 的填法上再换几项。 */
 const antd = (change: Change = {}): ESLint => project({ ...ANTD_FILL, ...change })
-/** 没用组件库（COMPONENT_LIBRARY 写 'none'），组件库那几项都空着，再换几项。 */
-const none = (change: Change = {}): ESLint => project({ COMPONENT_LIBRARY: "'none'", ...change })
+/** 没用组件库（COMPONENT_LIBRARY 写 'none'），组件库那几项都空着，页面文字是中文，再换几项。 */
+const none = (change: Change = {}): ESLint => project({ UI_LANGUAGE: "'zh'", COMPONENT_LIBRARY: "'none'", ...change })
 
 const ANTD = antd()
 const NONE = none()
@@ -133,7 +152,7 @@ describe('页面上的固定文字只放名字', () => {
     )
   })
 
-  test('不带中文的文字不管：多长、带什么标点都不报', async () => {
+  test('UI_LANGUAGE 写 zh 时不带中文的文字不管：英文多长、带什么标点都不报', async () => {
     assert.deepEqual(await lint(PAGE, page('<span>This is a very long english sentence, really.</span>', "<span title='Hello, world! (yes): no.' />")), [])
   })
 })
@@ -406,6 +425,156 @@ describe('必须原样展示的整段文字（VERBATIM）', () => {
   })
 })
 
+describe('页面文字的语言（UI_LANGUAGE 写 LANGUAGES 里的一套）', () => {
+  /** 一套假的语言：认片假名、按字数，名字 3 个字、正文 5 个字、后台 8 个字，名字里不准、。 */
+  const KATAKANA = String.raw`{ text: '[\\u30a0-\\u30ff]', words: false, name: 3, entry: 5, back: 8, namePunct: '[、。]', sentence: '。(?!\\s*$)' }`
+
+  test('UI_LANGUAGE 留空（模板默认）时载入配置就报错，说写 LANGUAGES 里的一套', async () => {
+    await assert.rejects(lint(PAGE, page('<span>名称</span>'), project({ COMPONENT_LIBRARY: "'antd'" })), /UI_LANGUAGE 写 LANGUAGES 里的一套/)
+  })
+
+  test('UI_LANGUAGE 写了 LANGUAGES 里没有的（fr）：载入配置时报错', async () => {
+    await assert.rejects(lint(PAGE, page('<span>名称</span>'), antd({ UI_LANGUAGE: "'fr'" })), /UI_LANGUAGE 写 LANGUAGES 里的一套/)
+  })
+
+  test('用的那一套语言的正则带 /：载入配置时报错', async () => {
+    const slash = "{ text: 'a/b', words: false, name: 3, entry: 5, back: 8, namePunct: '[、]', sentence: '。' }"
+    await assert.rejects(lint(PAGE, page('<span>名称</span>'), antd({ 'LANGUAGES.xx': slash, UI_LANGUAGE: "'xx'" })), /LANGUAGES 里的正则不能带 \//)
+  })
+
+  test('LANGUAGES 里自己加一套就按它查：认它的字、按它的上限和标点；中文、英文都不再管', async () => {
+    const eslint = antd({ 'LANGUAGES.kana': KATAKANA, UI_LANGUAGE: "'kana'" })
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page(
+          '<span>ネコ</span>',
+          '<span>カタカナ</span>',
+          '<span>ネ、コ</span>',
+          "<span onClick={() => message.error('ネコネコネ')} />",
+          "<span onClick={() => message.error('ネコネコネコ')} />",
+          '<span>一二三四五六七八九十十一二</span>',
+          '<span>Show all orders from last week, please.</span>',
+        ),
+        eslint,
+      ),
+      ['3 文字超过 3 个字', '4 文字带了句子标点', '6 正文超过 5 个字'],
+    )
+  })
+
+  test('改 LANGUAGES 里那一套的上限就按改了的查：zh 的 name 改成 20，13 个字的名字不报', async () => {
+    const code = page('<span>一二三四五六七八九十十一二</span>', '<span>一二三四五六七八九十十一二三四五六七八九十一</span>')
+    assert.deepEqual(await lint(PAGE, code), ['2 文字超过 12 个字', '3 文字超过 12 个字'])
+    assert.deepEqual(await lint(PAGE, code, antd({ 'LANGUAGES.zh.name': '20' })), ['3 文字超过 20 个字'])
+  })
+})
+
+describe('英文页面（UI_LANGUAGE 写 en）', () => {
+  const EN = antd({ UI_LANGUAGE: "'en'" })
+
+  test('名字超过 5 个词报"超过 5 个词"；5 个词以内不报', async () => {
+    assert.deepEqual(
+      await lint(PAGE, page('<span>Show all orders from today</span>', '<span>Show all orders from last week</span>', "<span title='Show all orders from last week' />", '<Button>Save changes</Button>'), EN),
+      ['3 文字超过 5 个词', '4 文字超过 5 个词'],
+    )
+  })
+
+  test('名字里带逗号、括号、后面还有话的冒号、句号报句子标点；末尾一个冒号放行', async () => {
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page(
+          '<span>Name, email</span>',
+          "<span title='Phone (optional)' />",
+          '<span>Note: this cannot be undone</span>',
+          '<span>Changes saved.</span>',
+          '<span>Are you sure?</span>',
+          '<span>Order name:</span>',
+          '<span>Name:</span>',
+          '<Button>Save changes</Button>',
+        ),
+        EN,
+      ),
+      ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点', '5 文字带了句子标点', '6 文字带了句子标点'],
+    )
+  })
+
+  test('不像文字的字符串不当文字查，长了也不报：样式类名、日期格式、SQL、带连字符的键、URL、单个词', async () => {
+    const code = [
+      "export const cls = 'flex items-center gap-2 px-4 py-2 rounded-md shadow-sm'",
+      "export const format = 'YYYY-MM-DD HH:mm'",
+      "export const sql = 'SELECT id FROM users WHERE id = 1'",
+      "export const key = 'user-id'",
+      "export const url = 'https://example.com/orders?page=2&size=20'",
+      "export const word = 'Internationalization'",
+      '',
+    ].join('\n')
+    assert.deepEqual(await lint('src/pages/values.ts', code, EN), [])
+  })
+
+  test('入口（message.error）按正文算：10 个词以内、带逗号、末尾句号放行；超过 10 个词报；中间有句号、分号报不止一句', async () => {
+    const code = page(
+      "<span onClick={() => message.error('Could not save the order, please try it again later.')} />",
+      "<span onClick={() => message.error('Could not save the order, please try it again later today.')} />",
+      "<span onClick={() => message.error('Saved. Reload the page')} />",
+      "<span onClick={() => message.error('Saved; reload the page')} />",
+    )
+    assert.deepEqual(await lint(PAGE, code, EN), ['3 正文超过 10 个词', '4 正文不止一句', '5 正文不止一句'])
+  })
+
+  test('后台（BACK）：超过 15 个词报，两句报，带逗号的一句不报；SQL 不当文字查', async () => {
+    const code = [
+      "export const a = 'The order number is wrong, please check it and enter it again before you submit it'",
+      "export const b = 'The order number is wrong, please check it and enter it again before you submit'",
+      "export const c = 'The order number is wrong. Please check it'",
+      "export const d = 'The order number is wrong; please check it'",
+      "export const e = 'The order number is wrong, please check it.'",
+      "export const f = 'SELECT id FROM orders WHERE status = 2 AND total > 100 ORDER BY created_at DESC LIMIT 20'",
+      '',
+    ].join('\n')
+    assert.deepEqual(await lint('server/orders.ts', code, antd({ UI_LANGUAGE: "'en'", BACK: "['server/**/*.ts']" })), ['1 文字超过 15 个词', '3 文字带了句子标点', '4 文字带了句子标点'])
+  })
+
+  describe('SQL 开头（SELECT、INSERT、UPDATE、DELETE、WITH、CREATE、ALTER，不分大小写）的字符串不当文字：列清单像英文单词也不报', () => {
+    const BACK = antd({ UI_LANGUAGE: "'en'", BACK: "['server/**/*.ts']" })
+    /** 第一段是 SQL 开头的模板字符串：后面几段是带逗号的列清单、超过 15 个词，单看像英文。 */
+    const TEMPLATE_SQL = 'export const q = `  select id, status, total ${extra} , note, owner, created_at, customer name, shipping address, billing address, phone number from orders where id = ${id}`'
+
+    test('后台：超过 15 个词、带分号连着两条的 SQL 不报；小写 select 开头的模板字符串整个不报；不是 SQL 开头的英文模板字符串两句照报、同样的列清单不以 SQL 开头照报超长', async () => {
+      const code = [
+        "export const a = 'SELECT id, status, total, note, owner, created_at FROM orders WHERE status = 2 AND owner = 3; DELETE FROM carts WHERE expired = true'",
+        TEMPLATE_SQL,
+        'export const c = `Could not save ${name}. Please try again`',
+        "export const d = 'id, status, total, note, owner, created_at FROM orders WHERE status = 2 AND owner = 3 AND total = 4'",
+        '',
+      ].join('\n')
+      assert.deepEqual(await lint('server/orders.ts', code, BACK), ['3 文字带了句子标点', '4 文字超过 15 个词'])
+    })
+
+    test('页面：SQL 开头的字符串、模板字符串也不当文字查', async () => {
+      const code = ["export const q = 'SELECT id, name FROM users WHERE name = $1'", TEMPLATE_SQL, "export const r = 'id, name FROM users'", ''].join('\n')
+      assert.deepEqual(await lint('src/pages/query.ts', code, EN), ['3 文字带了句子标点'])
+    })
+
+    test('入口（message.error）的正文不受影响：Select 开头的两句照报不止一句', async () => {
+      assert.deepEqual(await lint(PAGE, page("<span onClick={() => message.error('Select one order. Then try again')} />"), EN), ['2 正文不止一句'])
+    })
+
+    test('zh 下也一样：SQL 开头、里面带中文的字符串不当文字', async () => {
+      const code = ["export const q = \"SELECT id FROM orders WHERE note = '订单号不对，请检查后重新输入一遍'\"", "export const r = '订单号不对，请检查后重新输入一遍'", ''].join('\n')
+      assert.deepEqual((await lint('src/pages/query.ts', code)).sort(), ['2 文字带了句子标点', '2 文字超过 12 个字'])
+    })
+  })
+
+  test('VERBATIM 里的整段文字照样放行；多一句的照常报', async () => {
+    const FOOTER = 'Copyright 2024 Example Inc. All rights reserved.'
+    const code = page(`<span>${FOOTER}</span>`, `<span>${FOOTER} Contact us</span>`)
+    const sorted = async (eslint: ESLint): Promise<string[]> => (await lint(PAGE, code, eslint)).sort()
+    assert.deepEqual(await sorted(EN), ['2 文字带了句子标点', '2 文字超过 5 个词', '3 文字带了句子标点', '3 文字超过 5 个词'])
+    assert.deepEqual(await sorted(antd({ UI_LANGUAGE: "'en'", VERBATIM: JSON.stringify([FOOTER]) })), ['3 文字带了句子标点', '3 文字超过 5 个词'])
+  })
+})
+
 describe('不写具体的值', () => {
   test('JSX 属性写死数字（含负数）报"写死的数字"', async () => {
     assert.deepEqual(await lint(PAGE, page('<Space size={4} />', '<Row gutter={-8} />', '<Space size={size} />')), ['2 写死的数字', '3 写死的数字'])
@@ -661,7 +830,7 @@ describe('导出、画图的代码（OUTPUT）', () => {
 
 describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () => {
   test('留空（模板默认）时载入配置就报错，说先填 COMPONENT_LIBRARY 和组件库那几项', async () => {
-    await assert.rejects(lint(PAGE, page('<span>名称</span>'), project()), /先填 COMPONENT_LIBRARY 和组件库那几项/)
+    await assert.rejects(lint(PAGE, page('<span>名称</span>'), project({ UI_LANGUAGE: "'zh'" })), /先填 COMPONENT_LIBRARY 和组件库那几项/)
   })
 
   test("写 'none' 时通用规则照报：字数、标点、<p>、<br>、空的 div/span、style 和 className、写死的数字和颜色、引样式文件、引测试目录", async () => {

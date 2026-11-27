@@ -152,9 +152,10 @@ describe('比较生效的规则', () => {
 
 const CHECKS = [{ name: 'types', command: 'true' }]
 const TEMPLATE = fileURLToPath(new URL('../../skills/setup-codekeep/frontend.eslint.mjs', import.meta.url))
-/** 前端规则模板像项目那样填好组件库那几项（不填载入就报错）：用 antd，确认框、空状态的正文参数也填上。 */
+/** 前端规则模板像项目那样填好页面语言和组件库那几项（不填载入就报错）：中文、antd，确认框、空状态的正文参数也填上。 */
 const frontendTemplate = (): string =>
   readFileSync(TEMPLATE, 'utf8')
+    .replace(/^const UI_LANGUAGE = .*$/m, "const UI_LANGUAGE = 'zh'")
     .replace(/^const COMPONENT_LIBRARY = .*$/m, "const COMPONENT_LIBRARY = 'antd'")
     .replace(/^const ENTRY_PROPS = .*$/m, "const ENTRY_PROPS = [['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle']]")
 const JOINED = { '.codekeep/config.json': keepConfig({ checks: CHECKS, eslint: { config: 'eslint.config.mjs' } }) }
@@ -231,11 +232,13 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     ])
   })
 
-  test('前端规则模板的 NAME_MAX 从 12 改成 20：只列改了的几处，看得到"超过 12 个字"和"超过 20 个字"，不整段列', () => {
+  test('前端规则模板 LANGUAGES.zh 的名字上限从 12 改成 20：只列改了的几处，看得到"超过 12 个字"和"超过 20 个字"，不整段列', () => {
     const template = frontendTemplate()
     const page = { 'src/pages/Orders.js': 'export const a = 1\n' }
     const repo = keepRepo({ ...JOINED, ...page, 'eslint.config.mjs': template })
-    write(repo, 'eslint.config.mjs', template.replace(/^const NAME_MAX = 12$/m, 'const NAME_MAX = 20'))
+    const zhName = /^( {2}zh: \{\n(?: {4}.*\n)*? {4}name: )12,$/m
+    assert.match(template, zhName)
+    write(repo, 'eslint.config.mjs', template.replace(zhName, (_, head: string) => `${head}20,`))
     const r = codekeep(repo, ['check'])
     assert.equal(r.code, 1, r.out)
     const asked = pendingOf(r.out)
