@@ -93,13 +93,16 @@ describe('配置和环境问题：退出码 2，不跑检查', () => {
 })
 
 describe('先比放松，再依次跑检查', () => {
-  test('检查按写的顺序跑，一条没过就停，退出码 1', () => {
+  test('检查按写的顺序跑，前一条没过后面的照样跑；最后逐项列出每条没过的，退出码 1', () => {
     const { check, ran } = ranLog()
-    const repo = keepRepo({ ...CODE, '.codekeep/config.json': keepConfig({ checks: [check('types'), check('lint', 3), check('format')] }) })
+    const repo = keepRepo({ ...CODE, '.codekeep/config.json': keepConfig({ checks: [check('types', 1), check('lint', 3), check('format')] }) })
     const r = codekeep(repo, ['check'])
     assert.equal(r.code, 1, r.out)
-    assert.match(r.out, /codekeep check：没通过，规范检查"lint"没过（退出码 3）。按上面的输出改代码；不要为了过关改松规范/)
-    assert.deepEqual(ran(), ['types', 'lint'])
+    assert.ok(
+      r.out.endsWith('\ncodekeep check：没通过，2 项：\n  ✗ 规范检查"types"没过（退出码 1）\n  ✗ 规范检查"lint"没过（退出码 3）\n按上面的输出改；不要为了过关改松规范（关规则、降级、调高上限、加忽略），确实要改的先用白话跟用户讲清。\n'),
+      r.out,
+    )
+    assert.deepEqual(ran(), ['types', 'lint', 'format'])
   })
 
   test('有没经用户同意的放松：不跑检查，退出码 1，最后是交给确认工具的话；同意后照常跑', () => {
@@ -128,17 +131,17 @@ describe('lint：配了 eslint 的，codekeep 用项目的 eslint 直接查，�
   const LINTED = { '.codekeep/config.json': keepConfig({ checks: [{ name: 'types', command: 'true' }], eslint: { config: 'eslint.config.mjs' } }) }
   const BAD = 'var b = 1\nexport { b }\n'
 
-  test('有错误：退出码 1，说 lint 有几个错误、列出错误（不列警告），检查命令不跑', () => {
+  test('有错误：退出码 1，说 lint 有几个错误、列出错误（不列警告）；检查命令照样跑，没过的和 lint 一起列出', () => {
     const { check, ran } = ranLog()
     const repo = keepRepo({ ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-var': 'error', 'no-console': 'warn' }) })
-    write(repo, '.codekeep/config.json', keepConfig({ checks: [check('types')], eslint: { config: 'eslint.config.mjs' } }))
+    write(repo, '.codekeep/config.json', keepConfig({ checks: [check('types', 2), check('format')], eslint: { config: 'eslint.config.mjs' } }))
     write(repo, 'src/bad.js', `${BAD}console.log(b)\nvar c = 2\nexport { c }\n`)
     const r = codekeep(repo, ['check'])
     assert.equal(r.code, 1, r.out)
     assert.match(r.out, /src\/bad\.js\n\s+1:1\s+error\s+.*no-var\n\s+4:1\s+error\s+.*no-var/)
     assert.doesNotMatch(r.out, /no-console/, '警告不列')
-    assert.match(r.out, /codekeep check：没通过，lint 有 2 个错误（上面列出）/)
-    assert.deepEqual(ran(), [], '检查命令不跑')
+    assert.match(r.out, /\ncodekeep check：没通过，2 项：\n {2}✗ lint 有 2 个错误（上面列出；批量豁免文件在这里不起作用）\n {2}✗ 规范检查"types"没过（退出码 2）\n按上面的输出改；/)
+    assert.deepEqual(ran(), ['types', 'format'], '检查命令照样跑')
   })
 
   test('只有警告：通过，通过那一行写"lint，N 条警告"；被忽略的文件、不是代码的文件不查', () => {
@@ -166,7 +169,7 @@ describe('lint：配了 eslint 的，codekeep 用项目的 eslint 直接查，�
     const fails = (where: string): void => {
       const r = codekeep(repo, ['check'])
       assert.equal(r.code, 1, `${where}：${r.out}`)
-      assert.match(r.out, /codekeep check：没通过，lint 有 1 个错误/, where)
+      assert.match(r.out, /codekeep check：没通过，1 项：\n {2}✗ lint 有 1 个错误/, where)
     }
     fails('根目录')
     for (const [where, path] of [

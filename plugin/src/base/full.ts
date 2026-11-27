@@ -109,7 +109,7 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
   }
 
   // 各模块往记录里加自己的字段，记录写下之后再说它们要说的话
-  const finished = parts.map(part => part.finish?.() ?? {})
+  const finished = parts.map(part => part.finish?.(failed?.name) ?? {})
   // 各段都过了，再按交回来的东西核对：该跑到的没跑到，整组也算没过
   const problems = execution.exitCode === 0 ? finished.flatMap(done => done.problems ?? []) : []
   if (problems.length) appendFileSync(log, `===== testpace 跑完核对没通过\n${problems.join('\n')}\n`)

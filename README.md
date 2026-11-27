@@ -111,13 +111,13 @@ claude plugin uninstall modwall@modwall
 仓库里有 `.codekeep/` 目录才启用。启用后会话开始时说明规范的约定（不改松规范，"这里不查"的注释要写理由，提交里不放密钥），`testpace full` 在测试之前跑一次 `codekeep check`，不用另外登记。它依次做：
 
 - **配置**：`.codekeep/config.json` 写得对不对：`checks` 是规范检查的命令（直接写工具命令，不经过项目的脚本），`eslint` 写配置文件，`tsconfig` 写要比的 tsconfig，`prettier` 开着时比格式检查查哪些文件，`secrets` 开着时扫密钥，`styles` 写前端的主题文件和组件层目录。
-- **改松要你同意**：和分叉点那一版比，规范改松了的（关规则、调高上限、文件不再被 lint、关严格类型选项、加忽略、改了检查命令，配了前端规则的还有改主题和组件层的样式等）要你在弹窗里同意，同意按项记；加规则、调严不问，首次接入不问。分叉点那一版算不出来的不当成没改松，也问。不用批量豁免，旧代码超标的改代码。
-- **跑检查**：配了 `eslint` 的先由 codekeep 用项目的 eslint 跑一遍 lint（走程序接口，批量豁免文件不起作用），再依次跑 `checks` 里的命令，一条没过就停。
+- **改松要你同意**：和分叉点那一版比，规范改松了的（关规则、调高上限、文件不再被 lint、关严格类型选项、加忽略、改了检查命令，配了前端规则的还有改主题和组件层的样式等）要你在弹窗里同意，同意按项记；加规则、调严不问，首次接入不问。分叉点那一版算不出来的不当成没改松，也问。旧代码超标的改代码；批量豁免只在接入分支上分批改时记进度，codekeep 不读它。
+- **跑检查**：配了 `eslint` 的先由 codekeep 用项目的 eslint 跑一遍 lint（走程序接口，批量豁免文件不起作用），再依次跑 `checks` 里的每条命令。lint、规范检查、密钥一项没过也接着查后面的，最后一起列出没过的（接入时 lint 要分很多批改，这期间别的几项照样有人查）。
 - **扫密钥**：用 gitleaks 扫分叉点之后的提交和没提交的改动，输出里打码。没装 gitleaks 算没通过，说怎么装，不替你装。
 
 - **前端规则**：有前端代码的项目，接入时照技能里的模板（`plugin/skills/setup-codekeep/frontend.eslint.mjs`，先做 React 加 antd）加 lint 规则：页面上不加无必要的说明文字；用了组件不在页面里写样式、写具体的值去补，具体的值只写在主题和组件层；这些文件里不能用注释就地关规则。方案见 [前端规范方案.md](前端规范方案.md)。
 
-从 0.22 以前升级的项目：删掉 `eslint-suppressions.json`，把旧代码改到 lint 全过；`.codekeep/config.json` 里去掉 `eslint.suppressions`（现在算写错）和 `checks` 里的 lint 命令（codekeep 自己跑，留着会跑两遍；删掉它整组会问一次）。前端规则模板的 `DESC_PROPS` 改成了 `[组件名, 参数名]`，`NOTICE_CALLS` 改成了 `[对象名, 正文字段]`，新加了 `OUTPUT`、`TEST_IMPORTS`、`CONFIRM_CALLS`（0.22.1）三项，照新模板改。接入了 testcraft 的项目补上默认清单条目 `docs-rules.md`、`same-number.md`（0.22.2）（见 `gatelight:setup-testcraft` 技能）。
+从 0.22 以前升级的项目：把旧代码改到 lint 全过、删掉 `eslint-suppressions.json`（改的这段时间可以留在接入分支上记进度）；`.codekeep/config.json` 里去掉 `eslint.suppressions`（现在算写错）和 `checks` 里的 lint 命令（codekeep 自己跑，留着会跑两遍；删掉它整组会问一次）。前端规则模板的 `DESC_PROPS` 改成了 `[组件名, 参数名]`，`NOTICE_CALLS` 改成了 `[对象名, 正文字段]`，新加了 `OUTPUT`、`TEST_IMPORTS`、`CONFIRM_CALLS`（0.22.1）、`VERBATIM`（0.23.0）四项，照新模板改。接入了 testcraft 的项目补上默认清单条目 `docs-rules.md`、`same-number.md`（0.22.2）（见 `gatelight:setup-testcraft` 技能）。
 
 不在改文件时拦（lint 自己会报），也没有停止门（整组兜底）。接入步骤见 [plugin/skills/setup-codekeep/SKILL.md](plugin/skills/setup-codekeep/SKILL.md)（`gatelight:setup-codekeep` 技能）。
 
@@ -164,7 +164,7 @@ git config --global --unset-all testpace.check
 ## 开发节奏
 
 - 每个任务在自己的分支上做，最好是自己的 worktree，不和别的会话挤在同一个目录里。
-- 开发中每做完一轮跑一次 `testpace focused`，只看不追：因为你这次改了需求才不过的测试留到合并时改；和这次需求无关的（这次的改动弄坏了别的功能）当场改这次写的代码，用 `testpace files 文件:行号` 只重跑那几个。分支上不跑整组。
+- 开发中每做完一轮跑一次 `testpace focused`，只看不追：因为你这次改了需求才不过的测试留到合并时改；和这次需求无关的（这次的改动弄坏了别的功能）当场改这次写的代码，用 `testpace files 文件:行号` 只重跑那几个，输出点名了没跑到的文件的一起跑上。分支上不跑整组。
 - 整组在合回默认分支时跑：你说合，agent 先把这次的测试写上（接入了 testcraft 的），再把分支合到一个临时的合并分支上，跑一次 `testpace full`，通过了再快进默认分支。一个分支合一次，不攒。步骤见 [plugin/skills/merge/SKILL.md](plugin/skills/merge/SKILL.md)（`gatelight:merge` 技能）。
 - 测试时好时坏，不靠重跑过关：testpace 认出来点名、记进名单，按 testcraft 写测试技能里"测试时好时坏"一节找原因修，修好后用 `testpace files --repeat 3` 连跑证明（见下面的时好时坏的测试）。
 
@@ -173,8 +173,8 @@ git config --global --unset-all testpace.check
 | 命令 | 做什么 |
 |---|---|
 | `testpace focused [--base REF]` | 改完先跑：`fast`，再用 layermap 选出和改动相关的测试交给 `files` 跑（在分支上只跑这次改到的测试，加上最相关的几个，最多再跑 8 个文件：一样近的测试里，先取相关理由少有别的测试共用的，很多测试共用同一条理由的只留一个，凑不满 8 个就不凑；其余留给合并时的整组），并把选出的测试交回 layermap，问它们跑不跑得到每处改动。只从 `tests` 规则找到的测试里选（和整组一致）：规则外的不选，但点出是哪几个（是测试的话整组跑不到它，该补进规则），这次改到的规则内测试文件都选。默认对比和默认分支的分叉点，分支上已提交的改动也算。只改了 `ignore` 路径、规则外的测试或删掉了整组的测试时不跑测试。改了地图跟不到的文件（配置、依赖、迁移、模板、脚本、样式等，`ignore` 里的不算），没有 layermap 或它出错，没找到相关测试，或者选出的测试有跑不到的改动时，在默认分支上建议跑整组；在别的分支上只说明一句，不建议现在跑，合回默认分支时的整组会覆盖 |
-| `testpace files [--repeat N] PATH[:行号]...` | 只跑给定的测试文件；`文件:行号` 只跑那一行的测试，比如重跑失败的测试（测试框架不能按行跑的，跑整个文件）。`--repeat N` 连跑 N 次、没过就停：用来造出时好时坏的测试的失败，或修好后连跑证明；每次各记一条运行记录，`report` 不把它们算成反复跑 |
-| `testpace full` | 依次跑这个仓库接入了的检查（`modwall check`、`testcraft checklist`、`codekeep check`）、`full`（测试以外的检查），再把 `tests` 规则在工作区里找到的全部测试文件交给 `files`，一段没过就停。各段都过了，再按交回来的东西核对该跑到的跑到没有：交给 `files` 的每个测试文件都要交回至少一条结果（见 `testpace run`；不经它跑的自己往 `TESTPACE_RESULTS` 写），接入了 modwall、写了 `database` 的要交回 `modwall db check` 的凭据，缺了算整组没过、点名缺的是什么（项目的脚本里删掉一步，testpace 看不到脚本，靠这个查出来）；按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑（`testpace.json` 自己不算忽略路径，改了它要重跑）。跑的过程中代码改过，通过也不算记录，输出里列出变了的文件 |
+| `testpace files [--repeat N] PATH[:行号]...` | 只跑给定的测试文件；`文件:行号` 只跑那一行的测试，比如重跑失败的测试（测试框架不能按行跑的，跑整个文件）。跑完核对给的每个文件都交回了结果（见 `testpace run`；`focused` 跑相关测试时一样）：命令通过、却有文件一条结果都没交回的算没过，命令没过的也点名没跑到的文件（分批跑、一批没过后面的就没跑，只重跑没过的会漏掉它们）。`--repeat N` 连跑 N 次、没过就停：用来造出时好时坏的测试的失败，或修好后连跑证明；每次各记一条运行记录，`report` 不把它们算成反复跑 |
+| `testpace full` | 依次跑这个仓库接入了的检查（`modwall check`、`testcraft checklist`、`codekeep check`）、`full`（测试以外的检查），再把 `tests` 规则在工作区里找到的全部测试文件交给 `files`，一段没过就停。各段都过了，再按交回来的东西核对该跑到的跑到没有：交给 `files` 的每个测试文件都要交回至少一条结果（见 `testpace run`；不经它跑的自己往 `TESTPACE_RESULTS` 写），接入了 modwall、写了 `database` 的要交回 `modwall db check` 的凭据，缺了算整组没过、点名缺的是什么（项目的脚本里删掉一步，testpace 看不到脚本，靠这个查出来）；全部测试那一段自己没过的，照样点名没交回结果的文件；按跑的那一刻工作区的完整内容（含未提交、未跟踪的文件）记录结果。同一份代码已经通过的不重跑；相对通过的代码只改了 `ignore` 路径也不重跑（`testpace.json` 自己不算忽略路径，改了它要重跑）。跑的过程中代码改过，通过也不算记录，输出里列出变了的文件 |
 | `testpace status` | 当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、时好时坏的测试名单（各自怎么认出来的、两次的日志）、配置检查（含 `tests` 规则找到多少个测试文件）、合并门和固定命令入口在不在、有没有 layermap |
 | `testpace hold PID 说明`<br>`testpace release ID` | 借用这个工作区（只占这个工作区，别的工作区不管），给要复制或接着用工作区的工具用，比如要建一份副本的工具：跑到一半的状态（锁文件、临时文件）会一起带进副本。查有没有在跑的和占上是同一步，问完到用完之间不会有新起的命令插进来。占着时别的 testpace 命令（`fast`、`files`、`full`、`verify`）不跑，说明是谁占着（`说明` 里写的）、等它放开再跑。`PID` 是借用的那个进程（一般是调用者自己，要是还在的进程，不在的报用法错）：它不在了（被杀、崩了），占用跟着作废，不会把工作区永远锁住。占上时输出这次的 id，退出码 0，用完用 `testpace release ID` 放开（只放借用的，跑着的命令放不开）；有在跑的、已经被借用着的，不占，说明是谁（testpace 被强杀后测试进程组还在跑的，给出停掉它的命令），退出码 3。`testpace full` 只给要建副本的检查（`testcraft check`）在环境变量 `TESTPACE_RUN` 里带上这一轮的运行 id：它在测试之前跑，工作区已经是这一轮的，在里面借用不另占、什么也不输出，退出码 0。别的项目命令（`fast`、`files`、`full` 和整组跑测试的那一段）不带，testpace 起项目命令时去掉从外面继承来的 `TESTPACE_RUN`，`testpace run` 也不把它交给跑测试的进程：测试里借用照样被挡，同一轮别的测试可能正拿着锁 |
 | `testpace report [--days N]` | 计时诊断：各命令次数和耗时、有几个 agent 跑过时按谁跑的分开的次数和耗时、整组的时间花在哪一段（各项检查、`full`、全部测试各跑到几次、平均、合计、占比）、平均每次落地的测试耗时和整组次数、失败后重跑轮数、同一份代码整组先失败后通过的（可能是测试不稳定，也可能是环境问题，列出失败用时和日志供分辨）、`fast` 是否过慢、按周的测试行数和整组耗时 |

@@ -12,8 +12,10 @@ codekeep 管代码本身的规范：类型查得严不严、lint 和格式检查
 1. 配置写得对不对（`.codekeep/config.json`）。
 2. 和分叉点比，规范改松了哪些：关规则、error 降成 warn、调高上限、文件不再被 lint、关掉 `noInlineConfig`、关严格类型选项、开 `skipLibCheck`、`include` 少了或 `exclude` 多了、`.gitleaksignore` 多了条目、改了 gitleaks 或 biome 的配置、改了或删了检查命令；配了前端规则的，还有主题文件、组件层目录里的样式文件改了。这些要用户在弹窗里同意；分叉点上还没有 `.codekeep/`（首次接入）的不问。
 3. 配了 `eslint` 的，用项目自己装的 eslint 跑一遍 lint，有错误就不过。它走 eslint 的程序接口，不读批量豁免文件（`eslint-suppressions.json`），旧代码超标的只能改代码。
-4. 依次跑 `checks` 里的命令，一条没过就停。
+4. 依次跑 `checks` 里的每条命令。
 5. `secrets` 开着时用 gitleaks 扫分叉点之后的提交和没提交的改动。
+
+1、2 没过就停；3 到 5 一项没过也接着查后面的，最后一起列出没过的。
 
 第一期只做 TypeScript、JavaScript，lint 只比 eslint。
 
@@ -43,7 +45,9 @@ codekeep 管代码本身的规范：类型查得严不严、lint 和格式检查
 
    - "这里不查"的注释要写理由、没用了的要删：`linterOptions: { reportUnusedDisableDirectives: 'error' }`；`@eslint-community/eslint-plugin-eslint-comments` 的 `require-description`（`eslint-disable` 一类的注释要带 `-- 理由`）；TypeScript 项目用 `@typescript-eslint/ban-ts-comment` 的默认设置（`@ts-ignore`、`@ts-nocheck` 不许用，`@ts-expect-error` 要写理由）。没装这几个插件的，装之前先问用户。
 4. **格式检查**：项目有 prettier 的用它；没有的问用户要不要加。检查命令把 git 收的文件交给 prettier（`git ls-files -z --cached --others --exclude-standard | xargs -0 pnpm -s exec prettier --check --ignore-unknown --no-error-on-unmatched-pattern`），不用 `prettier --check .`：prettier 只读仓库根目录的 `.gitignore` 和 `.prettierignore`，会查到上面说的本机工具目录。新加的照项目现有的写法配（分号、引号、行宽），让改动尽量小，排之前先找出脚本生成的文件和被脚本当数据读的文件（生成的接口定义、生成的样式、生成器回读的目录这类；看项目的生成脚本写到哪、读哪），写进 `.prettierignore`：排了会和生成的对不上，或让读它的脚本读错。再 `prettier --write .` 把全部代码排一遍（改动大，先和用户说清；有别的分支正在做的，排完它们合进来会冲突，先问）。`.prettierignore` 里写上锁文件。
-5. **旧代码超标的改到全过**：类型检查、lint、格式检查都过了才算接入完，接入分支在这之前不合进默认分支。不用 eslint 的批量豁免（`--suppress-all`；codekeep 自己跑 lint，豁免文件不起作用），也不为旧代码调高上限、关规则、加忽略。先把超标的数量按规则、按目录列给用户，量大的由用户定先改哪块、分几次在接入分支上改；改法只按规则改代码，改到业务行为的（比如拆函数时要动逻辑）先问用户。
+5. **旧代码超标的改到全过**：类型检查、lint、格式检查都过了才算接入完，接入分支在这之前不合进默认分支。不为旧代码调高上限、关规则、加忽略。先把超标的数量按规则、按目录列给用户，量大的由用户定先改哪块、分几次在接入分支上改；改法只按规则改代码，改到业务行为的（比如拆函数时要动逻辑）先问用户。
+   - 分几次改的，接入分支上可以用 eslint 的批量豁免记还剩哪些：`eslint . --suppress-all` 生成 `eslint-suppressions.json`，`fast` 里用 eslint 命令行跑的 lint 会读它，还没改到的地方不拦；每批改完跑 `eslint . --prune-suppressions` 去掉改好的，剩下的条数就是进度。它只在接入分支上管用：codekeep 用 eslint 的程序接口自己跑 lint，不读它，`codekeep check` 和整组照样按全部代码查，所以合进默认分支前要改到能删掉它。
+   - 改的这段时间 `codekeep check` 会一直因为 lint 没过；它照样跑完别的规范检查和密钥扫描，每批改完跑一次，看 lint 以外的几项有没有新出的问题。
 6. **写 `.codekeep/config.json`**：
 
    ```json
@@ -93,6 +97,7 @@ codekeep 管代码本身的规范：类型查得严不严、lint 和格式检查
    - `TESTS`：前端里的测试和测试用的辅助代码（默认是 `*.test.*`、`*.spec.*`、`__tests__/`），项目另有测试辅助目录的加进来，`TEST_IMPORTS` 里同时加上它在 import 里的写法：页面不准 import 测试目录里的代码。
    - `BACK`、`BACK_SKIP`：后台代码，和后台里不管的种子数据、演示数据、测试、迁移目录。没有后台代码的留空。
    - `NUMBER_OK`：能写数字的参数，只放和外观无关的。项目自己组件里和外观无关的数字参数（名字最长几个字、最早哪一年）加进来；管外观的（图标尺寸、列数、间距）不加，改成主题里的几档。
+   - `VERBATIM`：必须原样展示的固定文字（备案号、许可证号、公司全称这类，法规或合同要求照录、缩不了的），写准确的整段文字，这几段不查字数和标点。说明文字、能改短的不放；往里加算改松，要用户同意。没有就留空。
    - `NOTICE_CALLS`、`CONFIRM_CALLS`：提示、确认框的调用对象。项目用 `App.useApp()`、`Modal.useModal()` 拿实例、又没叫 `message`、`notification`、`modal` 的，把它起的名字加进来。
    - `ENTRY_PROPS`、`ENTRY_CHILDREN`：项目自己封装的确认框、出错条、空状态组件，正文写在哪个参数或子元素里，加进来，按正文（16 个字、一句）算。
    - `DESC_PROPS`：项目自己组件里专门放说明的参数（副标题、帮助文字这类），按 `[组件名, 参数名]` 加进来，一律不准写；只写组件名对得上的，别的组件同名的参数不管。确认框、空状态的正文参数不放这里。

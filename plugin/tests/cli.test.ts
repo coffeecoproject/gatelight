@@ -671,6 +671,7 @@ describe('整组跑完核对：交给 files 的每个测试文件都交回了结
     assert.match(r.out, /经 testpace run 跑（它会交回结果）；别的跑法自己往环境变量 TESTPACE_RESULTS 给的文件里，每个测试追加一行 JSON：\{"file":"文件的绝对路径","name":"测试名","status":"passed、failed 或 skipped"\}/)
     const record = runs(repo).at(-1)!
     assert.equal(record.result, 'fail')
+    assert.deepEqual(record.notRun, ['tests/format.test.mjs', 'tests/price.test.mjs'])
     assert.match(testpace(repo, 'status').out, /没有整组通过记录/)
     assert.match(readFileSync(record.log as string, 'utf8'), /===== testpace 跑完核对没通过\nfiles 命令（node --test）跑完，一个测试结果都没交回/)
   })
@@ -682,6 +683,7 @@ describe('整组跑完核对：交给 files 的每个测试文件都交回了结
     assert.ok(one.out.startsWith(HEAD), one.out)
     assert.match(one.out, /^- 交给 files 命令（.+）的测试文件里，这些一条结果都没交回：tests\/price\.test\.mjs。.*经 testpace run 跑.*TESTPACE_RESULTS/m)
     assert.equal(runs(repo).at(-1)!.result, 'fail')
+    assert.deepEqual(runs(repo).at(-1)!.notRun, ['tests/price.test.mjs'])
 
     for (let i = 1; i <= 12; i++) {
       writeFileSync(join(repo, 'tests', `extra${String(i).padStart(2, '0')}.test.mjs`), `import { test } from 'node:test'\ntest('第 ${i} 个', () => {})\n`)
@@ -704,7 +706,7 @@ describe('整组跑完核对：交给 files 的每个测试文件都交回了结
     assert.match(r.out, /^整组通过 · 3 个测试文件/)
   })
 
-  test('有一段没通过时不做跑完的核对：照常报那一段没通过', () => {
+  test('全部测试那一段没过、一个结果都没交回：不点名没交回的文件，照常报那一段没通过', () => {
     const repo = withFiles('node --test')
     writeFileSync(join(repo, 'src', 'format.mjs'), 'export function yuan(amount) {\n  return `¥${amount}`\n}\n')
     const r = testpace(repo, 'full')
@@ -712,6 +714,19 @@ describe('整组跑完核对：交给 files 的每个测试文件都交回了结
     assert.match(r.out, /^整组失败：全部测试（2 个文件）没通过（退出码 1）/)
     assert.doesNotMatch(r.out, /跑完核对|一个测试结果都没交回/)
     assert.doesNotMatch(readFileSync(runs(repo).at(-1)!.log as string, 'utf8'), /跑完核对没通过/)
+  })
+
+  test('全部测试那一段没过、有的文件交回了结果（分批跑，一批没过后面的不跑）：照样点名没交回的文件，提醒修好后一起再跑；记录里有 notRun', () => {
+    const repo = withFiles('f() { for t; do testpace run node-test "$t" || return 1; done; }; f')
+    writeFileSync(join(repo, 'src', 'format.mjs'), 'export function yuan(amount) {\n  return `¥${amount}`\n}\n')
+    const r = testpace(repo, 'full')
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^整组失败：全部测试（2 个文件）没通过（退出码 1）/)
+    assert.match(r.out, /\n交给 files 命令（.+）的测试文件里，这些一条结果都没交回：tests\/price\.test\.mjs。这次没验证到它们.*修好后用 testpace files 把没过的和这些一起再跑一遍。/)
+    assert.doesNotMatch(r.out, /跑完核对没通过/)
+    const record = runs(repo).at(-1)!
+    assert.equal(record.result, 'fail')
+    assert.deepEqual(record.notRun, ['tests/price.test.mjs'])
   })
 })
 
@@ -749,6 +764,9 @@ describe('整组里各模块交的各段', () => {
     assert.equal(record.result, 'fail')
     // 只有跑到的那一段有用时
     assert.deepEqual((record.steps as Array<{ kind: string }>).map(step => step.kind), ['extra'])
+    // 测试没跑，不核对哪些文件没交回结果
+    assert.equal(record.notRun, undefined)
+    assert.doesNotMatch(r.out, /没交回/)
     assert.doesNotMatch(readFileSync(record.log as string, 'utf8'), /===== testpace (整组的检查|全部测试)|# pass/)
     assert.match(run(repo, ['status']).out, /没有整组通过记录/)
   })

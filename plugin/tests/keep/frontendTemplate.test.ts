@@ -325,6 +325,48 @@ describe('项目自己的入口组件（按项目填）', () => {
   })
 })
 
+describe('必须原样展示的整段文字（VERBATIM）', () => {
+  const ICP = '鄂ICP备2024056407号-2'
+  /** 超过正文、后台的字数，中间还有句号：放在哪都会报。 */
+  const FOOTER = '版权所有：某某科技（武汉）有限公司。鄂ICP备2024056407号-2'
+  const VERBATIM = project({ VERBATIM: JSON.stringify([ICP, FOOTER]) })
+  /** 同一处报了几类时先后不定：排好序比。 */
+  const sorted = async (path: string, code: string, eslint?: ESLint): Promise<string[]> => (await lint(path, code, eslint)).sort()
+
+  test('写进 VERBATIM 的整段文字不查字数和标点：JSX 文字、字符串、模板字符串、JSX 文字分几行写都放行', async () => {
+    const code = page(`<span>${ICP}</span>`, `<span title='${FOOTER}' />`, `<span>{\`${FOOTER}\`}</span>`, '<span>', `  ${FOOTER}`, '</span>', `<span> ${ICP} </span>`)
+    assert.deepEqual(await lint(PAGE, code, VERBATIM), [])
+  })
+
+  test('只认整段：后面多加一句、换个号，照常报', async () => {
+    assert.deepEqual(
+      await sorted(PAGE, page(`<span>${ICP}，备案查询</span>`, '<span>鄂ICP备2024056407号-3</span>', `<span title='${FOOTER}。' />`), VERBATIM),
+      ['2 文字带了句子标点', '2 文字超过 12 个字', '3 文字超过 12 个字', '4 文字带了句子标点', '4 文字超过 12 个字'],
+    )
+  })
+
+  test('默认（VERBATIM 为空）照常报：备案号按名字超过 12 个字', async () => {
+    assert.deepEqual(await lint(PAGE, page(`<span>${ICP}</span>`)), ['2 文字超过 12 个字'])
+  })
+
+  test('入口（message.error 的正文）也按整段放行；同一处多一句的照常报', async () => {
+    const code = page(`<span onClick={() => message.error('${FOOTER}')} />`, `<span onClick={() => message.error('${FOOTER}请稍后再试')} />`)
+    assert.deepEqual(await sorted(PAGE, code), ['2 正文不止一句', '2 正文超过 16 个字', '3 正文不止一句', '3 正文超过 16 个字'])
+    assert.deepEqual(await sorted(PAGE, code, VERBATIM), ['3 正文不止一句', '3 正文超过 16 个字'])
+  })
+
+  test('后台（BACK）的文字也按整段放行', async () => {
+    const code = `export const a = '${FOOTER}'\nexport const b = '${FOOTER}请稍后再试'\n`
+    const BACK = { BACK: "['server/**/*.ts']" }
+    assert.deepEqual(await sorted('server/orders.ts', code, project(BACK)), ['1 文字带了句子标点', '1 文字超过 24 个字', '2 文字带了句子标点', '2 文字超过 24 个字'])
+    assert.deepEqual(await sorted('server/orders.ts', code, project({ ...BACK, VERBATIM: JSON.stringify([FOOTER]) })), ['2 文字带了句子标点', '2 文字超过 24 个字'])
+  })
+
+  test('VERBATIM 里的文字带 /：载入配置时报错', async () => {
+    await assert.rejects(lint(PAGE, page('<span>名称</span>'), project({ VERBATIM: "['京ICP证/000000号']" })), /VERBATIM 里的文字不能带 \//)
+  })
+})
+
 describe('不写具体的值', () => {
   test('JSX 属性写死数字（含负数）报"写死的数字"', async () => {
     assert.deepEqual(await lint(PAGE, page('<Space size={4} />', '<Row gutter={-8} />', '<Space size={size} />')), ['2 写死的数字', '3 写死的数字'])

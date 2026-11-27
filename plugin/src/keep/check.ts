@@ -1,11 +1,12 @@
-// codekeep check：整组里"代码规范"的那一段（见 full.ts），也可以单独跑。依次做四件事，一件没过就停：
+// codekeep check：整组里"代码规范"的那一段（见 full.ts），也可以单独跑。依次做下面几件事：1、2 没过就停（配置不对、放松没同意，后面查了也不算）；
+// 3–5 互不依赖，一项没过也接着查，最后一起列出没过的。
 //   1. 配置写得对不对（.codekeep/config.json），写到的文件在不在；现在这一版 eslint、prettier、tsconfig 生效的配置算不算得出来；
 //   2. 和分叉点比，规范改松了哪些（loosen.ts、eslint.ts、prettier.ts、tsconfig.ts；biome 只看配置文件改没改），主题、组件层的样式改了哪些（styles.ts）。放松的条目交给底座的用户确认（askUser），
 //      还没同意的这一段不过，照底座给的话让 agent 调确认工具。分叉点上还没有配置（首次接入）的不比、不问。
 //      分叉点那一版算不出来的（工具在那一版上跑不起来），不当成没放松，列成"程序看不出"的一项，问。
-//   3. 配了 eslint 的，用项目自己的 eslint 程序接口跑一遍 lint，有错误就不过（警告不拦）。不跑项目写的 lint 命令：
+//   3. 配了 eslint 的，用项目自己的 eslint 程序接口跑一遍 lint，有错误就不过（警告不拦）；eslint 起不来时停（环境问题）。不跑项目写的 lint 命令：
 //      命令行会读批量豁免文件（放在哪、叫什么、写成目录都行），从外面猜不全；程序接口不读，查出来的就是代码按规则过没过。
-//   4. 依次跑 checks 里的命令（从仓库根目录用 sh 跑），一条没过就停。
+//   4. 依次跑 checks 里的每条命令（从仓库根目录用 sh 跑）。
 //   5. secrets 开着时用 gitleaks 扫这次改动（secrets.ts）。
 // 退出码用底座的：0 通过；1 没通过；2 配置、环境问题（配置写错、工具没装、算不出分叉点）。
 
@@ -196,15 +197,15 @@ function askLines(items: ConfirmItem[], ask: string[], reasons: string[]): strin
 }
 
 /** 跑 checks 里的命令，一条没过就停。返回没过的那条和原因。 */
-function runChecks(root: string, config: Config): { name: string; cause: string } | undefined {
+function runChecks(root: string, config: Config): Array<{ name: string; cause: string }> {
+  const failed: Array<{ name: string; cause: string }> = []
   for (const check of config.checks) {
     console.log(`== 规范检查：${check.name}（${check.command}）`)
     const r = spawnSync('/bin/sh', ['-c', check.command], { cwd: root, env: PROJECT_ENV, stdio: ['ignore', 'inherit', 'inherit'] })
     if (r.status === 0) continue
-    const cause = r.status !== null ? `退出码 ${r.status}` : r.signal ? `被信号 ${r.signal} 终止` : `没能启动：${r.error?.message ?? ''}`
-    return { name: check.name, cause }
+    failed.push({ name: check.name, cause: r.status !== null ? `退出码 ${r.status}` : r.signal ? `被信号 ${r.signal} 终止` : `没能启动：${r.error?.message ?? ''}` })
   }
-  return undefined
+  return failed
 }
 
 export async function check(repo: Repo): Promise<number> {
@@ -265,6 +266,10 @@ export async function check(repo: Repo): Promise<number> {
   }
   const loosenedLine = found.items.length ? `规范改松 ${found.items.length} 项，用户都同意过` : '规范配置没有改松（和分叉点上的比）'
 
+  // 3–5 互不依赖：一项没过也接着查后面的，最后一起说。只说第一项的话，接入时 lint 要分很多批改，这期间格式、类型、密钥都没人查
+  const failures: string[] = []
+  let blocked = false
+
   // 3. lint
   let linted: Linted | undefined
   if (config.eslint) {
@@ -277,47 +282,51 @@ export async function check(repo: Repo): Promise<number> {
       return EXIT.usage
     }
     if (linted.errors > 0) {
-      console.log(
-        `${linted.report}\ncodekeep check：没通过，lint 有 ${linted.errors} 个错误（上面列出）。按规则改代码；不要为了过关改松规范（关规则、降级、调高上限、加忽略），确实要改的先用白话跟用户讲清。批量豁免文件在这里不起作用。`,
-      )
-      return EXIT.fail
+      console.log(linted.report)
+      failures.push(`lint 有 ${linted.errors} 个错误（上面列出；批量豁免文件在这里不起作用）`)
     }
   }
 
   // 4. 规范检查
-  const failed = runChecks(root, config)
-  if (failed) {
-    console.log(
-      `\ncodekeep check：没通过，规范检查"${failed.name}"没过（${failed.cause}）。按上面的输出改代码；不要为了过关改松规范（关规则、降级、调高上限、加忽略），确实要改的先用白话跟用户讲清。`,
-    )
-    return EXIT.fail
-  }
+  for (const failed of runChecks(root, config)) failures.push(`规范检查"${failed.name}"没过（${failed.cause}）`)
 
   // 5. 密钥
   if (config.secrets) {
     const secrets = scanSecrets(root, fork.commit)
     if ('missing' in secrets) {
       console.error(
-        `\ncodekeep check：没通过，找不到 gitleaks（${CONFIG_PATH} 开着 secrets，要用它扫密钥）。这是装在这台机器上的工具，先问用户；同意后装：brew install gitleaks（没有 Homebrew 的见 https://github.com/gitleaks/gitleaks#installing）。`,
+        `\n找不到 gitleaks（${CONFIG_PATH} 开着 secrets，要用它扫密钥）。这是装在这台机器上的工具，先问用户；同意后装：brew install gitleaks（没有 Homebrew 的见 https://github.com/gitleaks/gitleaks#installing）。`,
       )
-      return EXIT.usage
-    }
-    if ('problem' in secrets) {
-      console.error(`\ncodekeep check：没通过，密钥没扫成：${secrets.problem}`)
-      return EXIT.usage
-    }
-    if ('leaks' in secrets) {
+      failures.push('密钥没扫：找不到 gitleaks')
+      blocked = true
+    } else if ('problem' in secrets) {
+      console.error(`\n密钥没扫成：${secrets.problem}`)
+      failures.push('密钥没扫成（上面说了原因）')
+      blocked = true
+    } else if ('leaks' in secrets) {
       console.log(
         [
           '',
-          'codekeep check：没通过，gitleaks 在这次改动里扫出了疑似密钥（上面列出，已打码）。改法：',
+          'gitleaks 在这次改动里扫出了疑似密钥（上面列出，已打码）。改法：',
           '  · 真的密钥、密码：从代码里拿掉，改成从环境变量或不进版本库的本地配置读，并告诉用户这个密钥可能已经泄露、要换掉。已经提交了的，要改写这个分支上的那几个提交才去得掉，先问用户。',
           '  · 测试用的假值：改成一眼看得出是假的写法（比如 test-password-not-real）。',
           `  · 确实不是密钥的：把那一条的 Fingerprint 加进 ${GITLEAKS_IGNORE}（算放松，整组会要用户确认）。`,
         ].join('\n'),
       )
-      return EXIT.fail
+      failures.push('gitleaks 扫出了疑似密钥（上面列出）')
     }
+  }
+
+  if (failures.length > 0) {
+    console.log(
+      [
+        '',
+        `codekeep check：没通过，${failures.length} 项：`,
+        ...failures.map(text => `  ✗ ${text}`),
+        '按上面的输出改；不要为了过关改松规范（关规则、降级、调高上限、加忽略），确实要改的先用白话跟用户讲清。',
+      ].join('\n'),
+    )
+    return blocked ? EXIT.usage : EXIT.fail
   }
 
   const names = [...(linted ? [`lint${linted.warnings ? `，${linted.warnings} 条警告` : ''}`] : []), ...config.checks.map(item => item.name)].join('、')

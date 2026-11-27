@@ -11,7 +11,7 @@ import { currentBranch, defaultBranch, forkPoint, landings, workTreeId } from '.
 import { busyText, failureText, ignoredBy } from '../base/repo.ts'
 import { commandExists, COMMAND_KEYS, loadConfig } from './config.ts'
 import { askLayermap, BRANCH_CAP, fullReasons, INDIRECT_RANK, LAYERMAP_HINT, NEARBY_RANK, outsideNote } from './focused.ts'
-import { paceRuns, runRecorded } from './record.ts'
+import { paceRuns, type Recorded, runRecorded } from './record.ts'
 import { renderReport } from './report.ts'
 import { PROVE_RUNS, provenFixed, type TestResult } from './results.ts'
 import { nodeTest } from './run/node-test.ts'
@@ -78,7 +78,7 @@ export async function focused(args: string[], usage: string): Promise<number> {
     }
     if (related.execution.interrupted) return EXIT.interrupted
     if (related.record.result === 'fail') {
-      console.log([...lines, failureText('相关测试失败', related.record.log, related.execution), ...related.notes].join('\n'))
+      console.log([...lines, failedText('相关测试', related), ...related.notes].join('\n'))
       return EXIT.fail
     }
     lines.push(`相关测试通过 · 用时 ${duration(related.execution.durationMs)}`, ...related.notes)
@@ -94,6 +94,12 @@ export async function focused(args: string[], usage: string): Promise<number> {
   if (reasons.length > 0 && selection.kind === 'unavailable' && selection.missing) lines.push(LAYERMAP_HINT)
   console.log(lines.join('\n'))
   return code
+}
+
+/** files 没过的说法。命令自己通过、只是跑完核对出有文件没跑到的（notes 里点名），不贴输出节选。 */
+function failedText(what: string, run: Recorded): string {
+  if (run.execution.exitCode !== 0) return failureText(`${what}失败`, run.record.log, run.execution)
+  return `${what}没通过：命令通过了，跑完核对出有测试文件没跑到（见下）· 用时 ${duration(run.execution.durationMs)}\n完整日志：${run.record.log}`
 }
 
 export async function files(argv: string[], usage: string): Promise<number> {
@@ -157,7 +163,7 @@ export async function files(argv: string[], usage: string): Promise<number> {
     took += run.execution.durationMs
     if (run.record.result === 'fail') {
       const which = times > 1 ? `连跑第 ${index} 次（共 ${times} 次）` : ''
-      console.log([failureText(`${what}${which}失败`, run.record.log, run.execution), ...notes].join('\n'))
+      console.log([failedText(`${what}${which}`, run), ...notes].join('\n'))
       return EXIT.fail
     }
     passes.push(run.results)

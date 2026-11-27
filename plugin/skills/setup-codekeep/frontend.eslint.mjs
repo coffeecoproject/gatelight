@@ -35,6 +35,8 @@ const CONFIRM_CALLS = ['Modal', 'modal']
 const ENTRY_PROPS = [['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle']]
 /** 正文写在子元素里的项目组件（<ErrorBar>连不上服务</ErrorBar>）。 */
 const ENTRY_CHILDREN = []
+/** 必须原样展示的固定文字：备案号、许可证号、公司全称这类，法规或合同要求照录、缩不了的。写准确的整段文字（不能带 /），这几段不查字数和标点；说明文字不放这里。 */
+const VERBATIM = []
 /** 名字、正文、后台的字数上限。 */
 const NAME_MAX = 12
 const ENTRY_MAX = 16
@@ -48,6 +50,9 @@ const PUNCT = '[，。；！？（）]|：(?!\\s*$)'
 const SENTENCE = '[；]|。(?!\\s*$)'
 const names = list => list.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
 const longer = max => `/^[\\s\\S]{${max + 1},}$/`
+if (VERBATIM.some(text => text.includes('/'))) throw new Error('VERBATIM 里的文字不能带 /（esquery 的正则写不了）')
+/** 不是 VERBATIM 里的整段文字（JSX 文字前后的空白不算）。 */
+const notVerbatim = field => (VERBATIM.length ? `:not([${field}=/^\\s*(${names(VERBATIM)})\\s*$/])` : '')
 
 // 入口：写在这几处的文字按正文算（16 个字、一句话），不按名字算
 // 放行只对准那一处：都是直接子节点，不用后代（后代会把嵌在里面的标签、按钮、函数参数也放成正文）
@@ -87,8 +92,8 @@ const value = { Literal: 'value', TemplateElement: 'value.cooked', JSXText: 'val
 /** 带中文、超过 max 个字的固定文字，或带了 punct 里的标点：JSX 文字、字符串、模板字符串的每一段。 */
 const textRules = (max, punct, tail, what) =>
   Object.entries(value).flatMap(([node, field]) => [
-    { selector: `${node}[${field}=/${CJK}/][${field}=${node === 'JSXText' ? `/\\S[^\\n]{${max - 1},}\\S/` : longer(max)}]${tail}`, message: `${what}超过 ${max} 个字` },
-    { selector: `${node}[${field}=/${CJK}/][${field}=/${punct}/]${tail}`, message: `${what}带了句子标点` },
+    { selector: `${node}[${field}=/${CJK}/][${field}=${node === 'JSXText' ? `/\\S[^\\n]{${max - 1},}\\S/` : longer(max)}]${tail}${notVerbatim(field)}`, message: `${what}超过 ${max} 个字` },
+    { selector: `${node}[${field}=/${CJK}/][${field}=/${punct}/]${tail}${notVerbatim(field)}`, message: `${what}带了句子标点` },
   ])
 const NAME_HINT = '：页面上只放名字，说明不写；要告诉用户的写进提示、确认框正文或报错（codekeep 前端规则）'
 const ENTRY_HINT = '：提示、确认框正文、报错只说一句，说清怎么了、怎么办（codekeep 前端规则）'
@@ -99,8 +104,8 @@ const entryText = ENTRY.flatMap(entry => {
   const field = entry.endsWith('TemplateElement') ? 'value.cooked' : 'value'
   const max = entry.endsWith('JSXText') ? `/\\S[^\\n]{${ENTRY_MAX - 1},}\\S/` : longer(ENTRY_MAX)
   return [
-    { selector: `${entry}[${field}=${max}]`, message: `正文超过 ${ENTRY_MAX} 个字${ENTRY_HINT}` },
-    { selector: `${entry}[${field}=/${SENTENCE}/]`, message: `正文不止一句${ENTRY_HINT}` },
+    { selector: `${entry}[${field}=${max}]${notVerbatim(field)}`, message: `正文超过 ${ENTRY_MAX} 个字${ENTRY_HINT}` },
+    { selector: `${entry}[${field}=/${SENTENCE}/]${notVerbatim(field)}`, message: `正文不止一句${ENTRY_HINT}` },
   ]
 })
 const descPlaces = [

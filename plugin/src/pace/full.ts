@@ -1,5 +1,6 @@
 // 整组里"跑测试"的部分（base/module.ts 的 fullPart）：测试以外的检查（full），再把 tests 规则找到的全部测试文件交给 files。
-// 测试由这里按规则找出来，不靠谁记得把新测试加进整组。跑完读回每个测试的结果：记下没过的，认时好时坏和几轮没过的。
+// 测试由这里按规则找出来，不靠谁记得把新测试加进整组。跑完读回每个测试的结果：记下没过的，认时好时坏和几轮没过的；
+// 交给 files 的文件有没交回结果的（results.ts 的 unreported），各段都过了的整组算没过，全部测试那一段没过的照样点名。
 
 import type { FullPart } from '../base/module.ts'
 import type { Repo } from '../base/repo.ts'
@@ -7,7 +8,7 @@ import { loadConfig } from './config.ts'
 import { unconfirmedChanges } from './consent.ts'
 import type { PaceRun } from './record.ts'
 import { FULL_STEP, TESTS_STEP } from './report.ts'
-import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, type TestResult } from './results.ts'
+import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, unreported, unreportedText } from './results.ts'
 import { findTests } from './tests.ts'
 
 export function fullPart(repo: Repo): FullPart | { problem: string } {
@@ -27,33 +28,21 @@ export function fullPart(repo: Repo): FullPart | { problem: string } {
     ],
     summary: `${tests.length} 个测试文件`,
     env: { [RESULTS_ENV]: resultsAt.path },
-    finish() {
+    finish(failedStep) {
       const results = readResults(resultsAt.path, repo.root)
+      // 全部测试那一段跑了（过了，或它自己没过）才核对；前面的段没过，测试没跑，核对不出什么
+      const ran = failedStep === undefined || failedStep === TESTS_STEP
+      const silent = ran ? unreported(tests, results) : []
+      const text = unreportedText(files, silent, results.length, failedStep !== undefined)
       return {
-        fields: { tests: tests.length, ...(results.length > 0 ? { failed: failedTests(results) } : {}) },
-        problems: silentFiles(tests, results, files),
-        notes: (record, before) => noteResults(repo, { record: record as PaceRun, results, before: before as PaceRun[], whole: tests }),
+        fields: { tests: tests.length, ...(results.length > 0 ? { failed: failedTests(results) } : {}), ...(silent.length > 0 ? { notRun: silent } : {}) },
+        problems: failedStep === undefined && text ? [text] : [],
+        notes: (record, before) => [
+          ...(failedStep !== undefined && text ? [text] : []),
+          ...noteResults(repo, { record: record as PaceRun, results, before: before as PaceRun[], whole: tests }),
+        ],
       }
     },
     dispose: () => resultsAt.dispose(),
   }
-}
-
-/** 一次最多点名几个没交回结果的文件。 */
-const NAMED = 10
-
-/**
- * 交给 files 的每个测试文件都要交回至少一条结果（过、没过、跳过都算）。不读脚本：脚本漏跑了哪一类测试，结果里就少了那些文件。
- * 一条结果都没交回的，是 files 整个没经 testpace run 跑、也没自己写结果。
- */
-export function silentFiles(tests: readonly string[], results: readonly TestResult[], files: string): string[] {
-  const reported = new Set(results.map(test => test.file))
-  const silent = tests.filter(file => !reported.has(file))
-  if (silent.length === 0) return []
-  const how = `node:test、Vitest、Playwright 的测试经 testpace run 跑（它会交回结果）；别的跑法自己往环境变量 ${RESULTS_ENV} 给的文件里，每个测试追加一行 JSON：{"file":"文件的绝对路径","name":"测试名","status":"passed、failed 或 skipped"}`
-  if (results.length === 0) return [`files 命令（${files}）跑完，一个测试结果都没交回，整组核对不了跑到了哪些测试。${how}。`]
-  const named = silent.slice(0, NAMED).join('、') + (silent.length > NAMED ? ` 等 ${silent.length} 个` : '')
-  return [
-    `交给 files 命令（${files}）的测试文件里，这些一条结果都没交回：${named}。可能是 files 的脚本没把它们交给测试框架、被框架的配置排除了，或跑它们的那一路没交结果。${how}。`,
-  ]
 }

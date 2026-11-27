@@ -2,9 +2,10 @@
 // 分叉点之前的旧提交不管；输出打码；代码里的 gitleaks:allow 注释不认；不动真实的索引。
 
 import assert from 'node:assert/strict'
-import { readdirSync } from 'node:fs'
+import { chmodSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { codekeep, keepConfig, keepRepo, sh, tempDir, write } from './helpers.ts'
+import { codekeep, ENV, eslintConfig, keepConfig, keepRepo, sh, tempDir, write } from './helpers.ts'
 
 /** 一个 gitleaks 认得出的 GitHub token（运行时拼出来，测试代码里不放像密钥的字符串）。 */
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
@@ -12,7 +13,7 @@ const token = (seed: number): string => `ghp_${Array.from({ length: 36 }, (_, i)
 const leak = (seed: number, comment = ''): string => `export const token = '${token(seed)}'${comment}\n`
 
 const CONFIG = { '.codekeep/config.json': keepConfig({ checks: [{ name: 'lint', command: 'true' }], secrets: true }) }
-const LEAKED = /codekeep check：没通过，gitleaks 在这次改动里扫出了疑似密钥（上面列出，已打码）/
+const LEAKED = /\ngitleaks 在这次改动里扫出了疑似密钥（上面列出，已打码）。改法：\n[\s\S]*\ncodekeep check：没通过，1 项：\n {2}✗ gitleaks 扫出了疑似密钥（上面列出）\n/
 const commitAll = (repo: string): string => sh(repo, "git add -A && git commit -qm 'change'")
 
 describe('扫密钥', () => {
@@ -78,11 +79,28 @@ describe('扫密钥', () => {
     assert.match(r.out, LEAKED)
   })
 
-  test('检查命令没过时不再扫密钥', () => {
-    const repo = keepRepo({ '.codekeep/config.json': keepConfig({ checks: [{ name: 'lint', command: 'exit 1' }], secrets: true }) })
+  test('lint 有错、检查命令没过：照样扫密钥，三项一起列出，退出码 1', () => {
+    const config = keepConfig({ checks: [{ name: 'types', command: 'exit 1' }], eslint: { config: 'eslint.config.mjs' }, secrets: true })
+    const repo = keepRepo({ '.codekeep/config.json': config, 'eslint.config.mjs': eslintConfig({ 'no-var': 'error' }) })
+    write(repo, 'src/bad.js', 'var b = 1\nexport { b }\n')
     write(repo, 'src/config.js', leak(17))
     const r = codekeep(repo, ['check'])
     assert.equal(r.code, 1, r.out)
-    assert.doesNotMatch(r.out, /== 扫密钥/)
+    assert.match(r.out, /RuleID:\s+github-pat/)
+    assert.match(
+      r.out,
+      /\ncodekeep check：没通过，3 项：\n {2}✗ lint 有 1 个错误（上面列出；批量豁免文件在这里不起作用）\n {2}✗ 规范检查"types"没过（退出码 1）\n {2}✗ gitleaks 扫出了疑似密钥（上面列出）\n/,
+    )
+  })
+
+  test('密钥没扫成（gitleaks 没跑成）：列成一项，退出码 2，别的没过的照样列出', () => {
+    const bin = tempDir('codekeep-gitleaks-')
+    write(bin, 'gitleaks', '#!/bin/sh\necho 坏了 >&2\nexit 2\n')
+    chmodSync(join(bin, 'gitleaks'), 0o755)
+    const repo = keepRepo({ '.codekeep/config.json': keepConfig({ checks: [{ name: 'types', command: 'exit 1' }], secrets: true }) })
+    const r = codekeep(repo, ['check'], { PATH: `${bin}:${ENV.PATH}` })
+    assert.equal(r.code, 2, r.out)
+    assert.match(r.out, /\n密钥没扫成：gitleaks 扫提交时没跑成（退出码 2）\n/)
+    assert.match(r.out, /\ncodekeep check：没通过，2 项：\n {2}✗ 规范检查"types"没过（退出码 1）\n {2}✗ 密钥没扫成（上面说了原因）\n/)
   })
 })
