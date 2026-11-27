@@ -2,6 +2,7 @@
 //   每个模块两个 schema：内部（模块目录名转成小写加下划线，adminAccess → admin_access）和入口（<内部>_api，只放视图和函数）；
 //   共享层用 shared；public 里不放对象（扩展自带的除外）。
 //   每个模块一个角色，名字就是它的内部 schema 名；共享层的角色叫 shared。程序的登录账号、跑迁移的账号不能和它们同名。
+//   各模块的组角色叫 <登录账号>_modules，不能和上面这些同名。
 //   配置写了运行角色模板（database.runtime）的，每个模块还有一个运行角色（模板里的 <module> 换成内部 schema 名），不能和上面这些角色、账号同名。
 //   迁移放在每个模块目录下的 database.migrations 子目录、共享层的 database.shared 目录，文件名以 14 位的时间戳开头，不能重复（迁移只写正向，一个时间戳一个文件）。
 // 这里只管划分：每个应用的库有哪些 schema、各归谁，迁移文件各归谁，以及这些算出来的配置错误。只看路径，layout.ts 用它。
@@ -44,6 +45,8 @@ export const internalOf = (module: Module): string => schemaName(module.name)
 export const apiOf = (module: Module): string => `${schemaName(module.name)}${API_SUFFIX}`
 /** 模块的运行角色：配置的模板里的 <module> 换成模块的内部 schema 名。 */
 export const runtimeOf = (module: Module, template: string): string => template.replace(MODULE_PLACEHOLDER, internalOf(module))
+/** 各模块（和运行角色）的组角色：入口 schema、shared 的使用权授给它。按登录账号起名：角色整个实例共用，各项目各用各的。 */
+export const groupOf = (login: string): string => `${login}_modules`
 
 /** 这个 schema 归谁的说法，比如 orders 模块的内部 schema。 */
 export function schemaLabel(schema: string, owner: SchemaOwner): string {
@@ -102,6 +105,14 @@ export function databasesOf(apps: readonly App[], modules: readonly Module[], fi
         if (clash) problems.push(`${where}${module.id} 模块的运行角色 ${runtime}（database.runtime 是 ${config.runtime}）和${clash}同名：运行角色只有本模块的读写授权，换个模板`)
       }
     }
+    const group = groupOf(config.login)
+    const groupOwner = schemas.get(group)
+    const groupClash =
+      groupOwner && groupOwner.kind !== 'api' ? (groupOwner.kind === 'shared' ? '共享层的角色' : `${groupOwner.module.id} 模块的角色`)
+      : group === config.migrator ? '跑迁移的账号（database.migrator）'
+      : config.runtime !== undefined && own.some(module => runtimeOf(module, config.runtime as string) === group) ? '一个模块的运行角色'
+      : undefined
+    if (groupClash) problems.push(`${where}各模块的组角色 ${group}（按 database.login 起名）和${groupClash}同名：换个登录账号名或模块名`)
 
     const migrations: Migration[] = []
     const inDir = (dir: string): string[] => files.filter(path => path.startsWith(`${dir}/`) && !path.slice(dir.length + 1).includes('/') && path.endsWith('.sql'))

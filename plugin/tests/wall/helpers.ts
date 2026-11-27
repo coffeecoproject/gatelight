@@ -95,3 +95,13 @@ export function pendingOf(out: string): { id: string; text: string; items: strin
   const items = text.split('\n').flatMap(line => /^\d+\. (.*)$/.exec(line)?.[1] ?? [])
   return { id, text, items }
 }
+
+/** 假的 psql：把收到的标准输入存下来，输出 lines，以 exit 退出。返回执行它的命令和存标准输入的文件（命令没跑就没有这个文件）。 */
+export function fakePsql(lines: string[], exit = 0): { command: string; stdin: string } {
+  const dir = tempDir('modwall-psql-')
+  const script = join(dir, 'psql')
+  const stdin = join(dir, 'stdin.sql')
+  writeFileSync(script, `#!/bin/sh\ncat > '${stdin}'\nprintf '%s\\n' ${lines.map(line => `'${line.replace(/'/g, `'\\''`)}'`).join(' ')}\nexit ${exit}\n`)
+  chmodSync(script, 0o755)
+  return { command: `${script} --dbname "$MODWALL_TEST_DB"`, stdin }
+}

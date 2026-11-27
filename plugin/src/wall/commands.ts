@@ -1,4 +1,4 @@
-// modwall 的命令：init、check、db check、status。命令入口（src/modwall.ts）分发到这里。
+// modwall 的命令：init、check、migrate、db bootstrap、db check、status。命令入口（src/modwall.ts）分发到这里。
 // 找仓库、存记录、让用户确认、调 LayerMap 都用底座的；合并前的检查（check）是整组里的一段（见 full.ts），不用另外登记。
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -11,7 +11,9 @@ import { LAYERMAP_COMMAND, LAYERMAP_MINIMUM, layermapVersion } from '../base/lay
 import { openRepo, type Repo } from '../base/repo.ts'
 import { analyze, exitCode, formatReport, logCheck, prepare, type Report, violationLines } from './check.ts'
 import { CONFIG_PATH, MODWALL_DIR, schemeOf } from './config.ts'
+import type { Database } from './database.ts'
 import { catalogViolations, readCatalog } from './dbcheck.ts'
+import { bootstrapScript, fileReader, migrateScript, runScript } from './migrate.ts'
 import { leaveReceipt } from './receipt.ts'
 import { draftConfig } from './init.ts'
 import type { Module } from './layout.ts'
@@ -24,10 +26,15 @@ const USAGE = `用法：
   modwall init        按现有目录生成配置草稿（${CONFIG_PATH}）
   modwall check       检查整个项目：R1–R5、R6 里迁移文件那部分、放宽项是否经用户同意；通过时记一条通过记录。
                       接入了的仓库，testpace full 里自动跑它
+  modwall db bootstrap --psql "<执行 SQL 的命令>" | --print [--app <应用名>]
+                      建库那一步：建程序的登录账号和跑迁移的账号，库只让这两个连（不设密码）。用超级用户连库
+  modwall migrate --psql "<执行 SQL 的命令>" | --print [--app <应用名>]
+                      建各模块和共享层的角色、schema、权限，按时间戳跑还没跑过的迁移。用跑迁移的账号连库；
+                      --print 只输出脚本（打包上线用，线上只用 psql 跑它）
   modwall db check --psql "<执行 SQL 的命令>" [--app <应用名>]
-                      查库里的现状（R6 里库的那部分），迁移跑完之后执行；SQL 从标准输入交给这条命令，比如
-                      --psql "psql \$DATABASE_URL"、--psql "napbox exec postgres --temp \$ENV -- psql"；
-                      几个应用都写了 database 时用 --app 指定查哪个应用的库
+                      查库里的现状（R6 里库的那部分），迁移跑完之后执行，用哪个账号连都行；
+                      SQL 从标准输入交给 --psql 的命令，比如 --psql "psql \$DATABASE_URL"、
+                      --psql "napbox exec postgres --temp \$ENV -- psql"；几个应用都写了 database 时用 --app 指定哪个应用的库
   modwall status      越界、例外和确认情况，LayerMap 和 testpace 有没有接上`
 
 /** 退出码用底座的：0 通过；1 没通过；2 用法、配置或环境问题。 */
@@ -102,39 +109,55 @@ function check(): number {
   return EXIT.ok
 }
 
-/** modwall db check --psql "<命令>" [--app <应用名>]：不通过时退出码 1，没查成是 2。 */
-function dbCheck(args: string[]): number {
-  let psql: string | undefined
-  let appName: string | undefined
+interface DbArgs {
+  psql?: string
+  print: boolean
+  app?: string
+}
+
+function dbArgs(command: string, args: string[], printable: boolean): DbArgs | undefined {
+  const parsed: DbArgs = { print: false }
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
     if ((arg === '--psql' || arg === '--app') && args[i + 1] !== undefined) {
-      if (arg === '--psql') psql = args[++i]
-      else appName = args[++i]
-    } else {
+      if (arg === '--psql') parsed.psql = args[++i]
+      else parsed.app = args[++i]
+    } else if (arg === '--print' && printable) parsed.print = true
+    else {
       console.error(`不认识的参数：${arg}\n${USAGE}`)
-      return EXIT.usage
+      return undefined
     }
   }
-  if (!psql?.trim()) {
-    console.error(`modwall db check 要用 --psql 告诉它用什么命令执行 SQL（比如 --psql "psql \$DATABASE_URL"）。\n${USAGE}`)
-    return EXIT.usage
+  const psql = parsed.psql?.trim()
+  if (parsed.print && psql) {
+    console.error(`${command}：--psql 和 --print 只用一个。\n${USAGE}`)
+    return undefined
   }
+  if (!parsed.print && !psql) {
+    const or = printable ? '，或者用 --print 只输出脚本' : ''
+    console.error(`${command} 要用 --psql 告诉它用什么命令执行 SQL（比如 --psql "psql \$DATABASE_URL"）${or}。\n${USAGE}`)
+    return undefined
+  }
+  return parsed
+}
+
+/** 按 --app 找要用的库：只有一个写了 database 的应用时不用写。 */
+function databaseOf(command: string, appName: string | undefined): { project: Project; database: Database } | number {
   const opened = open()
   if (typeof opened === 'number') return opened
   const { project } = opened
   const prepared = prepare(project)
   if ('problems' in prepared) {
-    console.error(`modwall db check：配置有问题（${CONFIG_PATH}），先改好再检查：\n${prepared.problems.map(text => `  ✗ ${text}`).join('\n')}`)
+    console.error(`${command}：配置有问题（${CONFIG_PATH}），先改好：\n${prepared.problems.map(text => `  ✗ ${text}`).join('\n')}`)
     return EXIT.usage
   }
   if ('removed' in prepared) {
-    console.error(`modwall db check：工作区里没有 ${CONFIG_PATH}，不知道模块怎么分。`)
+    console.error(`${command}：工作区里没有 ${CONFIG_PATH}，不知道模块怎么分。`)
     return EXIT.usage
   }
   const { databases } = prepared.layout
   if (databases.length === 0) {
-    console.error(`modwall db check：${CONFIG_PATH} 里没有写 database（用 Postgres 的应用写 "database": { "migrations": …, "shared": … }）。`)
+    console.error(`${command}：${CONFIG_PATH} 里没有写 database（用 Postgres 的应用写 "database": { "migrations": …, "shared": … }）。`)
     return EXIT.usage
   }
   const named = databases.map(database => database.app.name)
@@ -142,11 +165,48 @@ function dbCheck(args: string[]): number {
   if (!database) {
     console.error(
       appName === undefined
-        ? `modwall db check：${named.join('、')} 几个应用都写了 database，用 --app 指定查哪个应用的库。`
-        : `modwall db check：没有写了 database 的应用叫 ${appName}（写了的有：${named.filter(Boolean).join('、') || '单应用的写法，不用 --app'}）。`,
+        ? `${command}：${named.join('、')} 几个应用都写了 database，用 --app 指定哪个应用的库。`
+        : `${command}：没有写了 database 的应用叫 ${appName}（写了的有：${named.filter(Boolean).join('、') || '单应用的写法，不用 --app'}）。`,
     )
     return EXIT.usage
   }
+  return { project, database }
+}
+
+/** modwall migrate、modwall db bootstrap：生成脚本，--print 输出，--psql 交给命令执行。脚本出错（psql 的退出码 3）算没通过，别的算没跑成。 */
+function runDbScript(command: string, args: string[], script: (project: Project, database: Database) => string): number {
+  const parsed = dbArgs(command, args, true)
+  if (!parsed) return EXIT.usage
+  const found = databaseOf(command, parsed.app)
+  if (typeof found === 'number') return found
+  const { project, database } = found
+  const text = script(project, database)
+  if (parsed.print) {
+    process.stdout.write(text)
+    return EXIT.ok
+  }
+  const r = runScript(project.root, parsed.psql as string, text)
+  if (r.error !== undefined) {
+    console.error(`${command}：执行 SQL 的命令没跑起来（${parsed.psql}）：${r.error}`)
+    return EXIT.usage
+  }
+  if (r.status === 0) return EXIT.ok
+  if (r.status === 3) {
+    console.error(`${command}：没做完，出错的那一步整步回滚了（错误见上面）。`)
+    return EXIT.fail
+  }
+  console.error(`${command}：执行 SQL 的命令失败（退出码 ${r.status}，命令：${parsed.psql}）：它要把标准输入的 SQL 交给 psql 执行。`)
+  return EXIT.usage
+}
+
+/** modwall db check --psql "<命令>" [--app <应用名>]：不通过时退出码 1，没查成是 2。 */
+function dbCheck(args: string[]): number {
+  const parsed = dbArgs('modwall db check', args, false)
+  if (!parsed) return EXIT.usage
+  const psql = parsed.psql as string
+  const found = databaseOf('modwall db check', parsed.app)
+  if (typeof found === 'number') return found
+  const { project, database } = found
   const catalog = readCatalog(project.root, psql)
   if (!catalog.ok) {
     console.error(`modwall db check：没查成，${catalog.problem}`)
@@ -159,7 +219,7 @@ function dbCheck(args: string[]): number {
     console.log(`modwall db check：通过${which}。库里没有越界。`)
     return EXIT.ok
   }
-  console.log([`modwall db check：没通过${which}。`, '', `库里越界 ${violations.length} 处（改迁移或跑迁移的工具，不要直接改库）：`, ...violationLines(violations)].join('\n'))
+  console.log([`modwall db check：没通过${which}。`, '', `库里越界 ${violations.length} 处（改迁移，或用 modwall db bootstrap、modwall migrate 重建；不要直接改库）：`, ...violationLines(violations)].join('\n'))
   return EXIT.fail
 }
 
@@ -241,7 +301,7 @@ function testpaceStatus(project: Project, hasDatabase: boolean): string[] {
 /**
  * 在 agent 的沙箱里跑不了的子命令和它要做的事（见 base/commandline.ts）。
  * check、status 要 LayerMap 的地图：它存在项目外面，沙箱里更新不了，R1–R4 查不成，check 会给出假的"没通过"。
- * db check 跑的是项目给的命令，要连数据库。init 只读写项目里的文件，不在里面。
+ * db check、db bootstrap、migrate 跑的是项目给的命令，要连数据库（--print 只输出脚本，不连）。init 只读写项目里的文件，不在里面。
  */
 export function outside(argv: string[]): string | undefined {
   switch (argv[0]) {
@@ -249,8 +309,11 @@ export function outside(argv: string[]): string | undefined {
       return '让 LayerMap 更新它的地图（存在项目外面）、写 .git/testpace/ 的记录'
     case 'status':
       return '让 LayerMap 更新它的地图（存在项目外面）'
+    case 'migrate':
+      return argv.includes('--print') ? undefined : '跑 --psql 给的命令连数据库、改库'
     case 'db':
-      return argv[1] === 'check' ? '跑 --psql 给的命令连数据库' : undefined
+      if (argv[1] === 'check') return '跑 --psql 给的命令连数据库'
+      return argv[1] === 'bootstrap' && !argv.includes('--print') ? '跑 --psql 给的命令连数据库、建账号' : undefined
     default:
       return undefined
   }
@@ -262,8 +325,11 @@ export function main(argv: string[]): number {
       return init()
     case 'check':
       return check()
+    case 'migrate':
+      return runDbScript('modwall migrate', argv.slice(1), (project, database) => migrateScript(database, fileReader(project.root)))
     case 'db':
       if (argv[1] === 'check') return dbCheck(argv.slice(2))
+      if (argv[1] === 'bootstrap') return runDbScript('modwall db bootstrap', argv.slice(2), (_, database) => bootstrapScript(database))
       console.error(`不认识的命令：db ${argv[1] ?? ''}\n${USAGE}`)
       return EXIT.usage
     case 'status':

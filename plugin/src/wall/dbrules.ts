@@ -68,35 +68,35 @@ export const FIXES = {
   foreignKey: (module: string) => `模块之间不建外键：只存 ${module} 的 id，存在性和删除规则由应用经 ${module} 的入口保证（删除一般改成软删除）。`,
   searchPath: (expected: string) =>
     `函数一律带 SET search_path = ${expected}：不写全名的就是本模块的对象，引用别的模块、shared 要写带 schema 的全名；pg_temp 放最后，别人建的同名临时表才骗不了以提供方身份执行的函数。`,
-  setsSearchPath: '迁移和函数里不改 search_path：跑迁移的工具已经把它设成本模块的内部 schema，函数用自己的 SET search_path。要用别的 schema 的对象，写带 schema 的全名。',
+  setsSearchPath: '迁移和函数里不改 search_path：modwall migrate 已经把它设成本模块的内部 schema，函数用自己的 SET search_path。要用别的 schema 的对象，写带 schema 的全名。',
   switchesRole:
-    "迁移里不切身份（SET ROLE、RESET ROLE、SET SESSION AUTHORIZATION、set_config('role', …)，在角色、库上设 role 也算）：跑迁移的工具已经切成本模块的角色。要别的模块做事，在它的迁移里做，或者调用它入口里的函数（以它的角色执行）。",
-  createsSchema: '迁移里不建 schema：跑迁移的工具按模块目录建好模块的角色和两个 schema（共享层的 shared 也由它建），迁移只在里面建对象。删掉这句。',
+    "迁移里不切身份（SET ROLE、RESET ROLE、SET SESSION AUTHORIZATION、set_config('role', …)，在角色、库上设 role 也算）：modwall migrate 已经切成本模块的角色。要别的模块做事，在它的迁移里做，或者调用它入口里的函数（以它的角色执行）。",
+  createsSchema: '迁移里不建 schema：modwall migrate 按模块目录建好模块的角色和两个 schema（共享层的 shared 也由它建），迁移只在里面建对象。删掉这句。',
   codeSwitchesRole:
     "模块的代码不自己切身份：连接在事务开头由装配层或共享层里那个切身份的小函数切成本模块的角色。要别的模块的数据，经它的代码入口或数据库入口。这里写的其实不是 SQL（注释、说明文字）的，换个说法。",
   missingRole: (role: string) =>
-    `跑迁移的工具发现一个模块目录，就建同名的角色和它的两个 schema（共享层是 shared 角色和 shared schema），已有就跳过：CREATE ROLE ${role} NOLOGIN。`,
+    `模块的角色 ${role} 和它的两个 schema（共享层是 shared 角色和 shared schema）由 modwall migrate 按模块目录建：用迁移账号跑一次 modwall migrate。`,
   roleAttributes: (role: string) =>
     `模块和共享层的角色只用来切身份，本身不能登录、没有特权：ALTER ROLE ${role} NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB；能在库里建 schema 的，REVOKE CREATE ON DATABASE … FROM ${role}（授给 PUBLIC 的也要收回）。`,
   runtimeRole: (role: string, owner: string) =>
     `运行角色只用来跑模块的代码：本身没有特权，只有本模块内部 schema 的使用权和表上的读写授权（SELECT、INSERT、UPDATE、DELETE），不拥有对象、不能建对象，建表、改表结构归模块的角色 ${owner}，在迁移里做：ALTER ROLE ${role} NOSUPERUSER NOCREATEROLE NOCREATEDB；能在库里、public 里建对象的，REVOKE CREATE ON DATABASE … FROM ${role}、REVOKE CREATE ON SCHEMA public FROM ${role}（授给 PUBLIC 的也收回）；它拥有的对象用 ALTER … OWNER TO ${owner} 改归模块的角色。`,
   runtimeCreate: (schema: string, role: string, owner: string) =>
     `运行角色不建对象，建表、改表结构归模块的角色 ${owner}，在迁移里做：REVOKE CREATE ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是 ${role} 经成员关系从 ${owner} 继承来的，把成员关系去掉，只授本模块表上的读写。`,
-  publicCreate: 'public 里不放对象：REVOKE CREATE ON SCHEMA public FROM PUBLIC（Postgres 14 默认授给所有角色），授给这个角色的也收回。',
+  publicCreate: 'public 里不放对象：REVOKE CREATE ON SCHEMA public FROM PUBLIC（modwall db bootstrap 会收回），授给这个角色的也收回。',
   owner: (role: string) =>
-    `模块的两个 schema 和里面的对象归模块的角色，shared 的归 shared 角色：迁移切成这个角色执行，建出来的就归它；已有的用 ALTER … OWNER TO ${role} 改，再查迁移工具有没有切身份。`,
+    `模块的两个 schema 和里面的对象归模块的角色，shared 的归 shared 角色：迁移切成这个角色执行，建出来的就归它；已有的用 ALTER … OWNER TO ${role} 改，再查迁移是不是用 modwall migrate 跑的。`,
   createPrivilege: (schema: string, owner: string, role: string) =>
     `只有 ${owner} 能在 ${schema} 里建对象，别的模块要什么让它在自己的迁移里加：REVOKE CREATE ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是经成员关系继承来的，把成员关系设成不继承或去掉。`,
   internalPrivilege: (schema: string, role: string) =>
-    `内部 schema 只有模块自己能用，别的模块经入口：REVOKE ALL ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是 ${role} 经成员关系继承来的（比如登录账号），把成员关系设成不继承（NOINHERIT，Postgres 16 起 GRANT … WITH INHERIT FALSE）或去掉。`,
+    `内部 schema 只有模块自己能用，别的模块经入口：REVOKE ALL ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是 ${role} 经成员关系继承来的（比如登录账号），把成员关系设成不继承（GRANT … WITH INHERIT FALSE；modwall migrate 加的都不继承）或去掉。`,
   securityDefiner:
     '函数一律 SECURITY DEFINER：以所在模块（共享层）的角色执行，入口函数才碰得到内部的表，函数里也切不了身份（Postgres 不让）。建函数时写上（CREATE OR REPLACE 不写会改回按调用者执行），不用 SECURITY INVOKER；要 COMMIT 的过程拆开或放到应用代码里。',
   securityInvoker: (module: Module) =>
     `入口视图以 ${module.id} 的角色读它内部的表，别的模块的角色用不了 ${internalOf(module)}：去掉 security_invoker（ALTER VIEW … RESET (security_invoker)）。`,
   connect: (database: string, accounts: string[]) =>
-    `库只让本项目的两个账号连：角色是整个 Postgres 实例共用的，同一个实例上别的项目有同名的模块角色时，它的登录账号连进这个库就能切成这个角色、读写这个模块。建库那一步收回、授予：REVOKE CONNECT ON DATABASE ${database} FROM PUBLIC；GRANT CONNECT ON DATABASE ${database} TO ${accounts.join(', ')}。`,
+    `库只让本项目的两个账号连：角色是整个 Postgres 实例共用的，同一个实例上别的项目有同名的模块角色时，它的登录账号连进这个库就能切成这个角色、读写这个模块。用超级用户跑一次 modwall db bootstrap，或者手动：REVOKE CONNECT ON DATABASE ${database} FROM PUBLIC；GRANT CONNECT ON DATABASE ${database} TO ${accounts.join(', ')}。`,
   account: (role: string) =>
-    `程序的登录账号、跑迁移的账号要能登录，本身没有权限，只能切成模块的角色：不是超级用户（超级用户不受权限限制，越界查不出来），不拥有任何对象（拥有的对象改归所属模块的角色）。还没有就建：CREATE ROLE ${role} LOGIN NOINHERIT，再把它加进各模块角色的成员。`,
+    `程序的登录账号、跑迁移的账号要能登录，本身没有权限，只能切成模块的角色：不是超级用户（超级用户不受权限限制，越界查不出来），不拥有任何对象（拥有的对象改归所属模块的角色）。还没有就用超级用户跑一次 modwall db bootstrap 建，modwall migrate 再把它加成各模块角色的成员。`,
   alias: '表、列的别名、CTE 的名字、函数里的变量不能和模块的 schema 同名，否则会被当成跨模块引用：换个名字。',
   bareRelation: (name: string) => `表名 ${name} 和模块的 schema 同名：给它起个别名（FROM … AS 别名），用别名限定列，不用表名，否则 ${name}.列 会被当成跨模块引用。`,
   internal: (module: Module, schema: string) =>

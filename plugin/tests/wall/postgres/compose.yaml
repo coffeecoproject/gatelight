@@ -1,0 +1,26 @@
+# modwall migrate、db bootstrap 的测试用的库（权限要真库才守得住）：每个测试文件用 napbox up --temp 起自己那一版
+# （--profile pg16、pg17；pg15 只用来看低于 16 时报错），跑完 napbox down --temp 收掉。
+# 只连本机端口、只给测试用：谁连都不要密码，超级用户的密码是假的。
+x-postgres: &postgres
+  environment:
+    POSTGRES_PASSWORD: not-a-real-password
+    POSTGRES_HOST_AUTH_METHOD: trust
+  ports: ["5432"]
+  healthcheck:
+    test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+    interval: 1s
+    retries: 60
+
+services:
+  pg15:
+    <<: *postgres
+    image: postgres:15-alpine
+    profiles: [pg15]
+  pg16:
+    <<: *postgres
+    image: postgres:16-alpine
+    profiles: [pg16]
+  pg17:
+    <<: *postgres
+    image: postgres:17-alpine
+    profiles: [pg17]
