@@ -4,16 +4,16 @@ import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { runs } from '../helpers.ts'
-import { ENV, HOOK, MEMBER_PRICE, sampleRepo, TEST_HEAD, TESTPACE, write } from './helpers.ts'
+import { ENV, hook, MEMBER_PRICE, sampleRepo, TEST_HEAD, TESTPACE, write } from './helpers.ts'
 
-function hook(cwd: string, event: string, extra: Record<string, unknown> = {}): Record<string, any> | undefined {
-  const r = spawnSync('node', ['--disable-warning=ExperimentalWarning', HOOK, 'claude'], {
-    input: JSON.stringify({ hook_event_name: event, cwd, ...extra }),
-    env: ENV,
-    encoding: 'utf8',
-  })
-  assert.equal(r.status, 0, r.stderr)
-  return r.stdout.trim() ? JSON.parse(r.stdout) : undefined
+/**
+ * 停止门：testcraft 拦没拦、出没出声。停止门里"跑测试"那一项（testpace 的：改了代码、当前内容没跑过 testpace focused）
+ * 不归 testcraft 管，认出来当作没出声；testcraft 排在它前面，testcraft 自己拦的照样看得到。
+ */
+function stopped(repo: string, session: string): Record<string, any> | undefined {
+  const out = hook(repo, 'Stop', { session_id: session })
+  const focusedOnly = out?.decision === 'block' && /当前内容还没跑过 testpace focused/.test(out.reason) && out.systemMessage === undefined
+  return focusedOnly ? undefined : out
 }
 
 const edit = (repo: string, path: string, from: string, to: string): void => {
@@ -68,14 +68,14 @@ describe('hooks', () => {
     hook(repo, 'SessionStart', { session_id: 's' })
     appendFileSync(join(repo, 'src/price.mjs'), MEMBER_PRICE)
     write(repo, 'tests/member.test.mjs', realTest)
-    assert.equal(hook(repo, 'Stop', { session_id: 's' }), undefined)
+    assert.equal(stopped(repo, 's'), undefined)
     edit(repo, 'tests/price.test.mjs', "test('满额才减'", "test.skip('满额才减'")
-    assert.equal(hook(repo, 'Stop', { session_id: 's' }), undefined)
+    assert.equal(stopped(repo, 's'), undefined)
     hitCoupon(repo)
     hitTotal(repo)
-    assert.equal(hook(repo, 'Stop', { session_id: 's' }), undefined)
+    assert.equal(stopped(repo, 's'), undefined)
     rmSync(join(repo, 'tests/price.test.mjs'))
-    assert.equal(hook(repo, 'Stop', { session_id: 's' }), undefined)
+    assert.equal(stopped(repo, 's'), undefined)
   })
 })
 

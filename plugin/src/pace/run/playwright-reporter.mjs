@@ -5,6 +5,8 @@
 // 配置写错时 Playwright 不起报告器，不写报告，testpace 不核对；全局准备（globalSetup）出错时选好了测试、一个没跑，照样写。
 // 只算选中的测试（没被行选中的 Playwright 不放进来）。一个结果都没有的是没跑到（提前停下、依赖的准备项目没过）；
 // 被跳过但本来要跑的（serial 模式里前面的没过，后面的就不跑了）也是没跑到，不算声明了跳过。
+// 没跑到的记成 notrun：testpace 按文件核对时不把它们算交回了结果（targets.ts 的 tally、results.ts 的 unreported），
+// 但点名是哪几个，重跑没过的测试时一起带上（只重跑没过的那一行，它们还是不跑）。
 // 多个 project 时同一个测试各算一次，名字前带上 project 的名字；重试的按最后一次算，重试后才过的记 retried。
 import { writeFileSync } from 'node:fs'
 
@@ -22,11 +24,10 @@ export default class TestpaceCount {
     const lines = []
     for (const test of this.suite.allTests()) {
       const last = test.results.at(-1)
-      if (!last) continue
       let status
-      if (last.status === 'skipped') {
-        if (test.expectedStatus !== 'skipped') continue
-        status = 'skipped'
+      if (!last) status = 'notrun'
+      else if (last.status === 'skipped') {
+        status = test.expectedStatus === 'skipped' ? 'skipped' : 'notrun'
       } else {
         status = last.status === test.expectedStatus ? 'passed' : 'failed'
       }

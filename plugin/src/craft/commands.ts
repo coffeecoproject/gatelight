@@ -5,9 +5,11 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EXIT } from '../base/exit.ts'
 import { openRepo } from '../base/repo.ts'
+import { VERSION } from '../base/version.ts'
 import { open, type Snapshot } from './change.ts'
 import { baseChecklist, changedChecklist, hitsOf } from './checklist.ts'
 import { CHECKLIST_DIR, RULES_DIR } from './config.ts'
+import { missingText } from './defaults.ts'
 
 const USAGE = `用法：
   testcraft checklist 清单（.testcraft/checklist/）里这次改动命中的条目和各条怎么查：按条目查一遍。
@@ -58,17 +60,21 @@ function checklist(s: Snapshot): number {
   }
   if (base.problems.length) lines.push('', '分叉点上这几条写得不对，这次没按它们提醒（不拦这次改动，另找时间修好）：', ...base.problems.map(problem => `  · ${problem}`))
   if (changed.problems.length) lines.push('', '这次加、改的条目写得不对（合并后要用得上）：', ...changed.problems.map(problem => `  ✗ ${problem}`))
+  const missing = missingText(s.root)
+  if (missing) lines.push('', missing)
   console.log(lines.join('\n'))
   return changed.problems.length ? EXIT.fail : EXIT.ok
 }
 
 function status(s: Snapshot): number {
-  const lines: string[] = [`和 ${s.branch} 的分叉点 ${s.base.slice(0, 8)} 比，这次改了 ${s.changes.length} 个文件。`]
+  const lines: string[] = [`gatelight ${VERSION}。和 ${s.branch} 的分叉点 ${s.base.slice(0, 8)} 比，这次改了 ${s.changes.length} 个文件。`]
   const base = baseChecklist(s)
   if (base.items.length) {
     const hits = hitsOf(s, base.items)
     lines.push(`清单（${CHECKLIST_DIR}/）：${base.items.length} 条，这次命中 ${hits.length} 条${hits.length ? `：${hits.map(hit => hit.item.id).join('、')}（testcraft checklist 列出怎么查）` : ''}`)
   } else lines.push('清单：没有条目')
+  const missing = missingText(s.root)
+  if (missing) lines.push(missing)
   const rules = listRules(s.root)
   lines.push(rules.length ? `暂定的规则和记过的 bug（${RULES_DIR}/）：\n${rules.map(rule => `  - ${rule}`).join('\n')}` : '暂定的规则和记过的 bug：没有')
   console.log(lines.join('\n'))

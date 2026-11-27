@@ -8,7 +8,7 @@ import { loadConfig } from './config.ts'
 import { unconfirmedChanges } from './consent.ts'
 import type { PaceRun } from './record.ts'
 import { FULL_STEP, TESTS_STEP } from './report.ts'
-import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, unreported, unreportedText } from './results.ts'
+import { failedTests, noteResults, reached, readResults, RESULTS_ENV, resultsFile, unreported, unreportedText } from './results.ts'
 import { findTests } from './tests.ts'
 
 export function fullPart(repo: Repo): FullPart | { problem: string } {
@@ -33,7 +33,7 @@ export function fullPart(repo: Repo): FullPart | { problem: string } {
       // 全部测试那一段跑了（过了，或它自己没过）才核对；前面的段没过，测试没跑，核对不出什么
       const ran = failedStep === undefined || failedStep === TESTS_STEP
       const silent = ran ? unreported(tests, results) : []
-      const text = unreportedText(files, silent, results.length, failedStep !== undefined)
+      const text = unreportedText(files, silent, reached(results).length, failedStep !== undefined)
       return {
         fields: { tests: tests.length, ...(results.length > 0 ? { failed: failedTests(results) } : {}), ...(silent.length > 0 ? { notRun: silent } : {}) },
         problems: failedStep === undefined && text ? [text] : [],

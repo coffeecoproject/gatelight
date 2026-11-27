@@ -5,7 +5,7 @@ import type { Execution } from '../base/execute.ts'
 import { currentBranch, headCommit, workTreeId } from '../base/git.ts'
 import type { RunningMarker, RunRecord, Store } from '../base/store.ts'
 import type { CommandKey } from './config.ts'
-import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, type TestResult, unreported, unreportedText, wholeFiles } from './results.ts'
+import { failedTests, noteResults, reached, readResults, RESULTS_ENV, resultsFile, type TestResult, unreported, unreportedText, wholeFiles } from './results.ts'
 import type { TestId } from './testlist.ts'
 
 /** 这个模块跑的命令的记录：fast、files，和整组（full，底座跑的，带着这个模块加的字段）。 */
@@ -59,7 +59,7 @@ export async function runRecorded(
     const results = execution.interrupted ? [] : readResults(file.path, repo.root)
     const failed = failedTests(results)
     const silent = kind === 'files' && !execution.interrupted ? unreported(args, results) : []
-    const unreached = unreportedText(command, silent, results.length, execution.exitCode !== 0)
+    const unreached = unreportedText(command, silent, reached(results).length, execution.exitCode !== 0)
     const record: PaceRun = {
       id,
       kind,

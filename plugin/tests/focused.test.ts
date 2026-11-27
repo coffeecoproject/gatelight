@@ -1,12 +1,12 @@
 // testpace focused 和 testpace files：用一个假的 layermap 命令决定选出哪些测试。
 
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { BRANCH_CAP, fullReasons, type LayermapCheck, NEARBY_RANK, outsideNote, parseCheck, parseUntested, select, type Untested } from '../src/pace/focused.ts'
 import { matcher } from '../src/base/glob.ts'
-import { commit, ENV, runs, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
+import { commit, ENV, fakeLayermap, runs, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
 
 const check = (partial: Partial<LayermapCheck>): LayermapCheck => ({ files: [], tests: [], unmapped: [], incomplete: [], ...partial })
 
@@ -313,36 +313,6 @@ describe('选测', () => {
     })
   })
 })
-
-/**
- * 假的 layermap：每次调用的参数按行记下；输出给定的 JSON，参数里给了测试文件时再带上 untested；
- * FAKE_LAYERMAP_FAIL 时报错退出。
- */
-function fakeLayermap(output: LayermapCheck, untested: Untested = { changed: [], truncated: false }): { env: NodeJS.ProcessEnv; calls: () => string[][] } {
-  const dir = tempDir('testpace-fake-')
-  const json = join(dir, 'check.json')
-  const withTests = join(dir, 'check-tests.json')
-  const callsFile = join(dir, 'calls.jsonl')
-  writeFileSync(json, JSON.stringify(output))
-  writeFileSync(withTests, JSON.stringify({ ...output, untested: { ...untested, entries: [], throughRoutes: [], routes: [], missing: [] } }))
-  const bin = join(dir, 'layermap')
-  writeFileSync(
-    bin,
-    `#!/usr/bin/env node
-const fs = require('node:fs')
-const args = process.argv.slice(2)
-fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + '\\n')
-if (process.env.FAKE_LAYERMAP_FAIL) { console.error('layermap: map build failed'); process.exit(1) }
-// check --json --base REF 之后还有参数，就是给了测试文件
-process.stdout.write(fs.readFileSync(args.length > 4 ? ${JSON.stringify(withTests)} : ${JSON.stringify(json)}, 'utf8'))
-`,
-  )
-  chmodSync(bin, 0o755)
-  return {
-    env: { ...ENV, PATH: `${dir}:${ENV.PATH}` },
-    calls: () => readFileSync(callsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line)),
-  }
-}
 
 const FORMAT_CHANGE = check({
   files: [{ path: 'src/format.mjs', status: 'MODIFIED' }],

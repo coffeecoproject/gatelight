@@ -9,16 +9,23 @@ import { ENV, hook, modwall, sampleRepo, sh, tempDir, write } from './helpers.ts
 const edit = (repo: string, path: string, tool = 'Write'): Record<string, any> | undefined =>
   hook(repo, 'PreToolUse', { tool_name: tool, tool_input: { file_path: join(repo, path) } })
 
+/**
+ * 停止门里"跑测试"那一项（testpace 的：改了代码、当前内容没跑过 testpace focused）不归 modwall 管，认出来不算拦。
+ * modwall 排在它前面，modwall 自己拦的照样看得到。
+ */
+const focusedOnly = (out: Record<string, any> | undefined): boolean => out?.decision === 'block' && /当前内容还没跑过 testpace focused/.test(out.reason)
+
 /** 停止门：拦了返回给 agent 的话；没出声是 undefined；出了别的声原样返回（和 undefined 比就不相等）。 */
 const stop = (repo: string, session: string): unknown => {
   const out = hook(repo, 'Stop', { session_id: session })
+  if (focusedOnly(out)) return out?.systemMessage === undefined ? undefined : { systemMessage: out?.systemMessage }
   return out?.decision === 'block' ? (out.reason as string) : out
 }
 
 /** 只看拦没拦：默认分支上没测过的提交另有给用户的提示（"跑测试"模块的），那不算拦。 */
 const blocked = (repo: string, session: string): string | undefined => {
   const out = hook(repo, 'Stop', { session_id: session })
-  return out?.decision === 'block' ? (out.reason as string) : undefined
+  return out?.decision === 'block' && !focusedOnly(out) ? (out.reason as string) : undefined
 }
 
 describe('会话开始', () => {

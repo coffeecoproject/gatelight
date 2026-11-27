@@ -62,6 +62,9 @@ export function readResults(path: string, root: string): TestResult[] {
  * 一次运行里同一个名字既有过的又有没过的，分不清是哪个，不算（不记没过，不比时好时坏，不数轮数）。
  * 名字带 project 的（Vitest、Playwright 有多个 project 时）各算一个。
  */
+/** 同名的几条里留哪条（没过的另算，见 distinct）：过了的胜过跳过的，跳过的胜过没跑到的（Playwright repeatEach 的拷贝有的跑了、有的没跑到）。 */
+const STRENGTH: Record<TestResult['status'], number> = { notrun: 0, skipped: 1, passed: 2, failed: 3 }
+
 function distinct(results: TestResult[]): TestResult[] {
   const byKey = new Map<string, TestResult>()
   const mixed = new Set<string>()
@@ -70,7 +73,7 @@ function distinct(results: TestResult[]): TestResult[] {
     const seen = byKey.get(key)
     if (!seen) byKey.set(key, test)
     else if (seen.status !== test.status && (seen.status === 'failed' || test.status === 'failed')) mixed.add(key)
-    else if (test.status === 'failed' || (test.status === 'passed' && seen.status === 'skipped')) byKey.set(key, test)
+    else if (test.status === 'failed' || STRENGTH[test.status] > STRENGTH[seen.status]) byKey.set(key, test)
   }
   return [...byKey.values()].filter(test => !mixed.has(testKey(test)))
 }
@@ -92,12 +95,17 @@ export function wholeFiles(args: string[]): string[] {
   return args.filter(arg => !LOCATED.test(arg))
 }
 
+/** 跑到了的测试（过、没过、跳过）：去掉 Playwright 记的没跑到（notrun，见 run/targets.ts 的 Ran）。 */
+export function reached<T extends TestResult>(results: readonly T[]): T[] {
+  return results.filter(test => test.status !== 'notrun')
+}
+
 /**
  * 交给 files 的测试文件里一条结果都没交回的（过、没过、跳过都算交回；按行给的看那个文件）。不读脚本：脚本漏跑了哪一类测试、
  * 跑到一半停了（比如分几批跑、一批没过后面的就不跑），结果里就少了那些文件。focused、files、整组都按这个核对。
  */
 export function unreported(handed: readonly string[], results: readonly TestResult[]): string[] {
-  const reported = new Set(results.map(test => test.file))
+  const reported = new Set(reached(results).map(test => test.file))
   return [...new Set(handed.map(testFile))].filter(file => !reported.has(file))
 }
 
@@ -144,6 +152,13 @@ export function noteResults(repo: Repo, input: ResultsInput): string[] {
   if (input.results.length === 0) return []
   const results = distinct(input.results)
   const notes: string[] = []
+
+  // 选中了却没跑到的（Playwright 的 serial 模式里前面的没过，后面的不跑）：只重跑没过的那一行，它们还是不跑
+  const unreached = results.filter(test => test.status === 'notrun')
+  if (unreached.length > 0) {
+    const named = unreached.slice(0, NAMED).map(describeTest).join('、') + (unreached.length > NAMED ? ` 等 ${unreached.length} 个` : '')
+    notes.push(`这些测试没跑到（同一组里前面有测试没过，框架没接着跑）：${named}。这次没验证到它们：修好后用 testpace files 把没过的和它们（文件:行号）一起再跑一遍。`)
+  }
   const listed = new Map(flakyTests(repo.store).map(test => [testKey(test), test]))
   const session = currentAgent()?.session
 
