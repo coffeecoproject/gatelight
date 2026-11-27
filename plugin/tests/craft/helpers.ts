@@ -1,6 +1,7 @@
 // "测试写法"的测试共用：示例项目（examples/craft-sample）的 git 副本、跑 testcraft 命令、写文件。
 // 环境（去掉 agent 的标记、测试自己的全局 git 配置）和临时目录用整个插件测试共用的那份（../helpers.ts）。
 
+import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -26,6 +27,17 @@ export interface Result {
 export function testcraft(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Result {
   const r = spawnSync(BIN, args, { cwd, env: { ...ENV, ...env }, encoding: 'utf8' })
   return { code: r.status, out: r.stdout + r.stderr }
+}
+
+/** 跑一次钩子入口（当成 Claude Code 发来的事件）：返回它输出的 JSON，没输出为 undefined。 */
+export function hook(cwd: string, event: string, extra: Record<string, unknown> = {}): Record<string, any> | undefined {
+  const r = spawnSync('node', ['--disable-warning=ExperimentalWarning', HOOK, 'claude'], {
+    input: JSON.stringify({ hook_event_name: event, cwd, ...extra }),
+    env: ENV,
+    encoding: 'utf8',
+  })
+  assert.equal(r.status, 0, r.stderr)
+  return r.stdout.trim() ? JSON.parse(r.stdout) : undefined
 }
 
 export function sh(cwd: string, script: string): string {

@@ -7,7 +7,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { before, describe, test } from 'node:test'
-import { BIN, ENV, reported, tempDir, type Result } from './helpers.ts'
+import { BIN, BIN_DIR, commit, ENV, reported, runs, sh, tempDir, testpace, type Result } from './helpers.ts'
 
 const PLAYWRIGHT = dirname(createRequire(import.meta.url).resolve('@playwright/test/package.json'))
 
@@ -89,6 +89,19 @@ describe('testpace run playwright', () => {
     assert.match(r.out, /这次已有测试没过，框架可能没跑到它们就停下了/)
   })
 
+  test('选中了却没跑到的测试记成没跑到、逐个点名，提醒重跑没过的测试时一起带上；只给了这一行的算一个测试都没跑到', () => {
+    const serial = reported(dir, ['run', 'playwright', '--cwd', 'e2e', 'e2e/tests/serial.spec.mjs:3', 'e2e/tests/serial.spec.mjs:4'])
+    assert.equal(serial.code, 1, serial.out)
+    assert.deepEqual(serial.results, ['failed 先错', 'notrun 后面的'])
+    assert.match(serial.out, /这些选中的测试没跑到（[^）]+）：e2e\/tests\/serial\.spec\.mjs:4。重跑没过的测试时把它们一起带上/)
+    assert.match(serial.out, /一个测试都没跑到（[^）]+）：e2e\/tests\/serial\.spec\.mjs:4\n/)
+
+    const stopped = reported(dir, ['run', 'playwright', '--cwd', 'e2e', '--playwright-arg=--max-failures=1', '--playwright-arg=--workers=1', 'e2e/tests/a-fail.spec.mjs', 'e2e/tests/ok.spec.mjs'])
+    assert.equal(stopped.code, 1, stopped.out)
+    assert.deepEqual(stopped.results, ['failed 错', 'notrun 也对'])
+    assert.match(stopped.out, /这些选中的测试没跑到（[^）]+）：e2e\/tests\/ok\.spec\.mjs:2。重跑没过的测试时把它们一起带上/)
+  })
+
   test('配置写错（选测试之前就停了）时失败，不逐个核对', () => {
     const r = run('--playwright-arg=--config=broken.config.mjs', 'e2e/tests/ok.spec.mjs')
     assert.notEqual(r.code, 0, r.out)
@@ -136,5 +149,89 @@ describe('testpace run playwright', () => {
     const r = spawnSync(BIN, ['run', 'playwright', 'e2e/tests/ok.spec.mjs'], { cwd: dir, env: ENV, encoding: 'utf8' })
     assert.equal(r.status, 2)
     assert.match(r.stdout + r.stderr, /找不到项目装的 @playwright\/test/)
+  })
+})
+
+describe('由 testpace files、整组起的 Playwright：选中了却没跑到的测试', () => {
+  const env = { ...ENV, PATH: `${BIN_DIR}:${ENV.PATH}` }
+  /** 一个用 Playwright 跑测试的项目（提交在 main 上）：一个线程跑，一个没过就停；files 命令另加 extra 给的参数。 */
+  const project = (extra = ''): string => {
+    const repo = tempDir('testpace-playwright-repo-')
+    const e2e = join(repo, 'e2e')
+    const write = (name: string, text: string): void => {
+      mkdirSync(dirname(join(repo, name)), { recursive: true })
+      writeFileSync(join(repo, name), text)
+    }
+    mkdirSync(join(e2e, 'node_modules', '@playwright'), { recursive: true })
+    symlinkSync(PLAYWRIGHT, join(e2e, 'node_modules', '@playwright', 'test'))
+    write('.gitignore', 'node_modules\ntest-results\n')
+    write('e2e/package.json', '{ "type": "module" }\n')
+    write('e2e/playwright.config.mjs', "export default { testDir: './tests' }\n")
+    write('e2e/tests/a-fail.spec.mjs', "import { expect, test } from '@playwright/test'\ntest('错', () => { expect(1).toBe(2) })\n")
+    write('e2e/tests/ok.spec.mjs', "import { expect, test } from '@playwright/test'\ntest('也对', () => { expect(1).toBe(1) })\n")
+    write('e2e/tests/serial.spec.mjs', "import { expect, test } from '@playwright/test'\ntest.describe.configure({ mode: 'serial' })\ntest('先错', () => { expect(1).toBe(2) })\ntest('后面的', () => { expect(1).toBe(1) })\n")
+    write(
+      'testpace.json',
+      JSON.stringify({
+        fast: 'node -e 0',
+        files: `testpace run playwright --cwd e2e --playwright-arg=--workers=1 --playwright-arg=--max-failures=1${extra}`,
+        full: 'node -e 0',
+        tests: ['e2e/tests/**/*.spec.mjs'],
+      }),
+    )
+    sh(repo, 'git init -q -b main')
+    commit(repo, 'init')
+    return repo
+  }
+
+  test('testpace files：点名没跑到的测试（文件:行号 和名字），说修好后用 testpace files 把没过的和它们一起再跑；文件里有跑到的测试，这个文件算交回了结果', () => {
+    const repo = project()
+    const r = testpace(repo, ['files', 'e2e/tests/serial.spec.mjs'], env)
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /这些测试没跑到（[^）]+）：e2e\/tests\/serial\.spec\.mjs:4 「后面的」。这次没验证到它们：修好后用 testpace files 把没过的和它们（文件:行号）一起再跑一遍。/)
+    assert.doesNotMatch(r.out, /一条结果都没交回/)
+    const record = runs(repo).at(-1)!
+    assert.deepEqual(record.failed, [{ file: 'e2e/tests/serial.spec.mjs', line: 3, name: '先错' }])
+    assert.equal(record.notRun, undefined)
+  })
+
+  test('一个文件里选中的测试全没跑到：这个文件算没交回结果，testpace files 和整组都点名、记进没跑到的文件', () => {
+    const repo = project()
+    const r = testpace(repo, ['files', 'e2e/tests/a-fail.spec.mjs', 'e2e/tests/ok.spec.mjs'], env)
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /这些一条结果都没交回：e2e\/tests\/ok\.spec\.mjs。/)
+    assert.match(r.out, /这些测试没跑到（[^）]+）：e2e\/tests\/ok\.spec\.mjs:2 「也对」/)
+    assert.deepEqual(runs(repo).at(-1)!.notRun, ['e2e/tests/ok.spec.mjs'])
+
+    const full = testpace(repo, ['full'], env)
+    assert.equal(full.code, 1, full.out)
+    assert.match(full.out, /这些测试没跑到（[^）]+）：[^。]*e2e\/tests\/ok\.spec\.mjs:2 「也对」/)
+    const record = runs(repo).at(-1)!
+    assert.equal(record.kind, 'full')
+    assert.deepEqual(record.notRun, ['e2e/tests/ok.spec.mjs', 'e2e/tests/serial.spec.mjs'])
+  })
+
+  test('同一个测试的几份拷贝（repeat-each）有的跑了、有的没跑到：按跑了的那份算，过了的、跳过的都不点名没跑到', () => {
+    const repo = project(' --playwright-arg=--repeat-each=2')
+    // 第一份：前两个过、第三个跳过；第二份：第一个没过，框架停下，后两个没跑到
+    writeFileSync(
+      join(repo, 'e2e/tests/copies.spec.mjs'),
+      [
+        "import { expect, test } from '@playwright/test'",
+        "test('第二份才错', ({}, info) => { expect(info.repeatEachIndex).toBe(0) })",
+        "test('一直对', () => { expect(1).toBe(1) })",
+        "test('第一份跳过', ({}, info) => { test.skip(info.repeatEachIndex === 0, '先不跑'); expect(1).toBe(1) })",
+        '',
+      ].join('\n'),
+    )
+    const raw = reported(repo, ['run', 'playwright', '--cwd', 'e2e', '--playwright-arg=--workers=1', '--playwright-arg=--max-failures=1', '--playwright-arg=--repeat-each=2', 'e2e/tests/copies.spec.mjs'], env)
+    assert.deepEqual(raw.results, ['failed 第二份才错', 'notrun 一直对', 'notrun 第一份跳过', 'passed 一直对', 'passed 第二份才错', 'skipped 第一份跳过'])
+    // testpace run 自己那行点名也按同名认：两个没跑到的拷贝都有跑了的那份，不点名
+    assert.doesNotMatch(raw.out, /这些选中的测试没跑到/)
+    const r = testpace(repo, ['files', 'e2e/tests/copies.spec.mjs'], env)
+    assert.equal(r.code, 1, r.out)
+    assert.doesNotMatch(r.out, /这些测试没跑到（同一组里/)
+    assert.doesNotMatch(r.out, /一条结果都没交回/)
+    assert.equal(runs(repo).at(-1)!.notRun, undefined)
   })
 })

@@ -63,7 +63,8 @@ function isFile(path: string): boolean {
 
 /**
  * 一个测试的记录，三个框架的计数报告器都写成这样：哪个文件（真实的绝对路径）、声明在哪一行、外层各级分组（describe）声明在哪几行、名字、结果。
- * 只记跑过或被跳过的；没跑到的（框架提前停下、准备项目没过）不记。
+ * 记跑过或被跳过的；Playwright 还把选中了却没跑到的（serial 模式里前面的没过、框架提前停下）记成 notrun，
+ * 核对文件和行时不算跑到（runner 先去掉），只点名。别的框架没跑到的不记。
  * 没有行号的（Vitest 没打开 includeTaskLocation 时）只能按整个文件核对。
  */
 export interface Ran {
@@ -72,7 +73,7 @@ export interface Ran {
   ancestors: number[]
   /** 测试名，带上外层各级分组的名字，用 > 连起来（Vitest、Playwright 的 project 有名字时前面还有 [project 名]）。认同一个测试靠它和文件。 */
   name: string
-  status: 'passed' | 'failed' | 'skipped'
+  status: 'passed' | 'failed' | 'skipped' | 'notrun'
   /** 框架重试之后才过。 */
   retried?: boolean
 }

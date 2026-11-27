@@ -82,16 +82,24 @@ export async function runFramework(framework: Framework, argv: string[]): Promis
     // 被信号终止（不是 testpace 转过去的）算没过
     const code = run.exitCode ?? 1
 
-    const ran = readRanLines(report)
+    const lines = readRanLines(report)
     // 没写报告：框架在选测试之前就停了，原因它已经说过，没有可核对的。退出码是 0 却没报告，什么都没验证到，不算通过
-    if (ran === undefined) {
+    if (lines === undefined) {
       if (code !== 0) return code
       console.error('[testpace] 框架退出了，却没写出跑了哪些测试，什么都没验证到')
       return 1
     }
-    // 由 testpace 的 files、focused、full 起的：每个测试的结果交给它，认时好时坏和几轮没过（见 results.ts）
+    // 由 testpace 的 files、focused、full 起的：每个测试的结果交给它（没跑到的也交，它点名），认时好时坏和几轮没过（见 results.ts）
     const results = process.env[RESULTS_ENV]
-    if (results) appendFileSync(results, ran.map(test => `${JSON.stringify(test)}\n`).join(''))
+    if (results) appendFileSync(results, lines.map(test => `${JSON.stringify(test)}\n`).join(''))
+    const ran = lines.filter(test => test.status !== 'notrun')
+    // 同一个文件里同名的（Playwright repeatEach 的拷贝）有一份跑了就不点名：和 testpace 那层按名字认一个测试一致（results.ts 的 distinct）
+    const reachedNames = new Set(ran.map(test => `${test.file}\0${test.name}`))
+    const unreached = lines.filter(test => test.status === 'notrun' && !reachedNames.has(`${test.file}\0${test.name}`))
+    if (unreached.length > 0) {
+      const shown = unreached.slice(0, 10).map(test => `${relative(process.cwd(), test.file)}${test.line === undefined ? '' : `:${test.line}`}`)
+      console.error(`[testpace] 这些选中的测试没跑到（前面有测试没过，框架没接着跑，比如 serial 模式、max-failures）：${shown.join('、')}${unreached.length > 10 ? ` 等 ${unreached.length} 个` : ''}。重跑没过的测试时把它们一起带上`)
+    }
     // 框架没过也照样核对：没跑到测试的文件和行一并说出来
     const { notRun, allSkipped, others, failed } = tally(targets, ran)
     if (others.length > 0) console.log(`[testpace] 框架还跑了这些没给的文件（名字片段匹配到的，或给的测试依赖的准备项目）：${others.map(file => relative(process.cwd(), file)).join('、')}`)

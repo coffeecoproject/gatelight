@@ -4,6 +4,7 @@ import type { Module } from '../base/module.ts'
 import { contractProblems, FIELDS } from './config.ts'
 import { fullPart } from './full.ts'
 import { alerts, fullCommandHint, rhythm } from './session.ts'
+import { onSession, unfinished } from './unfinished.ts'
 
 export const pace: Module = {
   name: 'pace',
@@ -12,5 +13,7 @@ export const pace: Module = {
   brief: rhythm,
   alerts,
   beforeCommand: fullCommandHint,
+  onSession,
+  unfinished,
   fullPart,
 }

@@ -4,6 +4,7 @@
 
 import type { Repo } from '../base/repo.ts'
 import { joined } from './config.ts'
+import { missingText } from './defaults.ts'
 
 export function guide(label = '这个仓库'): string[] {
   return [
@@ -17,5 +18,7 @@ export function guide(label = '这个仓库'): string[] {
 
 /** 会话说明：接入了"测试写法"的仓库才说。 */
 export function brief(label: string, repo?: Repo): string[] {
-  return repo && joined(repo.root) ? guide(label) : []
+  if (!repo || !joined(repo.root)) return []
+  const missing = missingText(repo.root)
+  return missing ? [...guide(label), missing] : guide(label)
 }

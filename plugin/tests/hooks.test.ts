@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { handle, sessionBrief } from '../src/base/hook.ts'
 import { GATE_REJECT, HOOK_COMMAND } from '../src/base/gate.ts'
 import { Store } from '../src/base/store.ts'
-import { agent, commit, ENV, gatedRepo, globalGitConfig, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
+import { agent, commit, ENV, fakeLayermap, gatedRepo, globalGitConfig, runs, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
 
 /** PATH 上没有 testpace、但有测试用的 git（合并门要 git 2.54 以上，不一定是 /usr/bin 里那个）。 */
 const NO_TESTPACE_PATH = `${dirname(sh(tempDir('testpace-git-'), 'command -v git').trim())}:/usr/bin:/bin`
@@ -45,6 +45,15 @@ function fullIn(repo: string, session: string): number | null {
 function change(repo: string, text = '// 改过\n'): void {
   writeFileSync(join(repo, 'src', 'price.mjs'), `${sh(repo, 'cat src/price.mjs')}${text}`)
 }
+
+/** 跑一次 testpace focused：假的 layermap 给出的结果就是 layermap（默认选不出相关测试，只跑 fast）。返回它的输出。 */
+function focused(repo: string, layermap = fakeLayermap({ files: [], tests: [], unmapped: [], incomplete: [] })): { code: number | null; out: string } {
+  const r = testpace(repo, ['focused'], layermap.env)
+  assert.match(r.out, /^fast (通过|失败)/m, r.out)
+  return r
+}
+
+const NOT_FOCUSED = /当前内容还没跑过 testpace focused/
 
 describe('合并门（git 钩子）', () => {
   const head = (repo: string, ref = 'main'): string => sh(repo, `git rev-parse ${ref}`).trim()
@@ -658,11 +667,113 @@ describe('停止门', () => {
     assert.match(stop(repo, 'other')?.reason ?? '', /^这个会话跑的整组已经结束/)
   })
 
+  test('这个会话改了代码、当前内容没跑过 focused：收尾时拦一次，让跑 testpace focused，说明"留到合并"说的是改没过的测试；同一份内容只拦一次，改了又没跑再拦', () => {
+    const repo = sampleRepo()
+    handle({ hook_event_name: 'SessionStart', session_id: 'p1', cwd: repo }, Date.now(), 'claude')
+    assert.equal(stop(repo, 'p1'), undefined, '没改东西不拦')
+    change(repo)
+    const first = stop(repo, 'p1')
+    assert.equal(first?.decision, 'block')
+    assert.match(first?.reason ?? '', /^这个会话改了代码，当前内容还没跑过 testpace focused。向用户汇报之前跑一次。/)
+    assert.match(first?.reason ?? '', /因为这次改了需求才不过的留到合并时改，focused 照样每轮跑；"留到合并"说的是改那些没过的测试，不是不跑测试。/)
+    assert.equal(stop(repo, 'p1'), undefined, '同一份内容只拦一次')
+    change(repo, '// 又改了\n')
+    assert.match(stop(repo, 'p1')?.reason ?? '', NOT_FOCUSED, '改了以后又没跑，再拦')
+  })
+
+  test('和会话起点比只改了 ignore 里的路径，不拦', () => {
+    const repo = sampleRepo()
+    handle({ hook_event_name: 'SessionStart', session_id: 'p2', cwd: repo }, Date.now(), 'claude')
+    writeFileSync(join(repo, 'docs', 'more.md'), '说明\n')
+    assert.equal(stop(repo, 'p2'), undefined)
+  })
+
+  test('当前内容跑过 focused（fast 没过也算）或整组的不拦；只单独跑了 testpace files 的照样拦；相对跑过的内容只改了 ignore 路径的不拦', () => {
+    const repo = sampleRepo()
+    handle({ hook_event_name: 'SessionStart', session_id: 'p3', cwd: repo }, Date.now(), 'claude')
+    change(repo)
+    assert.equal(focused(repo).code, 0)
+    assert.equal(stop(repo, 'p3'), undefined)
+    writeFileSync(join(repo, 'docs', 'more.md'), '说明\n')
+    assert.equal(stop(repo, 'p3'), undefined, '相对跑过的内容只改了 ignore 路径')
+
+    change(repo, '// 只跑 files\n')
+    assert.equal(testpace(repo, ['files', 'tests/price.test.mjs']).code, 0)
+    assert.match(stop(repo, 'p3')?.reason ?? '', NOT_FOCUSED, '单独跑的 testpace files 不算')
+
+    change(repo, 'export const = 1\n')
+    const failed = focused(repo)
+    assert.equal(failed.code, 1, failed.out)
+    assert.match(failed.out, /^fast 失败/m)
+    assert.equal(stop(repo, 'p3'), undefined, 'fast 没过也算跑过')
+
+    sh(repo, 'git checkout -q src/price.mjs')
+    change(repo, '// 跑整组\n')
+    assert.equal(testpace(repo, ['full']).code, 0)
+    assert.equal(stop(repo, 'p3'), undefined, '整组跑过的不拦')
+  })
+
+  test('测试写出了没被 git 忽略的文件：focused 里相关测试跑完时的内容、整组跑完时的内容也算跑过；单独跑 testpace files 跑完时的内容不算', () => {
+    const repo = sampleRepo()
+    handle({ hook_event_name: 'SessionStart', session_id: 'p4', cwd: repo }, Date.now(), 'claude')
+    writeFileSync(join(repo, 'tests', 'writes.test.mjs'), "import { writeFileSync } from 'node:fs'\nimport { test } from 'node:test'\ntest('写出一个文件', () => writeFileSync('written.txt', '写出来的\\n'))\n")
+    const layermap = fakeLayermap({
+      files: [{ path: 'tests/writes.test.mjs', status: 'ADDED' }],
+      tests: [{ path: 'tests/writes.test.mjs', rank: 0, why: 'changed in this diff' }],
+      unmapped: [],
+      incomplete: [],
+    })
+    assert.equal(focused(repo, layermap).code, 0)
+    const related = runs(repo).at(-1)!
+    assert.deepEqual([related.kind, related.files], ['files', ['tests/writes.test.mjs']])
+    assert.notEqual(related.treeAtEnd, related.tree, '测试写出了文件，跑完时的内容和开始时不一样')
+    assert.equal(stop(repo, 'p4'), undefined)
+
+    rmSync(join(repo, 'written.txt'))
+    change(repo)
+    assert.equal(testpace(repo, ['files', 'tests/writes.test.mjs']).code, 0)
+    assert.match(stop(repo, 'p4')?.reason ?? '', NOT_FOCUSED)
+
+    rmSync(join(repo, 'written.txt'))
+    change(repo, '// 跑整组\n')
+    // 跑的过程中内容变了，整组不算通过；停止门只看跑没跑
+    const whole = testpace(repo, ['full'])
+    assert.match(whole.out, /跑的过程中代码改过，这次不算通过记录。变了的文件：written\.txt/)
+    const full = runs(repo).at(-1)!
+    assert.equal(full.kind, 'full')
+    assert.notEqual(full.treeAtEnd, full.tree)
+    assert.equal(stop(repo, 'p4'), undefined)
+  })
+
+  test('没有这个会话在这里的起点（会话是装上新版之前开始的）：不拦，从这时算起；之后再改又没跑照常拦', () => {
+    const repo = sampleRepo()
+    change(repo)
+    assert.equal(stop(repo, 'late'), undefined)
+    change(repo, '// 又改了\n')
+    assert.match(stop(repo, 'late')?.reason ?? '', NOT_FOCUSED)
+  })
+
+  test('没接入 testpace、或 testpace.json 写坏了：这一项不管', () => {
+    const broken = sampleRepo()
+    handle({ hook_event_name: 'SessionStart', session_id: 'p5', cwd: broken }, Date.now(), 'claude')
+    change(broken)
+    writeFileSync(join(broken, 'testpace.json'), '{')
+    assert.equal(stop(broken, 'p5')?.decision, undefined)
+
+    const outside = sampleRepo()
+    handle({ hook_event_name: 'SessionStart', session_id: 'p6', cwd: outside }, Date.now(), 'claude')
+    change(outside)
+    rmSync(join(outside, 'testpace.json'))
+    assert.equal(stop(outside, 'p6'), undefined)
+  })
+
   test('本地或远程默认分支在会话里有了没测过的提交，提示用户一次', () => {
     const repo = sampleRepo()
     handle({ hook_event_name: 'SessionStart', session_id: 'e', cwd: repo }, Date.now(), 'claude')
     change(repo)
     commit(repo, '用户在终端里提交')
+    // 这份内容跑过 focused：停止门里"跑测试"那一项不拦，这里只看给用户的提示
+    focused(repo)
     const head = sh(repo, 'git rev-parse --short=10 HEAD').trim()
     const first = stop(repo, 'e')
     assert.equal(first?.systemMessage, `testpace：main 的最新提交 ${head} 没有整组通过记录（可能不是 agent 提交的（合并门只管 agent 的命令），或者合并门没装上）。`)
@@ -672,6 +783,7 @@ describe('停止门', () => {
     sh(repo, 'git checkout -qb feature')
     change(repo, '// 推到远程\n')
     commit(repo, 'pushed')
+    focused(repo)
     sh(repo, 'git update-ref refs/remotes/origin/main HEAD')
     const pushed = sh(repo, 'git rev-parse --short=10 HEAD').trim()
     assert.equal(stop(repo, 'e')?.systemMessage, `testpace：origin/main 的最新提交 ${pushed} 没有整组通过记录（可能是推送了别的分支到默认分支，或者在 GitHub 上合并了 PR）。`)
@@ -704,6 +816,7 @@ describe('停止门', () => {
     handle({ hook_event_name: 'SessionStart', session_id: 'g', cwd: fresh }, Date.now(), 'claude')
     change(fresh)
     sh(fresh, `git add src && git -c user.name=t -c user.email=t@t commit -qm '只提交代码'`)
+    focused(fresh)
     assert.equal(stop(fresh, 'g'), undefined)
   })
 })

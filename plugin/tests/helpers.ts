@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after } from 'node:test'
@@ -12,6 +12,7 @@ import '../src/modules.ts'
 import { AGENTS } from '../src/base/agent.ts'
 import { check } from '../src/base/confirm.ts'
 import { HOOK_COMMAND } from '../src/base/gate.ts'
+import type { LayermapCheck, Untested } from '../src/pace/focused.ts'
 
 export const BIN = fileURLToPath(new URL('../bin/testpace', import.meta.url))
 /** 插件的 bin 目录：Claude Code 里它在 Bash 工具的 PATH 上，合并门的 git 钩子靠它找到 testpace。 */
@@ -193,6 +194,36 @@ export function gatedRepo(): string {
   const r = testpace(dir, ['status'])
   if (!/合并门：已装上/.test(r.out)) throw new Error(`合并门没在把关（测试要 git 2.54 以上）：\n${r.out}`)
   return dir
+}
+
+/**
+ * 假的 layermap：每次调用的参数按行记下；输出给定的 JSON，参数里给了测试文件时再带上 untested；
+ * FAKE_LAYERMAP_FAIL 时报错退出。
+ */
+export function fakeLayermap(output: LayermapCheck, untested: Untested = { changed: [], truncated: false }): { env: NodeJS.ProcessEnv; calls: () => string[][] } {
+  const dir = tempDir('testpace-fake-')
+  const json = join(dir, 'check.json')
+  const withTests = join(dir, 'check-tests.json')
+  const callsFile = join(dir, 'calls.jsonl')
+  writeFileSync(json, JSON.stringify(output))
+  writeFileSync(withTests, JSON.stringify({ ...output, untested: { ...untested, entries: [], throughRoutes: [], routes: [], missing: [] } }))
+  const bin = join(dir, 'layermap')
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+const fs = require('node:fs')
+const args = process.argv.slice(2)
+fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + '\\n')
+if (process.env.FAKE_LAYERMAP_FAIL) { console.error('layermap: map build failed'); process.exit(1) }
+// check --json --base REF 之后还有参数，就是给了测试文件
+process.stdout.write(fs.readFileSync(args.length > 4 ? ${JSON.stringify(withTests)} : ${JSON.stringify(json)}, 'utf8'))
+`,
+  )
+  chmodSync(bin, 0o755)
+  return {
+    env: { ...ENV, PATH: `${dir}:${ENV.PATH}` },
+    calls: () => readFileSync(callsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line)),
+  }
 }
 
 /** 用户在确认工具的弹窗里同意了：编号和文字要核对得上（对不上测试就失败），再记下。 */
