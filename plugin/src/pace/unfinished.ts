@@ -3,9 +3,7 @@
 // 认"跑过"：当前内容有 fast 的记录（只有 focused 会跑 fast）、focused 跑的相关测试或整组的记录，过没过都算；相对那次只改了 ignore 路径的也算。
 // 这道门只看跑没跑，不看过没过：开发中没过的测试照节奏只看不追。
 //
-// 来由（2026-11-27）：CrocWork 的 MCN 分支上，会话压缩的摘要把"没过的测试留到合并时改"一轮轮转述成了"e2e 都留到合并"，
-// 后面 17 个提交、约 10 轮一次 focused 都没跑，每轮汇报都写"按约定留到合并时跑"。会话说明每次压缩后都重新带上了，
-// 模型照更具体、更新的摘要做了。只靠说明管不住，所以和 modwall check 一样在收尾时查一次。
+// 只靠会话说明管不住：会话压缩后，摘要里更具体的转述（比如"测试都留到合并"）会盖过说明，所以和 modwall check 一样在收尾时查一次。
 
 import { SessionBaselines } from '../base/baseline.ts'
 import { changedPaths, treeOf, workTreeId } from '../base/git.ts'
