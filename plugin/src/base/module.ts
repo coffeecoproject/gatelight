@@ -72,8 +72,9 @@ export interface Module {
   /**
    * 停止门：这个会话在这个仓库里还有没处理完的事。keys 是这几件事各自的记号，底座记下拦过的，每件只拦一次
    * （seen 是已经拦过的）；named 为真时话里要写明是哪个仓库（会话不是在这个仓库里开始的）。
+   * notice 是同时直接给用户看的一行（agent 转述可能被一句带过的事），不给就只说给 agent。
    */
-  unfinished?(repo: Repo, sessionId: string, seen: readonly string[], named: boolean): { keys: string[]; text: string } | undefined
+  unfinished?(repo: Repo, sessionId: string, seen: readonly string[], named: boolean): { keys: string[]; text: string; notice?: string } | undefined
 
   /** 整组里这个模块的部分；现在跑不了（配置不对、没有要跑的）时给出原因。 */
   fullPart?(repo: Repo): FullPart | { problem: string }

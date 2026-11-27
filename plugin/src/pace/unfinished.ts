@@ -1,4 +1,4 @@
-// 停止门里"跑测试"这一项（base/module.ts 的 onSession、unfinished）：这个会话改了代码（和会话起点比，只改了 ignore 路径的不算），
+// 停止门里"跑测试"这一项（base/module.ts 的 onSession、unfinished；"该合了"那一项在 unmerged.ts）：这个会话改了代码（和会话起点比，只改了 ignore 路径的不算），
 // 当前内容却没跑过 testpace focused，拦一次。同一份内容只拦一次（记号里带着内容的样子），小改动 agent 说一句就能收尾。
 // 认"跑过"：当前内容有 fast 的记录（只有 focused 会跑 fast）、focused 跑的相关测试或整组的记录，过没过都算；相对那次只改了 ignore 路径的也算。
 // 这道门只看跑没跑，不看过没过：开发中没过的测试照节奏只看不追。
@@ -8,10 +8,11 @@
 // 模型照更具体、更新的摘要做了。只靠说明管不住，所以和 modwall check 一样在收尾时查一次。
 
 import { SessionBaselines } from '../base/baseline.ts'
-import { changedPaths, workTreeId } from '../base/git.ts'
+import { changedPaths, treeOf, workTreeId } from '../base/git.ts'
 import { ignoredBy, type Repo } from '../base/repo.ts'
 import { loadConfig } from './config.ts'
 import { paceRuns } from './record.ts'
+import { noteHead, unmerged } from './unmerged.ts'
 
 const MODULE = 'pace'
 /** 会话起点记的是什么：workTreeId 算出的整个工作区的树。算法变了要改它（见 base/baseline.ts）。 */
@@ -25,7 +26,9 @@ function baselines(repo: Repo): SessionBaselines<string> {
 
 /** 会话碰到这个工作区时：记下这时整个工作区的样子（只记第一次）。没接入、配置写坏了的不记。 */
 export function onSession(repo: Repo, sessionId: string): void {
-  baselines(repo).note(sessionId, () => (loadConfig(repo.root).config ? workTreeId(repo.root) : undefined))
+  const onboarded = (): boolean => loadConfig(repo.root).config !== undefined
+  baselines(repo).note(sessionId, () => (onboarded() ? workTreeId(repo.root) : undefined))
+  noteHead(repo, sessionId, onboarded)
 }
 
 /** 两份内容之间只改了 ignore 路径（或没改）。树对象被清理了、比不了的当作改了代码。 */
@@ -38,14 +41,30 @@ function onlyIgnored(repo: Repo, from: string, to: string, isIgnored: (path: str
   }
 }
 
-/** 停止门：这个会话改了代码，当前内容没跑过 focused（也没跑过整组）。 */
-export function unfinished(repo: Repo, sessionId: string, seen: readonly string[], named: boolean): { keys: string[]; text: string } | undefined {
+/** 停止门：先看跑没跑 focused，跑过了（或已经拦过）再看该不该合（unmerged.ts）。 */
+export function unfinished(repo: Repo, sessionId: string, seen: readonly string[], named: boolean): { keys: string[]; text: string; notice?: string } | undefined {
   const config = loadConfig(repo.root).config
   if (!config) return undefined
   const now = workTreeId(repo.root)
+  const isIgnored = ignoredBy(config.ignore)
+  const clean = (): boolean => {
+    const head = treeOf(repo.root, 'HEAD')
+    return head !== undefined && onlyIgnored(repo, head, now, isIgnored)
+  }
+  return notRun(repo, sessionId, seen, named, now, isIgnored) ?? unmerged(repo, sessionId, seen, named, clean, isIgnored)
+}
+
+/** 这个会话改了代码，当前内容没跑过 focused（也没跑过整组）。 */
+function notRun(
+  repo: Repo,
+  sessionId: string,
+  seen: readonly string[],
+  named: boolean,
+  now: string,
+  isIgnored: (path: string) => boolean,
+): { keys: string[]; text: string } | undefined {
   const key = `pace:focused:${now}`
   if (seen.includes(key)) return undefined
-  const isIgnored = ignoredBy(config.ignore)
   if (onlyIgnored(repo, baselines(repo).since(sessionId, now), now, isIgnored)) return undefined
   // 跑过的内容：fast（focused 的第一步）和整组开始时的；跑完时的也算（测试自己写出没被 git 忽略的文件，内容会变）。
   // focused 的相关测试和它的 fast 记的是同一个开始时的内容，靠这个认出哪些 files 是 focused 跑的，取它们跑完时的

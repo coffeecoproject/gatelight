@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { handle } from '../src/base/hook.ts'
-import { ENV, gatedRepo, globalGitConfig, sampleRepo, sh, tempDir, testpace, withEnv } from './helpers.ts'
+import { commit, ENV, fakeLayermap, gatedRepo, globalGitConfig, sampleRepo, sh, tempDir, testpace, withEnv } from './helpers.ts'
 import { sampleRepo as wallRepo } from './wall/helpers.ts'
 
 const PLUGIN = fileURLToPath(new URL('..', import.meta.url))
@@ -148,6 +148,21 @@ describe('Antigravity 的 hook', () => {
     assert.deepEqual(Object.keys(blocked ?? {}), ['decision', 'reason'])
     assert.equal(blocked?.decision, 'continue')
     assert.match(String(blocked?.reason), /^这个会话跑的整组已经结束（通过），还没看结果。先跑 testpace status/)
+  })
+
+  test('提交了还没合：停止门只拦 agent（decision continue 和原因），没有给用户的那一行；技能写成"gatelight 的 merge"', () => {
+    const repo = sampleRepo()
+    sh(repo, 'git checkout -qb feat')
+    agy(start(repo, 'un'))
+    writeFileSync(join(repo, 'src', 'price.mjs'), `${sh(repo, 'cat src/price.mjs')}// 改过\n`)
+    commit(repo, '改价格')
+    assert.equal(testpace(repo, ['focused'], fakeLayermap({ files: [], tests: [], unmapped: [], incomplete: [] }).env).code, 0)
+    const blocked = agy(stop(repo, 'un'))
+    assert.deepEqual(Object.keys(blocked ?? {}), ['decision', 'reason'])
+    assert.equal(blocked?.decision, 'continue')
+    assert.match(String(blocked?.reason), /^这个会话提交了。分支 feat 攒了 1 个提交没合进 main（从 \d{4}-\d{2}-\d{2} 起，改了 1 个文件）：改价格。/)
+    assert.match(String(blocked?.reason), /照 gatelight 的 merge 合/)
+    assert.equal(agy(stop(repo, 'un')), undefined, '同一个提交只拦一次')
   })
 
   test('会话开始：给模型的说明放在 injectSteps 的 systemMessage 里；给用户的话放在另一步的 metadata.user_markdown 里，模型那边是空的', () => {
