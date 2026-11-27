@@ -87,7 +87,8 @@ const ANTD_FILL: Change = {
   STYLE_PROPS: "['styles', 'classNames', 'rootClassName', 'offset', 'push', 'pull']",
   UI_CLASS_PROPS: "['classNames', 'rootClassName']",
   THEME_PROVIDERS: "['ConfigProvider']",
-  NUMBER_OK: "['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 'step', 'tabIndex', 'count', 'defaultValue', 'pageSize', 'mouseEnterDelay', 'mouseLeaveDelay', 'duration', 'maxCount', 'level']",
+  TEXT_PROPS: "[['Modal', 'okText']]",
+  VALUE_PROPS: "[['Space', 'size'], ['Col', 'span'], ['Avatar', 'size'], ['Tag', 'color'], ['Modal', 'width']]",
 }
 /** antd 的填法上再换几项。 */
 const antd = (change: Change = {}): ESLint => project({ ...ANTD_FILL, ...change })
@@ -329,7 +330,7 @@ describe('专门放说明的位置：写了固定文字，短也不准；放数�
           '<Typography.Paragraph>{item.name} 说明</Typography.Paragraph>',
         ),
       ),
-      ['4 写死的数字', '7 段落是放说明的', '8 段落是放说明的', '9 段落是放说明的', '9 段落是放说明的', '10 段落是放说明的', '11 段落是放说明的'],
+      ['7 段落是放说明的', '8 段落是放说明的', '9 段落是放说明的', '9 段落是放说明的', '10 段落是放说明的', '11 段落是放说明的'],
     )
   })
 
@@ -427,15 +428,15 @@ describe('专门放说明的位置：写了固定文字，短也不准；放数�
 })
 
 describe('项目自己的入口组件（按项目填）', () => {
-  test('ENTRY_PROPS 加上的 [组件, 参数] 按正文算；它的 description 也不再当说明位置禁', async () => {
+  test('ENTRY_PROPS 加上的 [组件, 参数] 按正文算、不再按名字算；它的 description 也不再当说明位置禁', async () => {
     const code = page(
-      "<ConfirmBar text='删掉后找不回来，要删吗？' />",
-      "<ConfirmBar text='删掉后就再也找不回来了请先导出一份' />",
+      "<ConfirmBar title='删掉后找不回来，要删吗？' />",
+      "<ConfirmBar title='删掉后就再也找不回来了请先导出一份' />",
       "<Tip description='删掉后找不回来' />",
-      "<OtherBar text='删掉后找不回来，要删吗？' />",
+      "<OtherBar title='删掉后找不回来，要删吗？' />",
     )
     assert.deepEqual(await lint(PAGE, code), ['2 文字带了句子标点', '3 文字超过 12 个字', '4 这个参数是放说明的', '5 文字带了句子标点'])
-    const eslint = antd({ ENTRY_PROPS: "[['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle'], ['ConfirmBar', 'text'], ['Tip', 'description']]" })
+    const eslint = antd({ ENTRY_PROPS: "[['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle'], ['ConfirmBar', 'title'], ['Tip', 'description']]" })
     assert.deepEqual(await lint(PAGE, code, eslint), ['3 正文超过 16 个字', '5 文字带了句子标点'])
   })
 
@@ -576,13 +577,13 @@ describe('英文页面（UI_LANGUAGE 写 en）', () => {
     )
   })
 
-  test('JSX 参数里不像文字的字符串不当文字查，长了也不报：样式类名、日期格式、全大写的 SQL、带连字符的键、URL、单个词', async () => {
+  test('显示文字的参数里不像文字的字符串不当文字查，长了也不报：样式类名、日期格式、全大写的 SQL、带连字符的键、URL、单个词', async () => {
     const code = page(
-      "<Tag variant='flex items-center gap-2 px-4 py-2 rounded-md shadow-sm' />",
-      "<DatePicker format='YYYY-MM-DD HH:mm' />",
-      "<Query sql='SELECT id FROM users WHERE id = 1' />",
-      "<Input name='user-id' />",
-      "<a href='https://example.com/orders?page=2&size=20' />",
+      "<Tag title='flex items-center gap-2 px-4 py-2 rounded-md shadow-sm' />",
+      "<DatePicker placeholder='YYYY-MM-DD HH:mm' />",
+      "<Query title='SELECT id FROM users WHERE id = 1' />",
+      "<Input placeholder='user-id' />",
+      "<a title='https://example.com/orders?page=2&size=20' />",
       "<span title='Internationalization' />",
     )
     assert.deepEqual(await lint(PAGE, code, EN), [])
@@ -624,16 +625,11 @@ describe('英文页面（UI_LANGUAGE 写 en）', () => {
 })
 
 describe('不写具体的值', () => {
-  test('JSX 属性写死数字（含负数）报"写死的数字"', async () => {
-    assert.deepEqual(await lint(PAGE, page('<Space size={4} />', '<Row gutter={-8} />', '<Space size={size} />')), ['2 写死的数字', '3 写死的数字'])
+  test('管外观的参数写死数字（含负数）报"写死的数字"；写变量不报', async () => {
+    assert.deepEqual(await lint(PAGE, page('<Space size={4} />', '<Avatar size={-4} />', '<Space size={size} />')), ['2 写死的数字', '3 写死的数字'])
   })
 
-  test('放行名单里的参数写数字不报：maxLength、minLength、min、max、rows、precision、step、tabIndex、count、defaultValue、pageSize、mouseEnterDelay、mouseLeaveDelay、duration、maxCount、level', async () => {
-    const allowed = ['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 'step', 'tabIndex', 'count', 'defaultValue', 'pageSize', 'mouseEnterDelay', 'mouseLeaveDelay', 'duration', 'maxCount', 'level']
-    assert.deepEqual(await lint(PAGE, page(...allowed.map(name => `<Input ${name}={3} />`), '<Typography.Title level={2}>订单</Typography.Title>', '<Upload maxCount={3} />', '<InputNumber min={-1} />')), [])
-  })
-
-  test('JSX 参数里的颜色、长度报"写死的颜色或长度"：#fff、#1677ff、12px、-4px、50%、2rem、1.5em、100vh；primary、不带单位的 12 不报', async () => {
+  test('管外观的参数里的颜色、长度报"写死的颜色或长度"：#fff、#1677ff、12px、-4px、50%、2rem、1.5em、100vh；primary、不带单位的 12 不报', async () => {
     const values = ['#fff', '#1677ff', '12px', '-4px', '50%', '2rem', '1.5em', '100vh']
     assert.deepEqual(
       await lint(PAGE, page(...values.map(value => `<Tag color='${value}' />`), "<Tag color='primary' />", "<Tag size='12' />")),
@@ -645,7 +641,7 @@ describe('不写具体的值', () => {
     assert.deepEqual(
       await lint(
         PAGE,
-        page("<Tag color={'#f50'} />", "<Tag color={ok ? '#f50' : '#000'} />", "<Tag color={ok && 'rgb(1, 2, 3)'} />", "<Tag width={a ? '8px' : b ? '50%' : 'auto'} />", "<Tag color={ok ? `rgb(${r}, 0, 0)` : 'red'} />"),
+        page("<Tag color={'#f50'} />", "<Tag color={ok ? '#f50' : '#000'} />", "<Tag color={ok && 'rgb(1, 2, 3)'} />", "<img width={a ? '8px' : b ? '50%' : 'auto'} />", "<Tag color={ok ? `rgb(${r}, 0, 0)` : 'red'} />"),
       ),
       ['2 写死的颜色或长度', '3 写死的颜色或长度', '3 写死的颜色或长度', '4 写死的颜色或长度', '5 写死的颜色或长度', '5 写死的颜色或长度', '6 写死的颜色或长度'],
     )
@@ -665,7 +661,7 @@ describe('不写具体的值', () => {
     assert.deepEqual(await lint('src/pages/data.tsx', code), [])
   })
 
-  test('JSX 参数里的颜色函数（rgb、rgba、hsl、hsla、hwb、lab、lch、oklab、oklch、color）也报，不分大小写；前后的空格不算', async () => {
+  test('管外观的参数里的颜色函数（rgb、rgba、hsl、hsla、hwb、lab、lch、oklab、oklch、color）也报，不分大小写；前后的空格不算', async () => {
     const values = [
       'rgba(0, 0, 0, 0.45)',
       'rgb(22, 119, 255)',
@@ -690,9 +686,9 @@ describe('不写具体的值', () => {
     )
   })
 
-  test('JSX 参数里模板字符串拼的颜色（`rgb(${r}, 0, 0)`）和长度（`${w}px`、rem、vh、vw）也报；不是颜色、长度的拼接不报', async () => {
+  test('管外观的参数里模板字符串拼的颜色（`rgb(${r}, 0, 0)`）和长度（`${w}px`、rem、vh、vw）也报；不是颜色、长度的拼接不报', async () => {
     const templates = ['`rgb(${r}, 0, 0)`', '`oklch(${l} 0.1 200)`', '`${w}px`', '`${w}rem`', '`${h}vh`', '`${w}vw`', '`${a}-${b}`', '`${count} 个`', '`${w}pixels`']
-    assert.deepEqual(await lint(PAGE, page(...templates.map(value => `<Tag color={${value}} />`), '<Tag color={`rgb(${x},0,0)`} width={`${x}px`} />')), [
+    assert.deepEqual(await lint(PAGE, page(...templates.map(value => `<Tag color={${value}} />`), '<rect fill={`rgb(${x},0,0)`} width={`${x}px`} />')), [
       '2 写死的颜色或长度',
       '3 写死的颜色或长度',
       '4 写死的颜色或长度',
@@ -702,6 +698,134 @@ describe('不写具体的值', () => {
       '11 写死的颜色或长度',
       '11 写死的颜色或长度',
     ])
+  })
+})
+
+describe('文字和具体的值只查列明的位置', () => {
+  test('没列明的参数里的文字不查字数和标点：alt、aria-label、meta 的 content、表单的值 value、name', async () => {
+    const code = page(
+      "<img alt='一张很长很长的订单截图写在这里给读屏用' />",
+      "<button aria-label='点这里，就能把整张表格导出来' />",
+      "<meta content='订单管理，查看和导出全部订单' />",
+      '<Select.Option value="北京市朝阳区建国路八十八号院一号楼">北京</Select.Option>',
+      "<Input name='税率，比如百分之十三' />",
+    )
+    assert.deepEqual(await lint(PAGE, code), [])
+  })
+
+  test('title、label、placeholder 在原生元素和组件上都算显示文字：超过 12 个字、带句子标点报', async () => {
+    const code = page(
+      "<Input placeholder='税率，比如 13%' />",
+      "<Button title='点这里就能把整张表格导出来' />",
+      "<Form.Item label='名称，必填' />",
+      "<input placeholder='税率，比如 13%' />",
+      "<button title='点这里就能把整张表格导出来' />",
+      "<option label='名称，必填' />",
+    )
+    assert.deepEqual(await lint(PAGE, code), ['2 文字带了句子标点', '3 文字超过 12 个字', '4 文字带了句子标点', '5 文字带了句子标点', '6 文字超过 12 个字', '7 文字带了句子标点'])
+  })
+
+  test('TEXT_PROPS 列明的 [组件, 参数] 照查：直接写的、写在 {} 里、二选一、带条件的；别的组件上同名的参数不查', async () => {
+    const code = page(
+      "<Modal okText='确定，马上提交' />",
+      "<Modal okText={'确定，马上提交'} />",
+      "<Modal okText={ok ? '确定，马上提交' : '确定'} />",
+      "<Modal okText={ok && '确定，马上提交'} />",
+      "<Drawer okText='确定，马上提交' />",
+      "<Modal okText='确定' />",
+    )
+    assert.deepEqual(await lint(PAGE, code), ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点', '5 文字带了句子标点'])
+  })
+
+  test('TEXT_ANY 列明的参数名在任何组件、元素上都查；没填时不查', async () => {
+    const code = page("<Modal okText='确定，马上提交' />", "<Drawer okText='确定，马上提交' />", "<dialog okText='确定，马上提交' />")
+    assert.deepEqual(await lint(PAGE, code, NONE), [])
+    assert.deepEqual(await lint(PAGE, code, none({ TEXT_ANY: "['okText']" })), ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点'])
+  })
+
+  test('子元素里直接写的字符串照查：二选一、带条件的', async () => {
+    assert.deepEqual(await lint(PAGE, page("<span>{on ? '启用，可以使用' : '停用'}</span>", "<span>{on && '启用，可以使用'}</span>", "<span>{on ? '启用' : '停用'}</span>")), [
+      '2 文字带了句子标点',
+      '3 文字带了句子标点',
+    ])
+  })
+
+  test('没列明的参数写数字、颜色、长度不报：pageSize、count、Radio 的 value、title、SVG 的 r、gutter、maxLength、min、level', async () => {
+    const code = page(
+      '<Table pageSize={20} />',
+      '<Badge count={5} />',
+      '<Radio value={1} />',
+      "<Radio value='13%' />",
+      "<span title='#123' />",
+      '<circle r={4} />',
+      '<Row gutter={-8} />',
+      '<Input maxLength={20} />',
+      '<InputNumber min={-1} />',
+      '<Typography.Title level={2}>订单</Typography.Title>',
+    )
+    assert.deepEqual(await lint(PAGE, code), [])
+  })
+
+  test('原生元素上的 width、height、size、color、fill、stroke、strokeWidth、fontSize、fontWeight、opacity 写死的值报', async () => {
+    const code = page(
+      '<img width={200} />',
+      "<svg height='12px' />",
+      '<input size={20} />',
+      "<font color='#f50' />",
+      "<circle fill='#333' />",
+      "<line stroke='rgb(1, 2, 3)' />",
+      '<rect strokeWidth={2} />',
+      '<text fontSize={-1} />',
+      '<text fontWeight={600} />',
+      '<path opacity={0.5} />',
+    )
+    assert.deepEqual(
+      await lint(PAGE, code),
+      ['2 写死的数字', '3 写死的颜色或长度', '4 写死的数字', '5 写死的颜色或长度', '6 写死的颜色或长度', '7 写死的颜色或长度', '8 写死的数字', '9 写死的数字', '10 写死的数字', '11 写死的数字'],
+    )
+  })
+
+  test('原生元素上的这些参数名写在组件上不算管外观：没列明就不查', async () => {
+    const code = page('<Image width={200} />', "<Icon color='#f50' />", "<Chart height={300} fill='#333' />", '<Button size={13} />', "<Drawer width='520px' />")
+    assert.deepEqual(await lint(PAGE, code), [])
+  })
+
+  test('VALUE_PROPS 列明的 [组件, 参数] 写死的数字、颜色报（二选一里有一个写死的也报）；别的组件上同名的参数不查', async () => {
+    const code = page(
+      '<Modal width={520} />',
+      '<Space size={13} />',
+      '<Col span={12} />',
+      '<Avatar size={-4} />',
+      "<Tag color='#f50' />",
+      "<Tag color={on ? '#f50' : 'blue'} />",
+      '<Drawer width={520} />',
+      '<Row span={12} />',
+    )
+    assert.deepEqual(await lint(PAGE, code), ['2 写死的数字', '3 写死的数字', '4 写死的数字', '5 写死的数字', '6 写死的颜色或长度', '7 写死的颜色或长度'])
+  })
+
+  test('VALUE_ANY 列明的参数名在任何组件上都查；没填时不查', async () => {
+    const code = page('<Flex gap={8} />', "<Stack gap='12px' />", '<div gap={8} />')
+    assert.deepEqual(await lint(PAGE, code, NONE), [])
+    assert.deepEqual(await lint(PAGE, code, none({ VALUE_ANY: "['gap']" })), ['2 写死的数字', '3 写死的颜色或长度', '4 写死的数字'])
+  })
+
+  test('管外观的参数写组件给的档位、写变量不报', async () => {
+    const code = page("<Space size='small' />", "<Tag color='blue' />", "<Avatar size='large' />", '<Modal width={width} />', "<img width='auto' />")
+    assert.deepEqual(await lint(PAGE, code), [])
+  })
+
+  test('英文页面也只查列明的位置：title 超过 5 个词、TEXT_PROPS 带逗号报，alt 不查；VALUE_PROPS 写死的数字报，pageSize 和档位不报', async () => {
+    const EN = antd({ UI_LANGUAGE: "'en'" })
+    const code = page(
+      "<Button title='Export the whole table right now' />",
+      "<Modal okText='Yes, submit it' />",
+      "<img alt='Export the whole table right now, please.' />",
+      '<Modal width={520} />',
+      '<Pagination pageSize={20} />',
+      "<Space size='small' />",
+    )
+    assert.deepEqual(await lint(PAGE, code, EN), ['2 文字超过 5 个词', '3 文字带了句子标点', '5 写死的数字'])
   })
 })
 
@@ -760,7 +884,7 @@ describe('代码里就地关规则不起作用', () => {
     assert.deepEqual(await lint(PAGE, `/* eslint-disable ${RESTRICTED} */\n${page('<p>名称</p>')}`), ['3 段落是放说明的'])
     assert.deepEqual(await lint(PAGE, `/* eslint ${RESTRICTED}: off */\n${page('<p>名称</p>')}`), ['3 段落是放说明的'])
     assert.deepEqual(await lint(PAGE, 'export const Page = () => (<>\n{/* eslint-disable-next-line */}\n<p>名称</p>\n</>)\n'), ['3 段落是放说明的'])
-    assert.deepEqual(await lint(PAGE, `export const a = 1\n// eslint-disable-next-line ${RESTRICTED}\nexport const B = () => <Icon color='#fff' />\n`), ['3 写死的颜色或长度'])
+    assert.deepEqual(await lint(PAGE, `export const a = 1\n// eslint-disable-next-line ${RESTRICTED}\nexport const B = () => <Tag color='#fff' />\n`), ['3 写死的颜色或长度'])
   })
 })
 
@@ -778,7 +902,7 @@ describe('组件层（UI 目录）', () => {
 
   test('文字、说明位置、数字、颜色这些规则照样管', async () => {
     assert.deepEqual(
-      await lint(UI, page('<span>一二三四五六七八九十十一二</span>', '<span>名称，编号</span>', '<p>名称</p>', "<Alert title='名称' />", '<Space size={4} />', "<Icon color='#fff' />")),
+      await lint(UI, page('<span>一二三四五六七八九十十一二</span>', '<span>名称，编号</span>', '<p>名称</p>', "<Alert title='名称' />", '<Space size={4} />', "<Tag color='#fff' />")),
       ['2 文字超过 12 个字', '3 文字带了句子标点', '4 段落是放说明的', '5 说明用的横幅', '6 写死的数字', '7 写死的颜色或长度'],
     )
   })
@@ -822,7 +946,7 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
     await assert.rejects(lint(PAGE, page('<span>名称</span>'), project({ UI_LANGUAGE: "'zh'" })), /先填 COMPONENT_LIBRARY 和组件库那几项/)
   })
 
-  test("写 'none' 时通用规则照报：字数、标点、<p>、<br>、空的 div/span、style 和 className、写死的数字和颜色、引样式文件、引测试目录", async () => {
+  test("写 'none' 时通用规则照报：字数、标点、<p>、<br>、空的 div/span、style 和 className、原生元素上写死的数字和颜色、引样式文件、引测试目录", async () => {
     const code = [
       "import './a.css'",
       "import { fake } from './__tests__/fake'",
@@ -833,8 +957,8 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
       '<br />',
       '<div />',
       '<span style={s} className={c} />',
-      '<Space size={4} />',
-      "<Icon color='#fff' />",
+      '<img width={4} />',
+      "<svg fill='#fff' />",
       '</>)',
       'export { fake }',
       '',
@@ -859,7 +983,7 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
     assert.deepEqual(await lint(PAGE, `/* eslint ${RESTRICTED}: off */\n${page('<p>名称</p>')}`, NONE), ['3 段落是放说明的'])
   })
 
-  test("写 'none' 时组件库的写法一个都不认：说明组件和参数、横幅、样式参数、主题提供者不管；提示和确认框、校验里的文字写在 JSX 外面，不查；空状态参数里的文字按名字查", async () => {
+  test("写 'none' 时组件库的写法一个都不认：说明组件和参数、横幅、样式参数、主题提供者不管；提示和确认框、校验里的文字写在 JSX 外面，不查；没列明的 description 不查，title 按名字查", async () => {
     const code = page(
       '<Typography.Paragraph>名称</Typography.Paragraph>',
       "<Form.Item extra='名称' tooltip='名称' />",
@@ -871,23 +995,14 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
       "<span onClick={() => Modal.confirm({ content: '删掉后找不回来，要删吗？' })} />",
       "<Form.Item rules={[{ message: '必填，请输入' }]} />",
       "<Popconfirm description='删掉后找不回来，要删吗？' />",
+      "<Popconfirm title='删掉后找不回来，要删吗？' />",
     )
-    assert.deepEqual(await lint(PAGE, code, NONE), ['11 文字带了句子标点'])
-  })
-
-  test('模板默认的 NUMBER_OK 只放和组件库无关的（maxLength、minLength、min、max、rows、step、tabIndex、defaultValue）；组件库的 pageSize、precision、mouseEnterDelay 没加时照报', async () => {
-    const allowed = ['maxLength', 'minLength', 'min', 'max', 'rows', 'step', 'tabIndex', 'defaultValue']
-    assert.deepEqual(await lint(PAGE, page(...allowed.map(name => `<Input ${name}={3} />`)), NONE), [])
-    assert.deepEqual(await lint(PAGE, page('<Table pageSize={10} />', '<InputNumber precision={2} />', '<Tooltip mouseEnterDelay={1} />'), NONE), [
-      '2 写死的数字',
-      '3 写死的数字',
-      '4 写死的数字',
-    ])
+    assert.deepEqual(await lint(PAGE, code, NONE), ['12 文字带了句子标点'])
   })
 
   test("写 'none' 时组件层、主题文件照原来的规则", async () => {
     const UI = 'src/ui/Button.tsx'
-    assert.deepEqual(await lint(UI, page('<button className={c} />', '<Btn style={s} />', '<p>名称</p>', '<Space size={4} />'), NONE), ['3 写样式', '4 段落是放说明的', '5 写死的数字'])
+    assert.deepEqual(await lint(UI, page('<button className={c} />', '<Btn style={s} />', '<p>名称</p>', '<img width={4} />'), NONE), ['3 写样式', '4 段落是放说明的', '5 写死的数字'])
     assert.deepEqual(await lint(UI, "import './a.css'\nimport '../b.css'\nexport const a = 1\n", NONE), ['2 只引同目录的样式文件'])
     assert.deepEqual(await lint('src/theme.ts', "export const theme = { colorPrimary: '#1677ff', fontSize: 14 }\n", NONE), [])
   })
@@ -943,7 +1058,7 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
     assert.deepEqual(await lint(PAGE, code, eslint), ['2 段落是放说明的', '3 这个参数是放说明的'])
   })
 
-  test('DESC_ANY 里的参数名在任何组件上都算说明；ENTRY_PROPS 里同名参数的那几个组件除外，按正文算（带点的组件名也一样）', async () => {
+  test('DESC_ANY 里的参数名在任何组件上都算说明；ENTRY_PROPS 里同名参数的那几个组件除外，按正文算（带点的组件名也一样）；都没填时 hint 没列明，不查', async () => {
     const code = page(
       "<TextField hint='名称' />",
       "<Card hint='名称' />",
@@ -953,7 +1068,7 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
       "<Dialog.Other hint='名称' />",
       "<EmptyState hint='名称' />",
     )
-    assert.deepEqual(await sorted(PAGE, code, NONE), ['4 文字带了句子标点', '5 文字超过 12 个字', '6 文字带了句子标点'])
+    assert.deepEqual(await lint(PAGE, code, NONE), [])
     const eslint = none({ DESC_ANY: "['hint']", ENTRY_PROPS: "[['ConfirmDialog', 'hint'], ['Dialog.Root', 'hint'], ['EmptyState', 'body']]" })
     assert.deepEqual(await lint(PAGE, code, eslint), ['2 这个参数是放说明的', '3 这个参数是放说明的', '5 正文超过 16 个字', '7 这个参数是放说明的', '8 这个参数是放说明的'])
   })
@@ -988,8 +1103,8 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
       "<Field.Root hint='名称' />",
       "<Root hint='名称' />",
       "<Field.Other hint='名称' />",
-      `<Dialog.Body text='${LONG}' />`,
-      `<Body text='${OK}' />`,
+      `<Dialog.Body title='${LONG}' />`,
+      `<Body title='${OK}' />`,
       `<Toast.Description>${LONG}</Toast.Description>`,
       `<Description>${OK}</Description>`,
       '<Theme.Provider theme={t}><Button>新建</Button></Theme.Provider>',
@@ -1001,7 +1116,7 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
     const eslint = none({
       DESC_ELEMENTS: "['Field.HelperText']",
       DESC_PROPS: "[['Field.Root', 'hint']]",
-      ENTRY_PROPS: "[['Dialog.Body', 'text']]",
+      ENTRY_PROPS: "[['Dialog.Body', 'title']]",
       ENTRY_CHILDREN: "['Toast.Description']",
       THEME_PROVIDERS: "['Theme.Provider']",
       ERROR_BANNERS: "[['Alert.Root', 'status', ['error'], 'title']]",

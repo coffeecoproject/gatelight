@@ -17,8 +17,6 @@ const TESTS = ['**/*.{test,spec}.{ts,tsx,js,jsx}', '**/__tests__/**']
 /** 上面那几处在 import 里的写法（正则）：页面不准 import 它们，不然放进测试目录的组件就绕开了规则。TESTS 里加了别的目录的，这里也加上；斜杠写成 \\x2F（规则的写法里不能有 /）。 */
 const TEST_IMPORTS = '(^|\\x2F)__tests__(\\x2F|$)|\\.(test|spec)(\\.[cm]?[jt]sx?)?$'
 
-/** 能写数字的参数：和外观无关的。组件库和项目自己组件里和外观无关的（分页大小、小数位数、延迟、名字最长几个字）也加进来。 */
-const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'step', 'tabIndex', 'defaultValue']
 /** 必须原样展示的固定文字：备案号、许可证号、公司全称这类，法规或合同要求照录、缩不了的。写准确的整段文字（不能带 /），这几段不查字数和标点；说明文字不放这里。 */
 const VERBATIM = []
 /** 页面文字用的语言：LANGUAGES 里的一套（'zh'、'en'），别的语言照这两套在 LANGUAGES 里加一套再写它。不填会报错。 */
@@ -72,6 +70,14 @@ const RULE_MESSAGES = []
 const ENTRY_PROPS = []
 /** 正文写在子元素里的组件（<ErrorBar>连不上服务</ErrorBar>）。 */
 const ENTRY_CHILDREN = []
+/** 显示出来的文字参数：[组件名, 参数名]。不管哪个组件上的 title、label、placeholder 已经算了；放说明的、放正文的不写在这里。 */
+const TEXT_PROPS = []
+/** 不管哪个组件上都是显示出来的文字的参数名（title、label、placeholder 已经算了，比如 'okText'）。 */
+const TEXT_ANY = []
+/** 管外观的参数：[组件名, 参数名]（间距、尺寸、栅格宽度、颜色这类），里面不准写具体的数字、颜色和长度，写组件给的档位（size="small"）。原生元素上的 width、height 这类已经算了。 */
+const VALUE_PROPS = []
+/** 不管哪个组件上都只管外观的参数名（这个库里所有组件上的意思都一样才写）。 */
+const VALUE_ANY = []
 /** style、className 以外能写样式、改布局的参数（各家叫法不同，比如 sx、css、styles、classNames、栅格的 offset），页面上都不准。 */
 const STYLE_PROPS = []
 /** 组件层里可以指向同目录样式文件的参数：className 以外的（比如 classNames）。 */
@@ -79,6 +85,10 @@ const UI_CLASS_PROPS = []
 /** 就地改主题的组件（主题提供者）：页面上不准，组件层的根上可以包。 */
 const THEME_PROVIDERS = []
 // ==== 按项目填完 ====
+
+/** 原生元素上显示出来的文字参数、管外观的参数（HTML、SVG 标准里的）。 */
+const HTML_TEXT = ['title', 'label', 'placeholder']
+const HTML_VALUES = ['width', 'height', 'size', 'color', 'fill', 'stroke', 'strokeWidth', 'fontSize', 'fontWeight', 'opacity']
 
 const LANG = LANGUAGES[UI_LANGUAGE]
 if (!LANG) throw new Error(`codekeep 前端规则：UI_LANGUAGE 写 LANGUAGES 里的一套（${Object.keys(LANGUAGES).join('、')}），别的语言先在 LANGUAGES 里加一套`)
@@ -136,18 +146,26 @@ const ENTRY = [
 ]
 const notEntry = ENTRY.length ? `:not(${ENTRY.join(', ')})` : ''
 /**
- * 写在 JSX 里、一定上页面的位置：JSX 文字，参数里、子元素里直接写的字符串（含二选一、带条件的）。
- * 文字和具体的值只在这里查：写在 JSX 外面的（变量、对象、函数参数）分不出上不上页面、是不是样式，
- * 哪里都查会把日志、提示词、查询语句、业务字段（毛利 margin、税率 '13%'）当成页面文字和样式，逼着改业务内容。
+ * 文字和具体的值只查列明的位置：JSX 文字、子元素里直接写的字符串，列明会显示的参数（HTML_TEXT、TEXT_ANY、TEXT_PROPS），
+ * 列明管外观的参数（HTML_VALUES、VALUE_ANY、VALUE_PROPS）；都含二选一、带条件的写法。
+ * 别处看名字、看长相分不出用途：JSX 外面的变量、对象、函数参数，和没列明的参数（无障碍描述 alt、aria-*，
+ * meta 的 content，表单的值 value，分页大小 pageSize）。哪里都查会把它们当成页面文字和样式，逼着改业务内容。
  */
-const ATTRIBUTE = [...strings('JSXAttribute'), ...strings('JSXAttribute > JSXExpressionContainer')]
-const IN_JSX = ['JSXText', ...ATTRIBUTE, ...strings(':matches(JSXElement, JSXFragment) > JSXExpressionContainer')]
+const listed = (native, any, props) => [
+  ...(native.length ? [`JSXOpeningElement[name.name=/^[a-z]/] > JSXAttribute[name.name=/^(${names(native)})$/]`] : []),
+  ...(any.length ? [`JSXOpeningElement > JSXAttribute[name.name=/^(${names(any)})$/]`] : []),
+  ...props.map(([component, prop]) => `${opening(component)} > JSXAttribute[name.name='${prop}']`),
+]
+const VALUE_ATTRS = listed(HTML_VALUES, VALUE_ANY, VALUE_PROPS)
+/** 参数里直接写的字符串（attr="…"、attr={'…'}，含二选一、带条件的）。 */
+const inAttrs = attrs => attrs.flatMap(attr => [...strings(attr), ...strings(`${attr} > JSXExpressionContainer`)])
+const IN_JSX = ['JSXText', ...strings(':matches(JSXElement, JSXFragment) > JSXExpressionContainer'), ...inAttrs(listed([], [...HTML_TEXT, ...TEXT_ANY], TEXT_PROPS))]
 const fieldOf = at => (at.endsWith('TemplateElement') ? 'value.cooked' : 'value')
 const NAME_HINT = '：页面上只放名字，说明不写；要告诉用户的写进提示、确认框正文或报错（codekeep 前端规则）'
 const ENTRY_HINT = '：提示、确认框正文、报错只说一句，说清怎么了、怎么办（codekeep 前端规则）'
 const STYLE_HINT = '：组件不合适就告诉用户，不在这里补；具体的值只写在主题和组件层的样式文件里，改要用户同意（codekeep 前端规则）'
 
-/** 名字：写在 JSX 里（IN_JSX）、认得出是文字（LANG.text）、超过 LANG.name 个字的固定文字，或带了名字里不准的标点。入口那几处除外。 */
+/** 名字：列明的位置（IN_JSX）、认得出是文字（LANG.text）、超过 LANG.name 个字的固定文字，或带了名字里不准的标点。入口那几处除外。 */
 const nameText = IN_JSX.flatMap(at => {
   const field = fieldOf(at)
   return [
@@ -191,10 +209,12 @@ const NUMBER = 'Literal[raw=/^\\d/]'
 /** 颜色（#fff、rgb()、oklch() 这类，大小写都算）和带单位的长度；前后的空格不算。 */
 const COLOR_OR_LENGTH = '/^\\s*(#[0-9a-f]{3,8}|-?\\d+(\\.\\d+)?(px|%|rem|em|vh|vw))\\s*$|^\\s*(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\\(/i'
 const values = [
-  { selector: `JSXAttribute:not([name.name=/^(${names(NUMBER_OK)})$/]) > JSXExpressionContainer > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
-  { selector: `JSXAttribute:not([name.name=/^(${names(NUMBER_OK)})$/]) > JSXExpressionContainer > UnaryExpression > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
+  ...VALUE_ATTRS.flatMap(attr => [
+    { selector: `${attr} > JSXExpressionContainer > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
+    { selector: `${attr} > JSXExpressionContainer > UnaryExpression > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
+  ]),
   // 参数里写的颜色、长度；模板字符串拼的：`rgb(${r}, 0, 0)`、`${width}px`
-  ...ATTRIBUTE.map(at => ({
+  ...inAttrs(VALUE_ATTRS).map(at => ({
     selector: at.endsWith('TemplateElement') ? `${at}:matches([value.cooked=${COLOR_OR_LENGTH}], [value.cooked=/^(px|rem|vh|vw)\\b/])` : `${at}[value=${COLOR_OR_LENGTH}]`,
     message: `写死的颜色或长度${STYLE_HINT}`,
   })),
