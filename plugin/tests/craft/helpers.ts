@@ -29,11 +29,11 @@ export function testcraft(cwd: string, args: string[], env: NodeJS.ProcessEnv = 
   return { code: r.status, out: r.stdout + r.stderr }
 }
 
-/** 跑一次钩子入口（当成 Claude Code 发来的事件）：返回它输出的 JSON，没输出为 undefined。 */
-export function hook(cwd: string, event: string, extra: Record<string, unknown> = {}): Record<string, any> | undefined {
+/** 跑一次钩子入口（当成 Claude Code 发来的事件）：返回它输出的 JSON，没输出为 undefined。env 是另加的环境（比如插件数据目录）。 */
+export function hook(cwd: string, event: string, extra: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = {}): Record<string, any> | undefined {
   const r = spawnSync('node', ['--disable-warning=ExperimentalWarning', HOOK, 'claude'], {
     input: JSON.stringify({ hook_event_name: event, cwd, ...extra }),
-    env: ENV,
+    env: { ...ENV, ...env },
     encoding: 'utf8',
   })
   assert.equal(r.status, 0, r.stderr)

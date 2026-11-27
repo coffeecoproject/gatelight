@@ -1,6 +1,5 @@
 // 检查模块交给底座的入口。底座（这个目录）不认识任何模块：合并门、停止门、会话说明、整组都按这里的入口去问，
 // 模块（比如 ../pace 跑测试）把自己的实现登记进来。登记由装配的文件做（src/modules.ts），底座的代码不引用模块。
-// 设计见仓库根目录的 整体设计方案.md。
 
 import type { Repo } from './repo.ts'
 import type { RunRecord } from './store.ts'

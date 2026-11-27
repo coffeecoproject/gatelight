@@ -252,10 +252,10 @@ export function fileAt(root: string, rev: string, path: string): string | undefi
   return blobAt(root, rev, path)?.toString('utf8')
 }
 
-/** 提交（或分支）里这个目录下的全部文件（路径相对仓库根目录）；没有这个目录时为空。 */
-export function filesAt(root: string, rev: string, dir: string): string[] {
+/** 提交（或分支）里这个目录下（不给目录就是整个仓库）的全部文件（路径相对仓库根目录）；没有这个目录时为空。 */
+export function filesAt(root: string, rev: string, dir?: string): string[] {
   // -z：路径原样输出，不转义中文
-  const out = gitOr(root, ['ls-tree', '-r', '-z', '--name-only', rev, '--', `${dir.replace(/\/+$/, '')}/`])
+  const out = gitOr(root, ['ls-tree', '-r', '-z', '--name-only', rev, ...(dir === undefined ? [] : ['--', `${dir.replace(/\/+$/, '')}/`])])
   return (out ?? '').split('\0').filter(Boolean)
 }
 

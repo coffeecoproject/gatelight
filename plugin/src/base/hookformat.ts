@@ -199,7 +199,7 @@ function oneParagraph(text: string): string {
 }
 
 /**
- * Antigravity（桌面 App）的 hook 格式，按 2026-11-24 的实测（Antigravity适配方案.md 1.1）：
+ * Antigravity（桌面 App）的 hook 格式，按 2026-11-24 的实测：
  * - 跑命令是 run_command（args.CommandLine）；改文件的专门工具只有 write_file（args.Path 是绝对路径、args.Content）和
  *   edit_file（args.Path、args.Replacement 是换进去的文字；它的输入没实际见过，照工具定义）。删文件、移动文件只能走 run_command，和 Claude Code 下走 Bash 一样不在改文件的检查里。
  * - 不干预时什么都不能输出：PreToolUse 输出 {}、空的 decision、退出码非 0 都会把这次工具调用拦掉。所以这里没有要说的就返回 undefined，
@@ -244,6 +244,7 @@ export const ANTIGRAVITY_HOOKS: HookFormat = {
       ]
       return steps.length > 0 ? { injectSteps: steps } : undefined
     }
+    // Stop 的输出里没有只给用户看、不拦的写法：提醒类的话只能不说，并进 reason 就成了拦 agent
     if (event.kind === 'stop') return verdict.block ? { decision: 'continue', reason: verdict.block } : undefined
     // force_ask：每次都弹窗问用户，"总是允许"在弹窗里选不了（实测）；用户拒绝时工具不执行
     if (verdict.ask) return { decision: 'force_ask', reason: oneParagraph(verdict.ask) }

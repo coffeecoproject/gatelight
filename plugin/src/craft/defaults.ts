@@ -21,7 +21,6 @@ export const SYNCED_FILE = `${TESTCRAFT_DIR}/defaults`
 /** 每条默认条目是 gatelight 哪一版加的。加新的默认条目时在这里写上（测试核对和目录里的文件一一对应）。 */
 export const DEFAULT_SINCE: Readonly<Record<string, string>> = {
   'dev-login.md': '0.16.1',
-  'docs-rules.md': '0.21.1',
   'same-number.md': '0.22.2',
 }
 

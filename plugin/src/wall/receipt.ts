@@ -45,7 +45,8 @@ function readReceipts(path: string): DbReceipt[] {
   })
 }
 
-/** 工作区的配置里写了 database 的应用（单应用的写法为 null）。配置有问题的不算：整组里的 modwall check 已经报了。 */
+/** 工作区的配置里写了 database 的应用（单应用的写法为 null）。配置有问题的不算：整组里的 modwall check 已经报了。
+ * 不按分叉点要凭据：删掉 database 本来就算放宽、要用户同意，同意了还按分叉点要，modwall db check 交不出凭据，整组永远过不了。 */
 function databaseApps(root: string): Array<string | null> {
   const { config } = readConfig(fileNow(root, CONFIG_PATH))
   if (!config) return []

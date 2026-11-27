@@ -196,7 +196,7 @@ function askLines(items: ConfirmItem[], ask: string[], reasons: string[]): strin
   ]
 }
 
-/** 跑 checks 里的命令，一条没过就停。返回没过的那条和原因。 */
+/** 依次跑 checks 里的每条命令，一条没过也接着跑。返回没过的那几条和原因。 */
 function runChecks(root: string, config: Config): Array<{ name: string; cause: string }> {
   const failed: Array<{ name: string; cause: string }> = []
   for (const check of config.checks) {

@@ -155,6 +155,7 @@ const fromTests = {
 }
 
 const RESTRICTED = 'no-restricted-syntax'
+// noInlineConfig 只让这类注释悄悄失效，这条让写了注释的地方直接报错，agent 才知道要改代码而不是换个写法再关。
 const noDisable = { '@eslint-community/eslint-comments/no-restricted-disable': ['error', RESTRICTED] }
 const front = {
   plugins: { '@eslint-community/eslint-comments': comments },
