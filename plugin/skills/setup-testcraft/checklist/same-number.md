@@ -2,7 +2,7 @@
 
 ## 触发
 
-- `**/*.ts`、`**/*.tsx`、`**/*.js`、`**/*.jsx`、`**/*.mjs`、`**/*.py`、`**/*.go`、`**/*.java`、`**/*.sql` 改到 `[Aa]mount|[Pp]rice|[Tt]otal|[Ff]ee\b|[Tt]ax|[Bb]alance|[Cc]ost|[Rr]efund|[Aa]ccru|金额|单价|总价|成交价|费用|手续费|税|分成|计提|余额|成本|退款|返还|应收|应付|实付|合计`
+- `**/*.ts`、`**/*.tsx`、`**/*.js`、`**/*.jsx`、`**/*.mjs`、`**/*.py`、`**/*.go`、`**/*.java`、`**/*.sql` 改到 `(?<![A-Za-z])(amount|price|total|fees?\b|tax|balance|cost|refund|accru)|Amount|Price|Total|Fees?\b|Tax|Balance|Cost|Refund|Accru|金额|单价|总价|成交价|费用|手续费|税|分成|计提|余额|成本|退款|返还|应收|应付|实付|合计`
 
 ## 怎么查
 

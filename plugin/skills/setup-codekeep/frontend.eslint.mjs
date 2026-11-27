@@ -6,7 +6,7 @@
 import comments from '@eslint-community/eslint-plugin-eslint-comments'
 
 // ==== 按项目填 ====
-/** 前端代码（页面、业务组件、组件层、主题都在里面）。 */
+/** 前端代码（页面、业务组件、组件层、主题都在里面）。发给 AI 的提示词这类不上页面的长文字放在这外面的文件里。 */
 const FRONT = ['src/**/*.{ts,tsx,js,jsx}']
 /** 主题文件：具体的颜色、尺寸、列宽的几档写在这里。 */
 const THEME = ['src/theme.ts']
@@ -56,9 +56,9 @@ const LANGUAGES = {
 // ---- 组件库：照项目用的组件库的文档填（gatelight 不预填哪一家），项目自己封装的组件也填进来。组件名带点的照 JSX 里写（'Form.Item'）----
 /** 项目用的组件库（比如 'antd'、'@mui/material'），没用组件库的写 'none'。不填会报错：下面几项要照它的文档填，留空的地方规则就管不到。 */
 const COMPONENT_LIBRARY = ''
-/** 放说明的元素（段落、帮助文字这类组件）。<p> 已经算了。 */
+/** 放说明的元素（段落、帮助文字这类组件）。<p> 已经算了。里面写了固定文字才报，放数据的不报。 */
 const DESC_ELEMENTS = []
-/** 放说明的参数（副标题、帮助文字、提示气泡这类）：[组件名, 参数名]，一律不准写。只认组件名对得上的。 */
+/** 放说明的参数（副标题、帮助文字、提示气泡这类）：[组件名, 参数名]，写了固定文字就报，放数据的不报。只认组件名对得上的。 */
 const DESC_PROPS = []
 /** 不管哪个组件上都算说明的参数名（比如 'description'）；ENTRY_PROPS 里同名的那几处按正文算。 */
 const DESC_ANY = []
@@ -139,15 +139,17 @@ const ENTRY = [
   }),
 ]
 const notEntry = ENTRY.length ? `:not(${ENTRY.join(', ')})` : ''
+/** 写在 console 调用里的：只给开发者看，不上页面。 */
+const notConsole = ":not(CallExpression[callee.object.name='console'] *)"
 const value = { Literal: 'value', TemplateElement: 'value.cooked', JSXText: 'value' }
 const NAME_HINT = '：页面上只放名字，说明不写；要告诉用户的写进提示、确认框正文或报错（codekeep 前端规则）'
 const ENTRY_HINT = '：提示、确认框正文、报错只说一句，说清怎么了、怎么办（codekeep 前端规则）'
 const STYLE_HINT = '：组件不合适就告诉用户，不在这里补；具体的值只写在主题和组件层的样式文件里，改要用户同意（codekeep 前端规则）'
 
-/** 名字：认得出是文字（LANG.text）、超过 LANG.name 个字的固定文字，或带了名字里不准的标点。JSX 文字、字符串、模板字符串的每一段，入口那几处除外。 */
+/** 名字：认得出是文字（LANG.text）、超过 LANG.name 个字的固定文字，或带了名字里不准的标点。JSX 文字、字符串、模板字符串的每一段，入口那几处和 console 里的除外。 */
 const nameText = Object.entries(value).flatMap(([node, field]) => [
-  { selector: `${node}[${field}=/${LANG.text}/][${field}=${longer(LANG.name, node === 'JSXText')}]${notEntry}${notVerbatim(field)}`, message: `文字超过 ${LANG.name} 个${UNIT}${NAME_HINT}` },
-  { selector: `${node}[${field}=/${LANG.text}/][${field}=/${LANG.namePunct}/]${notEntry}${notVerbatim(field)}`, message: `文字带了句子标点${NAME_HINT}` },
+  { selector: `${node}[${field}=/${LANG.text}/][${field}=${longer(LANG.name, node === 'JSXText')}]${notEntry}${notConsole}${notVerbatim(field)}`, message: `文字超过 ${LANG.name} 个${UNIT}${NAME_HINT}` },
+  { selector: `${node}[${field}=/${LANG.text}/][${field}=/${LANG.namePunct}/]${notEntry}${notConsole}${notVerbatim(field)}`, message: `文字带了句子标点${NAME_HINT}` },
 ])
 const entryText = ENTRY.flatMap(entry => {
   const field = entry.endsWith('TemplateElement') ? 'value.cooked' : 'value'
@@ -156,12 +158,27 @@ const entryText = ENTRY.flatMap(entry => {
     { selector: `${entry}[${field}=/${LANG.sentence}/]${notVerbatim(field)}`, message: `正文不止一句${ENTRY_HINT}` },
   ]
 })
+// 放说明的地方只在写了固定文字时报，报在那段文字上：放的是数据（{reply}、{item.address}）的是内容，不是说明。
+// 固定文字：认得出是文字（LANG.text）的，里面任何一层的 JSX 文字，或直接写的字符串（含二选一、带条件的）；挪进变量的照样受名字的字数上限管
+// 不用 :has(> a > b)：esquery 里它永远不匹配
+const fixedIn = (place, children) => [
+  `${place} JSXText[value=/${LANG.text}/]`,
+  ...strings(children).map(at => (at.endsWith('TemplateElement') ? `${at}[value.cooked=/${LANG.text}/]` : `${at}[value=/${LANG.text}/]`)),
+]
+const descText = (places, message) => places.map(selector => ({ selector, message }))
 const descPlaces = [
-  ...['p', ...DESC_ELEMENTS].map(component => ({ selector: opening(component), message: `段落是放说明的${NAME_HINT}` })),
-  ...DESC_PROPS.map(([component, prop]) => ({ selector: `${opening(component)} > JSXAttribute[name.name='${prop}']`, message: `这个参数是放说明的${NAME_HINT}` })),
-  ...DESC_ANY.map(prop => {
+  ...['p', ...DESC_ELEMENTS].flatMap(component => {
+    const element = `JSXElement${named('openingElement.', component)}`
+    return descText(fixedIn(element, `${element} > JSXExpressionContainer`), `段落是放说明的${NAME_HINT}`)
+  }),
+  ...DESC_PROPS.flatMap(([component, prop]) => {
+    const attr = `${opening(component)} > JSXAttribute[name.name='${prop}']`
+    return descText([`${attr} > Literal[value=/${LANG.text}/]`, ...fixedIn(attr, `${attr} > JSXExpressionContainer`)], `这个参数是放说明的${NAME_HINT}`)
+  }),
+  ...DESC_ANY.flatMap(prop => {
     const entries = ENTRY_PROPS.filter(([, entryProp]) => entryProp === prop).map(([component]) => named('', component))
-    return { selector: `JSXOpeningElement${entries.length ? `:not(${entries.join(', ')})` : ''} > JSXAttribute[name.name='${prop}']`, message: `这个参数是放说明的${NAME_HINT}` }
+    const attr = `JSXOpeningElement${entries.length ? `:not(${entries.join(', ')})` : ''} > JSXAttribute[name.name='${prop}']`
+    return descText([`${attr} > Literal[value=/${LANG.text}/]`, ...fixedIn(attr, `${attr} > JSXExpressionContainer`)], `这个参数是放说明的${NAME_HINT}`)
   }),
   ...banners.map(({ other }) => ({ selector: other, message: `说明用的横幅${NAME_HINT}` })),
 ]

@@ -162,6 +162,22 @@ describe('默认清单条目', () => {
     }
   })
 
+  test('same-number（钱的数）只认像钱的词：小写的 amount、fee、tax 这些要在词头，大写开头的驼峰里也算；no-restricted-syntax、SyntaxError、coffee 不算', () => {
+    const repo = (lines: string): string => {
+      const dir = sampleRepo(root => {
+        write(root, '.testcraft/checklist/same-number.md', readFileSync(join(DEFAULTS, 'same-number.md'), 'utf8'))
+        write(root, 'src/rules.ts', 'export const base = 1\n')
+      })
+      write(dir, 'src/rules.ts', `export const base = 1\n${lines}\n`)
+      return dir
+    }
+    const lookalike = ["export const rules = { 'no-restricted-syntax': 'error' }", "throw new SyntaxError('bad')", "export const coffee = 'Coffee'"].join('\n')
+    assert.doesNotMatch(testcraft(repo(lookalike), ['checklist']).out, /· same-number/)
+    for (const word of ['serviceFee', 'fees', 'taxRate', 'totalTax', 'subTotal', 'unitPrice']) {
+      assert.match(testcraft(repo(`export const ${word} = 0`), ['checklist']).out, /· same-number/, word)
+    }
+  })
+
   test('没有 .testcraft/defaults、或写的不是版本号：当作一条都没补过，项目没有的默认条目都点名', () => {
     for (const setup of [undefined, (dir: string) => write(dir, '.testcraft/defaults', 'v0.22\n')]) {
       const repo = sampleRepo(setup)
