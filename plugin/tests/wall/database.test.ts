@@ -111,6 +111,20 @@ describe('数据库的 schema 和迁移文件（配置）', () => {
       'orders 模块的运行角色 orders_app（database.runtime 是 <module>_app）和跑迁移的账号（database.migrator）同名：运行角色只有本模块的读写授权，换个模板',
     ])
   })
+
+  test('各模块的组角色（<登录账号>_modules）和迁移账号、某个模块的角色、某个模块的运行角色同名：配置错误', () => {
+    const problems = (files: Record<string, string>, database: Record<string, unknown>): string[] => project(files, { database: { ...DATABASE, ...database } }).layout.problems
+    assert.deepEqual(problems({}, {}), [])
+    assert.deepEqual(problems({}, { migrator: 'app_modules' }), [
+      '各模块的组角色 app_modules（按 database.login 起名）和跑迁移的账号（database.migrator）同名：换个登录账号名或模块名',
+    ])
+    assert.deepEqual(problems({ 'src/modules/appModules/index.ts': '' }, {}), [
+      '各模块的组角色 app_modules（按 database.login 起名）和appModules 模块的角色同名：换个登录账号名或模块名',
+    ])
+    assert.deepEqual(problems({}, { login: 'billing_x', runtime: '<module>_x_modules' }), [
+      '各模块的组角色 billing_x_modules（按 database.login 起名）和一个模块的运行角色同名：换个登录账号名或模块名',
+    ])
+  })
 })
 
 describe('R6 迁移文件', () => {
@@ -258,7 +272,7 @@ describe('R6 迁移文件：入口的变更规则、只改自己的 schema、按
       `${ORDERS}:5（orders 模块的迁移）在 共享层的 schema shared 里建、改或删了 touch`,
       `${ORDERS}:6（orders 模块的迁移）在 billing 模块的入口 schema billing_api 里建、改或删了 items`,
     ])
-    assert.match(found[0]?.fix as string, /迁移里不建 schema：跑迁移的工具按模块目录建好模块的角色和两个 schema/)
+    assert.match(found[0]?.fix as string, /迁移里不建 schema：modwall migrate 按模块目录建好模块的角色和两个 schema/)
     assert.match(found[2]?.fix as string, /一个模块的迁移只在自己的内部、入口两个 schema 里建、改、删对象/)
   })
 
@@ -339,7 +353,7 @@ describe('R6 迁移文件：入口的变更规则、只改自己的 schema、按
     })
     assert.deepEqual(found.map(v => v.where.split('（')[0]), [1, 2, 3, 4, 5, 6, 7].map(line => `${ORDERS}:${line}`))
     assert.ok(found.every(v => v.where.endsWith('切了身份')))
-    assert.match(found[0]?.fix as string, /迁移里不切身份.*跑迁移的工具已经切成本模块的角色/)
+    assert.match(found[0]?.fix as string, /迁移里不切身份.*modwall migrate 已经切成本模块的角色/)
   })
 
   test('函数、过程一律 SECURITY DEFINER（模块的、共享层的）；ALTER … SECURITY INVOKER 拦', () => {

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { runs } from '../helpers.ts'
 import { type Config, parseConfig } from '../../src/wall/config.ts'
 import { type Catalog, catalogViolations } from '../../src/wall/dbcheck.ts'
 import { Layout } from '../../src/wall/layout.ts'
-import { ENV, modwall, sampleRepo, tempDir, TESTPACE, write } from './helpers.ts'
+import { ENV, fakePsql, modwall, sampleRepo, tempDir, TESTPACE, write } from './helpers.ts'
 
 const DATABASE = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' }
 
@@ -267,16 +267,6 @@ describe('db check 的比对', () => {
     assert.match(violations[0]?.fix ?? '', /REVOKE CONNECT ON DATABASE "App-DB" FROM PUBLIC；GRANT CONNECT ON DATABASE "App-DB" TO app, migrator/)
   })
 })
-
-/** 假的 psql：把收到的标准输入存下来，输出 lines。返回执行它的命令。 */
-function fakePsql(lines: string[], exit = 0): { command: string; stdin: string } {
-  const dir = tempDir('modwall-psql-')
-  const script = join(dir, 'psql')
-  const stdin = join(dir, 'stdin.sql')
-  writeFileSync(script, `#!/bin/sh\ncat > '${stdin}'\nprintf '%s\\n' ${lines.map(line => `'${line.replace(/'/g, `'\\''`)}'`).join(' ')}\nexit ${exit}\n`)
-  chmodSync(script, 0o755)
-  return { command: `${script} --dbname "$MODWALL_TEST_DB"`, stdin }
-}
 
 function dbRepo(config: Record<string, unknown> = { database: DATABASE }): string {
   return sampleRepo(dir => {

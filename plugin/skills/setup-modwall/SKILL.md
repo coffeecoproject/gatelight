@@ -31,15 +31,14 @@ modwall 让 agent 默认按模块开发，越界由程序拦。它不自己解�
    - 由装配层接线的接口（一个模块要用、另一个模块提供的函数），由使用它的模块声明类型、从自己的入口导出，装配层把提供方的实现接进来；不在共享层集中放这类接口。
    - 应用之间的接口契约副本（比如从后端接口生成给前端用的类型）是例外，放在各应用的共享层。
 
-   **用 Postgres 的项目，数据库一起改造**（规则见 gatelight:modular 技能的「数据库」）：对象搬进所属模块的内部 schema（模块目录名转成小写加下划线），给别的模块用的视图、函数放进入口 schema（`<内部>_api`，不放表），没有业务含义的结构放进 `shared`，`public` 里只留扩展自带的对象；迁移放进各模块目录下的迁移子目录，文件名以 14 位时间戳开头，只留正向迁移（一个时间戳一个文件，回滚迁移不搬）；跨模块的外键改成只存 id，跨模块的读写改成走对方入口（写入走对方入口里的函数），叠在别的模块入口上的视图改成函数，迁移里不建 schema；函数都带 `SET search_path = <本模块的内部 schema>, pg_temp`，都是 `SECURITY DEFINER`（要 `COMMIT` 的过程拆开或放到应用代码里），迁移里不改 `search_path`、不切身份。库要 Postgres 14 以上。具体怎么搬（改名迁移，还是还没上线的项目把历史迁移合成每个模块一份起点）按项目定，先和用户商量。跑迁移的工具要把各模块和共享层的迁移目录收齐、按时间戳统一排序执行，执行某个模块的迁移时把 `search_path` 设成这个模块的内部 schema；迁移记录按文件名认，不按路径认（文件跟着目录挪了不会再跑一遍），迁移记录表放在 `shared`。
-   **按模块的数据库角色**（也归项目做，和用户商量着改）：
-   - 跑迁移的工具用迁移账号登录，发现一个模块目录就建同名的角色（`NOLOGIN`）和它的两个 schema，`shared` 角色和 schema 也由它建，已有就跳过（角色是整个实例共用的）；跑某个模块的迁移时切成它的角色（`SET LOCAL ROLE`），共享层的迁移切成 `shared`，再把迁移文件的全文交给这个模块自己的执行函数：迁移工具给每个模块（和 `shared`）建一个 `<schema>.run_migration(script text)`，归这个模块的角色，`LANGUAGE plpgsql SECURITY DEFINER SET search_path = <schema>, pg_temp`，正文只有 `EXECUTE script`，`REVOKE ALL … FROM PUBLIC`。这样迁移里切身份由数据库拒绝。迁移里不能有 `COMMIT`、`COPY … FROM STDIN`、`CONCURRENTLY`、`VACUUM`。
-   - 程序只用一组连接，用登录账号登录。登录账号、迁移账号能登录、不是超级用户、不拥有对象，不继承模块角色的权限（`NOINHERIT`；Postgres 16 起加进成员时写 `WITH INHERIT FALSE`），是各模块角色的成员。
+   **用 Postgres 的项目，数据库一起改造**（规则见 gatelight:modular 技能的「数据库」）：对象搬进所属模块的内部 schema（模块目录名转成小写加下划线），给别的模块用的视图、函数放进入口 schema（`<内部>_api`，不放表），没有业务含义的结构放进 `shared`，`public` 里只留扩展自带的对象；迁移放进各模块目录下的迁移子目录，文件名以 14 位时间戳开头，只留正向迁移（一个时间戳一个文件，回滚迁移不搬）；跨模块的外键改成只存 id，跨模块的读写改成走对方入口（写入走对方入口里的函数），叠在别的模块入口上的视图改成函数，迁移里不建 schema；函数都带 `SET search_path = <本模块的内部 schema>, pg_temp`，都是 `SECURITY DEFINER`（要 `COMMIT` 的过程拆开或放到应用代码里），迁移里不改 `search_path`、不切身份。库要 Postgres 16 以上。具体怎么搬（改名迁移，还是还没上线的项目把历史迁移合成每个模块一份起点）按项目定，先和用户商量。迁移由 `modwall migrate` 跑，项目不自己写迁移工具、建角色的脚本（已有的删掉，项目里写死的账号名、记录表也一起删）。
+   **按模块的数据库角色**：由 modwall 的两条命令建，都要 Postgres 16 以上，可以重复执行。`--psql` 给执行 SQL 的命令（SQL 从标准输入交给它，和 `modwall db check` 一样）；`--print` 只输出脚本、不连库。
+   - `modwall db bootstrap --psql "<用超级用户连库的命令>"`：建库那一步。建程序的登录账号和跑迁移的账号（配置的 `database.login`、`database.migrator`，下面第 2 步）：能登录、不是超级用户、不继承别的角色的权限（`NOINHERIT`），迁移账号另外能建角色、能在库里建 schema；收回 PUBLIC 的 `CONNECT`，只授给这两个账号（角色是整个实例共用的，同一个实例上别的项目的登录账号连不进来）。它不设密码：密码按项目的方式设（`ALTER ROLE … PASSWORD`；开发、测试用一眼能看出是假的值，线上的放在不进仓库的文件里，不写在命令行上）。
+   - `modwall migrate --psql "<用迁移账号连库的命令>"`：发现一个模块目录就建同名的角色（`NOLOGIN`）和它的两个 schema，`shared` 的角色和 schema 也由它建；各模块的角色都在组角色 `<登录账号>_modules` 里，入口 schema 和 `shared` 的使用权、入口视图的读权限授给组角色；登录账号、迁移账号是各模块角色的成员，不继承权限、只能切过去（登录账号不是 `shared` 的成员）；每块一个 `run_migration`，迁移全文交给它执行，迁移里切身份由库拒绝；各模块和共享层的迁移按时间戳统一排序，只跑没跑过的，一个文件一个事务；记录在 `shared.modwall_migrations`，按文件名认（文件跟着目录挪了不会再跑），跑过的迁移改了内容或删了就报错、一个都不跑。迁移里不能有 `COMMIT`、`COPY … FROM STDIN`、`CONCURRENTLY`、`VACUUM`。别人建的同名角色（同一个实例上的别的项目）它不借用，直接报错。
+   - 写了迁移就跑一次 `modwall migrate`，不在起环境时自动跑。线上没有 gatelight：打包时 `modwall migrate --print > <打包目录>/migrate.sql`，发版时用迁移账号 `psql -f` 执行它，迁移完再重启程序。
+   - 程序只用一组连接，用登录账号登录；开发、测试也用登录账号连库，不用超级用户。
    - 装配层或共享层写一个切身份的小函数：模块要用库时，在事务开头 `set_config('role', '<模块>', true)`、`set_config('search_path', '<模块>', true)`，只用事务内的设置；模块的代码里不自己切。
-   - 入口 schema 的使用权、入口视图的读权限授给各模块的角色（比如一个所有模块角色都是成员的组角色，配上 `ALTER DEFAULT PRIVILEGES`）；内部 schema 不授权给别的角色，模块的 schema 和 `shared` 不授 `CREATE` 给别人；Postgres 14 要 `REVOKE CREATE ON SCHEMA public FROM PUBLIC`。
-   - 建库那一步 `REVOKE CONNECT ON DATABASE <库> FROM PUBLIC`，再把 `CONNECT` 授给登录账号和迁移账号：角色是整个实例共用的，同一个实例上别的项目有同名模块时，它的登录账号能连进来切成这个模块的角色。开发、测试的库也一样。
-   - 开发、测试也用登录账号连库，不用超级用户。
-   - 可选：项目要让模块的代码运行时改不了表结构的，每个模块再建一个运行角色（比如 `<模块>_app`，`NOLOGIN`），本模块的迁移只授给它本模块内部 schema 的 `USAGE` 和表上的 `SELECT`、`INSERT`、`UPDATE`、`DELETE`；它不拥有对象、没有 `CREATE`，不是模块角色的继承成员；登录账号是它的成员（同样 `NOINHERIT`），事务开头切成它而不是模块的角色。这样做的，配置里写上 `database.runtime`（下面第 2 步）。
+   - 可选：项目要让模块的代码运行时改不了表结构的，配置里写上 `database.runtime`（下面第 2 步），`modwall migrate` 就给每个模块再建一个运行角色（比如 `<模块>_app`，`NOLOGIN`），放进组角色；登录账号改成运行角色的成员（同样不继承），不再是模块角色的成员，事务开头切成运行角色。本模块的迁移只授给它本模块内部 schema 的 `USAGE` 和表上的 `SELECT`、`INSERT`、`UPDATE`、`DELETE`；它不拥有对象、没有 `CREATE`。
 2. **生成配置**：`modwall init` 按搬好的目录生成 `.modwall/config.json` 草稿，并列出还没有归属的代码文件。核对草稿：
 
    ```json
@@ -55,7 +54,7 @@ modwall 让 agent 默认按模块开发，越界由程序拦。它不自己解�
    }
    ```
 
-   - `database` 只有用 Postgres 的项目写：`migrations` 是每个模块放迁移的子目录名，`shared` 是共享层的迁移目录（从仓库根目录写起），`login` 是程序连库用的登录账号，`migrator` 是跑迁移用的账号。`modwall init` 不起草它，按搬好的目录和建好的账号手动补。
+   - `database` 只有用 Postgres 的项目写：`migrations` 是每个模块放迁移的子目录名，`shared` 是共享层的迁移目录（从仓库根目录写起），`login` 是程序连库用的登录账号，`migrator` 是跑迁移用的账号。`modwall init` 不起草它，按搬好的目录手动补，两个账号的名字照项目的命名起（`modwall db bootstrap` 按它建，各模块的组角色叫 `<login>_modules`）。
    - 建了模块运行角色的，`database` 里再加 `"runtime": "<module>_app"`（照项目的命名写，`<module>` 换成模块的内部 schema 名）。写了它，`modwall db check` 认这个运行角色能用本模块的内部 schema；它用别的模块的内部 schema、拥有对象、能建对象（包括在本模块的内部 schema 里）、是超级用户或能建角色、建库、建 schema，照样报。没建运行角色的不写，写了检查就和没有这一项一样。
    - `roots` 写目录，下面每个子目录自动是一个模块；`shared`、`app`、`outside`、`map` 的键写路径规则（`**` 跨目录，`*` 不跨目录，结尾 `/` 表示整个目录）。
    - 各项的路径不能重叠，一个代码文件只能属于其中一项。唯一的例外：直接放在模块根目录下、又要保留的文件（Python 包的 `__init__.py`、汇总各模块的 `index.ts`），在 `app` 里写到这个文件、不用通配（比如 `"app/modules/__init__.py"`），它就归装配层，不算重叠。用通配的 `app` 条目、`shared`、`outside` 都不能这样认领。`modwall init` 会把模块根目录下名字是入口文件名的文件自动写进草稿的 `app`。
@@ -97,9 +96,9 @@ modwall 让 agent 默认按模块开发，越界由程序拦。它不自己解�
    - 应用之间不能引用代码（按 R3 拦）；模块名只要在一个应用里不重复，报告里写成 `应用名/模块名`。路径重叠照旧算配置错误：不同应用之间、应用和外面一层之间都是不同的项。
    - `modwall init` 在模块根目录分属几个应用目录时按应用分组起草，应用名取应用目录的名字（两个应用目录同名时用整个路径，`/` 换成 `-`）。应用目录只认 pnpm、npm 的工作区包（`pnpm-workspace.yaml` 的 `packages`、`package.json` 的 `workspaces`）和 `apps/`、`services/`、`packages/` 下有代码的子目录；只有一个应用目录里有模块根目录时照单应用起草。
    - **认不出来的应用目录要手动补**：不是工作区包、又不在上面几个目录下的应用（比如放在仓库根目录 `miniprogram/` 下的小程序），`modwall init` 不起草，它下面的代码在输出里列为没有归属。照着这个应用的目录在 `apps` 里手动补一组（应用名取目录名，`roots`、`shared`、`app`、`entry`、`map` 按它搬好的目录写）。草稿是单应用写法的，先把它改成按应用分组的写法（原来那一组放进 `apps`，起个应用名），再补上这一组。补完重跑 `modwall check`，直到没有归属的代码文件都归了某个应用、外面一层的 `shared` 或 `outside`。
-3. **改到清零**：`modwall check` 列出全部越界，当作待办逐条按改法改（R6 是迁移文件里的数据库越界）。每个模块可以补一个 `MODULE.md`（一句职责、一句不做什么）。用 Postgres 的，在临时库上跑完全部迁移后执行 `modwall db check --psql "<执行 SQL 的命令>"`（比如 `psql $DATABASE_URL`；用 napbox 的项目写 `napbox exec postgres --temp $ENV -- psql`），把它报的也改到清零：改迁移或跑迁移的工具，不直接改库。这条命令用哪个账号连库都行，它只读系统目录。
+3. **改到清零**：`modwall check` 列出全部越界，当作待办逐条按改法改（R6 是迁移文件里的数据库越界）。每个模块可以补一个 `MODULE.md`（一句职责、一句不做什么）。用 Postgres 的，在临时库上用 `modwall db bootstrap`、`modwall migrate` 跑完全部迁移后执行 `modwall db check --psql "<执行 SQL 的命令>"`（比如 `psql $DATABASE_URL`；用 napbox 的项目写 `napbox exec postgres --temp $ENV -- psql`），把它报的也改到清零：改迁移，不直接改库。这条命令用哪个账号连库都行，它只读系统目录。
 4. **整份配置让用户确认一次**：首次接入时 `modwall check` 会把整份配置列为放宽项。先用白话告诉用户：分了哪几个模块（有几个应用时按应用说，还有哪些代码是几个应用共用的）、共享层和装配层是哪些、哪些路径不管，再调用 `confirm_with_user` 工具（弹窗，用户同意才算；编号和文字照 `modwall check` 输出的填）。确认后 `modwall check` 应当通过。
-5. **库的检查进整组**（用 Postgres 的项目）：在项目整组（testpace 的 `full`）里，迁移跑完之后加一步 `modwall db check --psql "<执行 SQL 的命令>"`，用测试的临时库；它不通过时退出码非零，整组就不通过。怎么起库、怎么跑迁移仍归项目，modwall 只读系统目录。写在项目的脚本里、在测试里跑都行，但要在整组里跑到、退出码不能被忽略：整组给每段命令一个环境变量 `MODWALL_DB_RECEIPTS`，`modwall db check` 查完往里交一条凭据，整组跑完时写了 `database` 的应用（有几个应用的，每个用 `--app` 各查一次）没交凭据、或没通过却接着跑完了，整组算没过。所以起库、跑迁移的脚本要把环境变量原样传给它（在容器里跑的也要带进去）。
+5. **库的检查进整组**（用 Postgres 的项目）：在项目整组（testpace 的 `full`）里，迁移跑完之后加一步 `modwall db check --psql "<执行 SQL 的命令>"`，用测试的临时库；它不通过时退出码非零，整组就不通过。顺序是：起临时库（归项目）→ `modwall db bootstrap`（超级用户）→ 设两个账号的密码 → `modwall migrate`（迁移账号）→ `modwall db check` → 测试。写在项目的脚本里、在测试里跑都行，但要在整组里跑到、退出码不能被忽略：整组给每段命令一个环境变量 `MODWALL_DB_RECEIPTS`，`modwall db check` 查完往里交一条凭据，整组跑完时写了 `database` 的应用（有几个应用的，每个用 `--app` 各查一次）没交凭据、或没通过却接着跑完了，整组算没过。所以起库、跑迁移的脚本要把环境变量原样传给它（在容器里跑的也要带进去）。
 6. **核对**：`modwall status` 应当显示 LayerMap 能用、testpace 接入了、没有越界、放宽项都同意过。
 7. 提交前先问用户；合回默认分支照 testpace 的节奏（`gatelight:merge`）。
 
