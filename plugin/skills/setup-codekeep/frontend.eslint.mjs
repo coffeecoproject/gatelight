@@ -19,10 +19,6 @@ const TEST_IMPORTS = '(^|\\x2F)__tests__(\\x2F|$)|\\.(test|spec)(\\.[cm]?[jt]sx?
 
 /** 生成下载文件、画图的代码（导出 Excel、canvas 画的海报这类）：做出来的不在页面上，不查具体的值，文字照查；不准写 JSX（页面组件放进来就绕开了）。没有就留空。 */
 const OUTPUT = []
-/** 后台代码；没有就留空。 */
-const BACK = []
-/** 后台不管的：种子数据、演示数据、测试、迁移。 */
-const BACK_SKIP = []
 /** 能写数字的参数：和外观无关的。组件库和项目自己组件里和外观无关的（分页大小、小数位数、延迟、名字最长几个字）也加进来。 */
 const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'step', 'tabIndex', 'defaultValue']
 /** 必须原样展示的固定文字：备案号、许可证号、公司全称这类，法规或合同要求照录、缩不了的。写准确的整段文字（不能带 /），这几段不查字数和标点；说明文字不放这里。 */
@@ -32,7 +28,7 @@ const UI_LANGUAGE = ''
 /**
  * 每种语言怎么认文字、怎么数、哪些标点算句子：
  * text：认得出是给人看的文字的正则（不把 'user-id'、URL、样式类名这类当文字）；words：按词数（true）还是按字数算上限；
- * name、entry、back：名字、正文、后台返回给页面的文字的上限；namePunct：名字里不准的标点；sentence：正文、后台文字不止一句的写法（末尾的句号放行）。
+ * name、entry：名字、正文的上限；namePunct：名字里不准的标点；sentence：正文不止一句的写法（末尾的句号放行）。
  * 正则里不能有 /（esquery 的正则写不了）。上限是默认值，不用改。
  */
 const LANGUAGES = {
@@ -41,7 +37,6 @@ const LANGUAGES = {
     words: false,
     name: 12,
     entry: 16,
-    back: 24,
     // 末尾的一个冒号（"名称："）放行
     namePunct: '[，。；！？（）]|：(?!\\s*$)',
     sentence: '[；]|。(?!\\s*$)',
@@ -52,7 +47,6 @@ const LANGUAGES = {
     words: true,
     name: 5,
     entry: 10,
-    back: 15,
     // 末尾的一个冒号（"Name:"）放行
     namePunct: '[.!?;](\\s|$)|,\\s|[()]|:\\s+\\S',
     sentence: ';|\\.\\s+\\S',
@@ -146,20 +140,15 @@ const ENTRY = [
 ]
 const notEntry = ENTRY.length ? `:not(${ENTRY.join(', ')})` : ''
 const value = { Literal: 'value', TemplateElement: 'value.cooked', JSXText: 'value' }
-/** SQL 不是文字（英文的列清单 'id, status' 像两个单词）：SQL 开头的字符串；模板字符串按第一段看，拼进去的后几段一起算。 */
-const SQL = '/^\\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER)\\b/i'
-const notSql = { Literal: `:not([value=${SQL}])`, TemplateElement: `:not(TemplateLiteral[quasis.0.value.cooked=${SQL}] > TemplateElement)`, JSXText: '' }
-/** 认得出是文字（LANG.text）、超过 max 个字的固定文字，或带了 punct 里的标点：JSX 文字、字符串、模板字符串的每一段。 */
-const textRules = (max, punct, tail, what) =>
-  Object.entries(value).flatMap(([node, field]) => [
-    { selector: `${node}[${field}=/${LANG.text}/][${field}=${longer(max, node === 'JSXText')}]${notSql[node]}${tail}${notVerbatim(field)}`, message: `${what}超过 ${max} 个${UNIT}` },
-    { selector: `${node}[${field}=/${LANG.text}/][${field}=/${punct}/]${notSql[node]}${tail}${notVerbatim(field)}`, message: `${what}带了句子标点` },
-  ])
 const NAME_HINT = '：页面上只放名字，说明不写；要告诉用户的写进提示、确认框正文或报错（codekeep 前端规则）'
 const ENTRY_HINT = '：提示、确认框正文、报错只说一句，说清怎么了、怎么办（codekeep 前端规则）'
 const STYLE_HINT = '：组件不合适就告诉用户，不在这里补；具体的值只写在主题和组件层的样式文件里，改要用户同意（codekeep 前端规则）'
 
-const nameText = textRules(LANG.name, LANG.namePunct, notEntry, '文字').map(rule => ({ ...rule, message: rule.message + NAME_HINT }))
+/** 名字：认得出是文字（LANG.text）、超过 LANG.name 个字的固定文字，或带了名字里不准的标点。JSX 文字、字符串、模板字符串的每一段，入口那几处除外。 */
+const nameText = Object.entries(value).flatMap(([node, field]) => [
+  { selector: `${node}[${field}=/${LANG.text}/][${field}=${longer(LANG.name, node === 'JSXText')}]${notEntry}${notVerbatim(field)}`, message: `文字超过 ${LANG.name} 个${UNIT}${NAME_HINT}` },
+  { selector: `${node}[${field}=/${LANG.text}/][${field}=/${LANG.namePunct}/]${notEntry}${notVerbatim(field)}`, message: `文字带了句子标点${NAME_HINT}` },
+])
 const entryText = ENTRY.flatMap(entry => {
   const field = entry.endsWith('TemplateElement') ? 'value.cooked' : 'value'
   return [
@@ -257,18 +246,4 @@ export default [
   },
   // 主题：不查值，只不准就地关规则
   { ...front, files: THEME },
-  // 后台：返回给页面的文字 LANG.back 个字、一句话
-  ...(BACK.length
-    ? [
-        {
-          plugins: front.plugins,
-          files: BACK,
-          ignores: BACK_SKIP,
-          rules: {
-            [RESTRICTED]: ['error', ...textRules(LANG.back, LANG.sentence, '', '文字').map(rule => ({ ...rule, message: `${rule.message}：返回给页面的原因、提示只说一句，说清怎么了、怎么办（codekeep 前端规则）` }))],
-            ...noDisable,
-          },
-        },
-      ]
-    : []),
 ]
