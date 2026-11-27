@@ -50,8 +50,6 @@ const DROPPED = new Set([
   'CODEX_HOME',
   // 外层 testpace 给的交结果的文件也不带：测试里起的 testpace run 不把结果交给跑这些测试的那次
   'TESTPACE_RESULTS',
-  // 外层 testpace 这一轮的运行 id 也不带：测试里的 testpace hold 默认是终端里起的
-  'TESTPACE_RUN',
   ...Object.values(AGENTS).flatMap(agent => [...agent.markers, agent.session, ...(agent.sandbox ? [agent.sandbox] : [])]),
 ])
 export const ENV: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !DROPPED.has(key)))
@@ -108,15 +106,14 @@ export function setConfig(repo: string, change: Record<string, unknown>): void {
 
 const dirs: string[] = []
 
-/** 测试里加进整组的一段：一条 sh 命令；borrows 是它要借用工作区（底座给它这一轮的运行 id）。 */
+/** 测试里加进整组的一段：一条 sh 命令。 */
 export interface ExtraStep {
   command: string
-  borrows?: boolean
 }
 
 /**
  * 起一次整组，最前面多几段：一个只在测试里有的模块交出这几段，排在插件自己的模块之前。
- * 用来测底座怎么跑各模块交的段（顺序、一段没过就停、借用工作区），不靠哪个具体的检查模块。
+ * 用来测底座怎么跑各模块交的段（顺序、一段没过就停），不靠哪个具体的检查模块。
  * 返回要起的程序和参数（在仓库目录里起，等同 testpace full）。
  */
 export function fullWithSteps(steps: ExtraStep[]): { program: string; args: string[] } {
@@ -128,7 +125,6 @@ export function fullWithSteps(steps: ExtraStep[]): { program: string; args: stri
     header: `加的段：${step.command}`,
     command: step.command,
     args: [],
-    ...(step.borrows ? { borrows: true } : {}),
   }))
   const file = join(tempDir('testpace-full-'), 'full.mjs')
   writeFileSync(

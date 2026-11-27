@@ -3,13 +3,13 @@
 
 import { appendFileSync, existsSync, statSync } from 'node:fs'
 import { countedIgnore, loadContract } from './contract.ts'
-import { type Execution, execute, RUN_ENV } from './execute.ts'
+import { type Execution, execute } from './execute.ts'
 import { EXIT } from './exit.ts'
 import { duration, short } from './format.ts'
 import { changedPaths, currentBranch, headCommit, workTreeId } from './git.ts'
 import { type FullPart, type FullStep, modules } from './module.ts'
 import { busyText, coverageOf, describeCoverage, failureText, type Repo, runner, started } from './repo.ts'
-import { isHold, newRunId, type RunMarker, type RunRecord, type RunStep } from './store.ts'
+import { newRunId, type RunMarker, type RunRecord, type RunStep } from './store.ts'
 
 /**
  * testpace full：依次跑各模块交的各段，便宜的在前，一段没过就停；都过了、跑的过程中内容没变，
@@ -49,7 +49,7 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
     return EXIT.ok
   }
 
-  const elsewhere = ctx.store.running().find((marker): marker is RunMarker => !isHold(marker) && marker.kind === 'full' && marker.tree === tree && marker.worktree !== ctx.root)
+  const elsewhere = ctx.store.running().find(marker => marker.kind === 'full' && marker.tree === tree && marker.worktree !== ctx.root)
   if (elsewhere) {
     console.log(`工作区 ${elsewhere.worktree} 正在跑同一份代码的整组（${started(elsewhere)}）。等它结束后用 testpace status 看结果。`)
     return EXIT.busy
@@ -60,7 +60,7 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
   const log = ctx.store.logPath(id)
   const session = sessionId ? { session: sessionId } : {}
   const busy = ctx.store.claim({ id, kind: 'full', pid: process.pid, worktree: ctx.root, tree, startedAt, ...session, log })
-  if (busy && !isHold(busy) && busy.kind === 'full') {
+  if (busy?.kind === 'full') {
     if (sessionId) ctx.store.waitOn(busy, sessionId)
     console.log(`这个工作区已有整组在跑（${started(busy)}）。等它结束后用 testpace status 看结果。`)
     return EXIT.busy
@@ -71,10 +71,7 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
   }
 
   // 依次跑各模块交的各段，便宜的在前，一段没过就停。都过了才算整组通过。
-  // 要借用工作区的段（建副本）拿到这一轮的运行 id（见 RUN_ENV）：它们在测试之前跑，在里面借用工作区不另占
-  const steps: Array<FullStep & { env?: Record<string, string> }> = parts.flatMap(part =>
-    part.steps.map(step => (step.borrows ? { ...step, env: { [RUN_ENV]: id } } : step)),
-  )
+  const steps: FullStep[] = parts.flatMap(part => part.steps)
   // 各模块给命令的环境变量（比如交每个测试结果的位置），每一段都带着
   const partsEnv: Record<string, string> = Object.assign({}, ...parts.map(part => part.env ?? {}))
   // 每段各用了多久：report 据此说整组的时间花在哪一段
@@ -90,7 +87,7 @@ async function run(ctx: Repo, sessionId: string | undefined, ignore: string[], p
     for (const step of steps) {
       excerptFrom = sizeOf(log)
       appendFileSync(log, `===== testpace ${step.header}\n`)
-      const part = await execute(step.command, step.args, ctx.root, log, onStart, { ...partsEnv, ...step.env })
+      const part = await execute(step.command, step.args, ctx.root, log, onStart, partsEnv)
       execution = execution ? { ...part, durationMs: execution.durationMs + part.durationMs } : part
       if (!part.interrupted) timings.push({ kind: step.kind, name: step.name, durationMs: part.durationMs })
       if (part.interrupted || part.exitCode !== 0) {

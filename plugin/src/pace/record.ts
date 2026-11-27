@@ -3,7 +3,7 @@
 import { type Repo, runClaimed, runner } from '../base/repo.ts'
 import type { Execution } from '../base/execute.ts'
 import { currentBranch, headCommit, workTreeId } from '../base/git.ts'
-import type { RunningMarker, RunRecord, Store } from '../base/store.ts'
+import type { RunMarker, RunRecord, Store } from '../base/store.ts'
 import type { CommandKey } from './config.ts'
 import { failedTests, noteResults, reached, readResults, RESULTS_ENV, resultsFile, type TestResult, unreported, unreportedText, wholeFiles } from './results.ts'
 import type { TestId } from './testlist.ts'
@@ -50,7 +50,7 @@ export async function runRecorded(
   args: string[],
   tree: string,
   options: { repeat?: PaceRun['repeat']; passedEarlier?: Map<string, string> } = {},
-): Promise<Recorded | { busy: RunningMarker }> {
+): Promise<Recorded | { busy: RunMarker }> {
   const file = resultsFile()
   try {
     const run = await runClaimed(repo, kind, command, args, tree, { [RESULTS_ENV]: file.path })

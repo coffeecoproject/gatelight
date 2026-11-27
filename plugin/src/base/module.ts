@@ -15,8 +15,6 @@ export interface FullStep {
   header: string
   command: string
   args: string[]
-  /** 这一段要借用工作区（比如建副本）：底座把这一轮的运行 id 给它（见 execute.ts 的 RUN_ENV），它借用时不另占。只给测试之前跑的检查。 */
-  borrows?: boolean
 }
 
 /** 一个模块在这一轮整组里的部分。 */

@@ -1,10 +1,10 @@
-// testpace 命令行入口：focused、files、full、status、hold、release、report、verify、install、run，以及 git 钩子调用的 gate。
+// testpace 命令行入口：focused、files、full、status、report、verify、install、run，以及 git 钩子调用的 gate。
 // 这里只做装配和分发：底座的命令在 base/commands.ts、base/full.ts，"跑测试"的命令在 pace/commands.ts；
 // status 把底座和各模块的情况合在一起说，也放在这里。这个文件的路径不能变：bin/testpace 和固定入口都按它找。
 
 import './modules.ts'
 import { AGENT, runCommandLine } from './base/commandline.ts'
-import { context, gate, hold, install, release } from './base/commands.ts'
+import { context, gate, install } from './base/commands.ts'
 import { CONTRACT_FILE, joined } from './base/contract.ts'
 import { ENTRY_COMMANDS, type EntryState, entryDir, entryState } from './base/entry.ts'
 import { EXIT } from './base/exit.ts'
@@ -12,8 +12,7 @@ import { duration, short, when } from './base/format.ts'
 import { full } from './base/full.ts'
 import { danglingNote, gateProblem } from './base/gate.ts'
 import { workTreeId } from './base/git.ts'
-import { coverageOf, defaultTips, describeCoverage, runningText, started } from './base/repo.ts'
-import { isHold } from './base/store.ts'
+import { coverageOf, defaultTips, describeCoverage, started } from './base/repo.ts'
 import { files, focused, report, run, verify } from './pace/commands.ts'
 import { commandExists, COMMAND_KEYS, loadConfig } from './pace/config.ts'
 import { LAYERMAP_HINT } from './pace/focused.ts'
@@ -32,10 +31,6 @@ const USAGE = `用法：
   testpace full                  跑整组：接入了的检查（modwall check、testcraft checklist、codekeep check）、full（测试以外的检查），再把 tests 规则找到的全部测试交给 files，
                                  一段没过就停，按当前工作区完整内容记录结果。要跑几分钟，能放到后台的就放后台
   testpace status                当前代码有没有整组通过记录、有没有正在跑的整组、最近一次结果、配置检查
-  testpace hold PID 说明         借用这个工作区（比如要复制一份工作区的工具）：占着时别的 testpace 命令不跑，说明是谁占着。
-                                 PID 是借用的那个进程，它不在了占用就作废。占上时输出这次的 id，退出码 0；有在跑的、占着的，说明是谁，退出码 3。
-                                 整组里要建副本的检查带着这一轮的 TESTPACE_RUN，工作区已经是这一轮的，不另占、什么也不输出，退出码 0
-  testpace release ID            放开 hold 占的工作区
   testpace report [--days N]     计时诊断，默认最近 28 天
   testpace verify [测试文件...]  核对接入守不守约定：三条命令找得到、合并门在把关、files 对不存在的文件报失败、认 文件:行号；每种测试各给一个文件
   testpace install               这台机器配一次：在全局 git 配置里配上合并门（agent 移动默认分支时，要求落地的代码有整组通过记录），
@@ -59,10 +54,6 @@ function status(): number {
     lines.push(`当前代码（${short(tree)}）：${describeCoverage(coverageOf(ctx, config.ignore, tree, runs))}`)
 
     for (const marker of ctx.store.running().filter(m => m.worktree === ctx.root)) {
-      if (isHold(marker)) {
-        lines.push(`${runningText(marker)}，已 ${duration(Date.now() - marker.startedAt)}`)
-        continue
-      }
       const changed = marker.tree === tree ? '开始后代码没改过' : '开始后代码改过，跑完的结果不算当前代码的记录'
       lines.push(`正在跑：${marker.kind}，${started(marker)}（已 ${duration(Date.now() - marker.startedAt)}），${changed}`)
     }
@@ -150,10 +141,6 @@ async function dispatch([command, ...rest]: string[]): Promise<number> {
       return runFull()
     case 'status':
       return status()
-    case 'hold':
-      return hold(rest, USAGE)
-    case 'release':
-      return release(rest, USAGE)
     case 'report':
       return report(rest)
     case 'verify':
