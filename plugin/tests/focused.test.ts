@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { BRANCH_CAP, fullReasons, type LayermapCheck, NEARBY_RANK, outsideNote, parseCheck, parseUntested, select, type Untested } from '../src/pace/focused.ts'
 import { matcher } from '../src/base/glob.ts'
-import { commit, ENV, runs, sampleRepo, sh, tempDir, testpace } from './helpers.ts'
+import { commit, ENV, runs, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
 
 const check = (partial: Partial<LayermapCheck>): LayermapCheck => ({ files: [], tests: [], unmapped: [], incomplete: [], ...partial })
 
@@ -552,5 +552,92 @@ describe('testpace files', () => {
       ['files', 'fail', ['tests/nope.test.mjs']],
     ])
     assert.equal(testpace(repo, ['files']).code, 2)
+  })
+})
+
+describe('files、focused 跑完核对：交给 files 的每个测试文件都交回了结果', () => {
+  /** 示例项目，files 换成 command（在默认分支上提交，是项目本来就这样配）。 */
+  const withFiles = (command: string): string => {
+    const repo = sampleRepo()
+    setConfig(repo, { files: command })
+    commit(repo, '配置')
+    return repo
+  }
+  /** 只有路径里带 format 的经 testpace run 跑（交回结果），别的去掉行号直接 node --test 跑（不交）。 */
+  const ONLY_FORMAT = 'f() { for t; do case "$t" in *format*) testpace run node-test "$t" ;; *) node --test "${t%%:*}" ;; esac || return 1; done; }; f'
+  /** 分批跑，一批没过后面的就不跑。 */
+  const BATCHES = 'f() { for t; do testpace run node-test "$t" || return 1; done; }; f'
+  const HOW = /经 testpace run 跑（它会交回结果）；别的跑法自己往环境变量 TESTPACE_RESULTS 给的文件里/
+  const breakFormat = (repo: string): void => writeFileSync(join(repo, 'src', 'format.mjs'), 'export function yuan(amount) {\n  return `¥${amount}`\n}\n')
+
+  test('files 命令通过、有测试文件一条结果都没交回：这次算没过，点名这些文件（相对仓库根目录），说怎么交结果，记录里有 notRun', () => {
+    const repo = withFiles(ONLY_FORMAT)
+    const r = testpace(join(repo, 'tests'), ['files', 'format.test.mjs', 'price.test.mjs'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^2 个测试文件没通过：命令通过了，跑完核对出有测试文件没跑到（见下）· 用时 \d+秒\n完整日志：/)
+    assert.match(r.out, /交给 files 命令（.+）的测试文件里，这些一条结果都没交回：tests\/price\.test\.mjs。/)
+    assert.match(r.out, HOW)
+    assert.doesNotMatch(r.out, /format\.test\.mjs。|输出节选/)
+    const record = runs(repo).at(-1)!
+    assert.deepEqual([record.exitCode, record.result, record.notRun], [0, 'fail', ['tests/price.test.mjs']])
+  })
+
+  test('按 文件:行号 给的，按那个文件算有没有交回结果', () => {
+    const repo = withFiles(ONLY_FORMAT)
+    const r = testpace(repo, ['files', 'tests/format.test.mjs:5', 'tests/price.test.mjs:9'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^2 处测试没通过：命令通过了/)
+    assert.match(r.out, /这些一条结果都没交回：tests\/price\.test\.mjs。/)
+    assert.deepEqual(runs(repo).at(-1)!.notRun, ['tests/price.test.mjs'])
+  })
+
+  test('files 命令通过、一个结果都没交回：这次算没过，说一个测试结果都没交回', () => {
+    const repo = withFiles('node --test')
+    const r = testpace(repo, ['files', 'tests/price.test.mjs'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^1 个测试文件没通过：命令通过了，跑完核对出有测试文件没跑到（见下）/)
+    assert.match(r.out, /\nfiles 命令（node --test）跑完，一个测试结果都没交回，核对不了跑到了哪些测试。/)
+    assert.match(r.out, HOW)
+    const record = runs(repo).at(-1)!
+    assert.deepEqual([record.exitCode, record.result, record.notRun], [0, 'fail', ['tests/price.test.mjs']])
+  })
+
+  test('files 命令没过、有的文件交回了结果有的没有（分批跑，一批没过后面的不跑）：照常算没过，另外点名没交回的，提醒修好后一起再跑', () => {
+    const repo = withFiles(BATCHES)
+    breakFormat(repo)
+    const r = testpace(repo, ['files', 'tests/format.test.mjs', 'tests/price.test.mjs'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^2 个测试文件失败（退出码 1）· 用时 \d+秒\n--- 输出节选 ---\n/)
+    assert.match(r.out, /\n交给 files 命令（.+）的测试文件里，这些一条结果都没交回：tests\/price\.test\.mjs。这次没验证到它们.*修好后用 testpace files 把没过的和这些一起再跑一遍。/)
+    const record = runs(repo).at(-1)!
+    assert.equal(record.result, 'fail')
+    assert.deepEqual(record.notRun, ['tests/price.test.mjs'])
+    assert.deepEqual((record.failed as Array<{ file: string }>).map(test => test.file), ['tests/format.test.mjs'])
+  })
+
+  test('files 命令没过、一个结果都没交回：不加没交回结果的提示', () => {
+    const repo = withFiles('node --test')
+    breakFormat(repo)
+    const r = testpace(repo, ['files', 'tests/format.test.mjs', 'tests/price.test.mjs'])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /^2 个测试文件失败（退出码 1）/)
+    assert.doesNotMatch(r.out, /没交回|命令通过了/)
+  })
+
+  test('focused 跑相关测试：files 命令通过、有选出的文件没交回结果，相关测试算没过，点名这些文件', () => {
+    const repo = withFiles(ONLY_FORMAT)
+    const layermap = fakeLayermap(check({
+      files: [{ path: 'src/format.mjs', status: 'MODIFIED' }],
+      tests: [
+        { path: 'tests/format.test.mjs', rank: 0, why: 'calls yuan' },
+        { path: 'tests/price.test.mjs', rank: 0, why: 'calls yuan' },
+      ],
+    }))
+    const r = testpace(repo, ['focused'], layermap.env)
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /\n相关测试没通过：命令通过了，跑完核对出有测试文件没跑到（见下）· 用时 \d+秒\n完整日志：.+\n交给 files 命令（.+）的测试文件里，这些一条结果都没交回：tests\/price\.test\.mjs。/)
+    assert.doesNotMatch(r.out, /相关测试通过/)
+    const record = runs(repo).at(-1)!
+    assert.deepEqual([record.kind, record.exitCode, record.result, record.notRun], ['files', 0, 'fail', ['tests/price.test.mjs']])
   })
 })

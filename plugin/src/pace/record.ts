@@ -5,7 +5,7 @@ import type { Execution } from '../base/execute.ts'
 import { currentBranch, headCommit, workTreeId } from '../base/git.ts'
 import type { RunningMarker, RunRecord, Store } from '../base/store.ts'
 import type { CommandKey } from './config.ts'
-import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, type TestResult, wholeFiles } from './results.ts'
+import { failedTests, noteResults, readResults, RESULTS_ENV, resultsFile, type TestResult, unreported, unreportedText, wholeFiles } from './results.ts'
 import type { TestId } from './testlist.ts'
 
 /** 这个模块跑的命令的记录：fast、files，和整组（full，底座跑的，带着这个模块加的字段）。 */
@@ -17,6 +17,8 @@ export interface PaceRun extends RunRecord {
   tests?: number
   /** 没过的测试（经 testpace run 跑、交回了每个测试结果的才有）。 */
   failed?: TestId[]
+  /** 交给 files 的测试文件里一条结果都没交回的（没跑到），见 results.ts 的 unreported。 */
+  notRun?: string[]
   /** testpace files --repeat 连跑的第几次（从 1 起）、共几次。 */
   repeat?: { index: number; of: number }
 }
@@ -32,12 +34,13 @@ export interface Recorded {
   execution: Execution
   /** 命令里的 testpace run 交回的每个测试的结果；没经 testpace run 跑的为空。 */
   results: TestResult[]
-  /** 看这些结果要说给 agent 的话：时好时坏、几轮没过（见 results.ts）。 */
+  /** 看这些结果要说给 agent 的话：没跑到的、时好时坏、几轮没过（见 results.ts）。 */
   notes: string[]
 }
 
 /**
  * 跑 fast 或 files 并记一条记录（见 runClaimed），收回每个测试的结果、看有没有时好时坏和几轮没过的（见 results.ts）。
+ * files 还核对交给它的每个测试文件都交回了结果：命令通过、却有没跑到的，这次算没过；命令没过的，照样点名没跑到的。
  * 跑完重算一次代码（treeAtEnd）：认时好时坏要"同一份代码"，跑的过程中代码改过的不算。通过记录只认 full。
  */
 export async function runRecorded(
@@ -55,6 +58,8 @@ export async function runRecorded(
     const { id, startedAt, log, execution } = run
     const results = execution.interrupted ? [] : readResults(file.path, repo.root)
     const failed = failedTests(results)
+    const silent = kind === 'files' && !execution.interrupted ? unreported(args, results) : []
+    const unreached = unreportedText(command, silent, results.length, execution.exitCode !== 0)
     const record: PaceRun = {
       id,
       kind,
@@ -66,9 +71,10 @@ export async function runRecorded(
       startedAt,
       durationMs: execution.durationMs,
       exitCode: execution.exitCode,
-      result: execution.exitCode === 0 ? 'pass' : 'fail',
+      result: execution.exitCode === 0 && !unreached ? 'pass' : 'fail',
       ...(kind === 'files' ? { files: args } : {}),
       ...(results.length > 0 ? { failed } : {}),
+      ...(silent.length > 0 ? { notRun: silent } : {}),
       ...(options.repeat ? { repeat: options.repeat } : {}),
       ...runner(),
       log,
@@ -76,7 +82,7 @@ export async function runRecorded(
     if (execution.interrupted) return { record, execution, results, notes: [] }
     const before = paceRuns(repo.store)
     repo.store.appendRun(record)
-    const notes = noteResults(repo, { record, results, before, whole: wholeFiles(args), ...(options.passedEarlier ? { passedEarlier: options.passedEarlier } : {}) })
+    const notes = [...(unreached ? [unreached] : []), ...noteResults(repo, { record, results, before, whole: wholeFiles(args), ...(options.passedEarlier ? { passedEarlier: options.passedEarlier } : {}) })]
     return { record, execution, results, notes }
   } finally {
     file.dispose()

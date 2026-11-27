@@ -10,7 +10,7 @@ import { when } from '../base/format.ts'
 import type { Repo } from '../base/repo.ts'
 import type { Ran } from './run/targets.ts'
 import type { PaceRun } from './record.ts'
-import { addFlaky, type FlakyTest, flakyTests, LOCATED, readRounds, removeFlaky, saveRounds, type TestId, testKey } from './testlist.ts'
+import { addFlaky, type FlakyTest, flakyTests, LOCATED, readRounds, removeFlaky, saveRounds, type TestId, testFile, testKey } from './testlist.ts'
 
 export const RESULTS_ENV = 'TESTPACE_RESULTS'
 
@@ -90,6 +90,32 @@ export function describeTest(test: TestId): string {
 /** 给的参数里整个文件给的那些（不带行号）。 */
 export function wholeFiles(args: string[]): string[] {
   return args.filter(arg => !LOCATED.test(arg))
+}
+
+/**
+ * 交给 files 的测试文件里一条结果都没交回的（过、没过、跳过都算交回；按行给的看那个文件）。不读脚本：脚本漏跑了哪一类测试、
+ * 跑到一半停了（比如分几批跑、一批没过后面的就不跑），结果里就少了那些文件。focused、files、整组都按这个核对。
+ */
+export function unreported(handed: readonly string[], results: readonly TestResult[]): string[] {
+  const reported = new Set(results.map(test => test.file))
+  return [...new Set(handed.map(testFile))].filter(file => !reported.has(file))
+}
+
+/** 一次最多点名几个没交回结果的文件。 */
+const NAMED = 10
+
+/**
+ * 说没交回结果的文件；没有要说的时为 undefined。命令没过、又一个结果都没交回的不说（多半是命令自己没起来，它的输出已经说了）。
+ * 命令没过的，提醒没过的修好后要和没跑到的一起再跑：只重跑没过的，没跑到的就一直没验证。
+ */
+export function unreportedText(files: string, silent: readonly string[], results: number, failed: boolean): string | undefined {
+  if (silent.length === 0 || (failed && results === 0)) return undefined
+  const how = `node:test、Vitest、Playwright 的测试经 testpace run 跑（它会交回结果）；别的跑法自己往环境变量 ${RESULTS_ENV} 给的文件里，每个测试追加一行 JSON：{"file":"文件的绝对路径","name":"测试名","status":"passed、failed 或 skipped"}`
+  if (results === 0) return `files 命令（${files}）跑完，一个测试结果都没交回，核对不了跑到了哪些测试。${how}。`
+  const named = silent.slice(0, NAMED).join('、') + (silent.length > NAMED ? ` 等 ${silent.length} 个` : '')
+  const head = `交给 files 命令（${files}）的测试文件里，这些一条结果都没交回：${named}。`
+  if (failed) return `${head}这次没验证到它们：上面的输出没说原因的，多半是跑到一半停了（比如分批跑，一批没过后面的就不跑）。修好后用 testpace files 把没过的和这些一起再跑一遍。`
+  return `${head}可能是 files 的脚本没把它们交给测试框架、被框架的配置排除了，或跑它们的那一路没交结果。${how}。`
 }
 
 export interface ResultsInput {
