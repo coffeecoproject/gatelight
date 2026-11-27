@@ -1,5 +1,6 @@
 // codekeep 的前端规则模板（skills/setup-codekeep/frontend.eslint.mjs）：像项目那样把它接进 eslint 配置，用真的 eslint 查写好的页面代码，看哪一行报了哪一类。
-// 默认值直接用模板本身；要改"按项目填"的几项时，像项目那样复制一份、换掉那几行常量。临时目录里的 node_modules 链到 gatelight 装着的那份。
+// 模板不预填组件库：像项目那样复制一份、换掉"按项目填"的那几行常量。多数测试用一份 antd 的填法（ANTD_FILL），组件库无关的规则另用 'none' 和别家的名字测。
+// 临时目录里的 node_modules 链到 gatelight 装着的那份。
 
 import assert from 'node:assert/strict'
 import { readFileSync, symlinkSync } from 'node:fs'
@@ -13,23 +14,36 @@ const TEMPLATE = fileURLToPath(new URL('../../skills/setup-codekeep/frontend.esl
 const HINT = '（codekeep 前端规则）'
 const RESTRICTED = 'no-restricted-syntax'
 
+type Change = Record<string, string>
+
+/** 新建一个临时项目目录（node_modules 链好），把换掉了 change 里那几行常量的模板写成 eslint.frontend.mjs。 */
+function filled(change: Change): { dir: string; file: string } {
+  const dir = tempDir('codekeep-frontend-')
+  symlinkSync(NODE_MODULES, join(dir, 'node_modules'), 'dir')
+  let text = readFileSync(TEMPLATE, 'utf8')
+  for (const [name, value] of Object.entries(change)) {
+    const line = new RegExp(`^const ${name} = .*$`, 'm')
+    assert.match(text, line, `模板里没有 ${name} 这一项`)
+    text = text.replace(line, `const ${name} = ${value}`)
+  }
+  write(dir, 'eslint.frontend.mjs', text)
+  return { dir, file: join(dir, 'eslint.frontend.mjs') }
+}
+
 /**
  * 一个接好模板的项目：change 是要换掉的"按项目填"的常量（名字 → 新的值，写成代码）；不换时直接引模板本身。
  * 项目自己的配置只加一项：.ts、.tsx 用 typescript-eslint 的 parser。
  */
-function project(change: Record<string, string> = {}): ESLint {
-  const dir = tempDir('codekeep-frontend-')
-  symlinkSync(NODE_MODULES, join(dir, 'node_modules'), 'dir')
-  let from = pathToFileURL(TEMPLATE).href
+function project(change: Change = {}): ESLint {
+  let dir: string
+  let from: string
   if (Object.keys(change).length) {
-    let text = readFileSync(TEMPLATE, 'utf8')
-    for (const [name, value] of Object.entries(change)) {
-      const line = new RegExp(`^const ${name} = .*$`, 'm')
-      assert.match(text, line, `模板里没有 ${name} 这一项`)
-      text = text.replace(line, `const ${name} = ${value}`)
-    }
-    write(dir, 'eslint.frontend.mjs', text)
+    dir = filled(change).dir
     from = './eslint.frontend.mjs'
+  } else {
+    dir = tempDir('codekeep-frontend-')
+    symlinkSync(NODE_MODULES, join(dir, 'node_modules'), 'dir')
+    from = pathToFileURL(TEMPLATE).href
   }
   write(
     dir,
@@ -39,7 +53,31 @@ function project(change: Record<string, string> = {}): ESLint {
   return new ESLint({ cwd: dir, overrideConfigFile: join(dir, 'eslint.config.mjs') })
 }
 
-const DEFAULT = project()
+const MODAL_METHODS = "['confirm', 'info', 'success', 'error', 'warning']"
+/** 用 antd 的项目照技能填的组件库那几项。 */
+const ANTD_FILL: Change = {
+  COMPONENT_LIBRARY: "'antd'",
+  DESC_ELEMENTS: "['Typography.Paragraph']",
+  DESC_PROPS: "[['Form.Item', 'extra'], ['Form.Item', 'tooltip']]",
+  DESC_ANY: "['description']",
+  ERROR_BANNERS: "[['Alert', 'type', ['error', 'warning'], 'title']]",
+  NOTICE_CALLS: "[['message', ['content']], ['notification', ['message', 'title', 'description']]]",
+  CONFIRM_CALLS: `[['Modal', ${MODAL_METHODS}, ['content']], ['modal', ${MODAL_METHODS}, ['content']]]`,
+  RULE_MESSAGES: "[['rules', 'message']]",
+  ENTRY_PROPS: "[['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle']]",
+  STYLE_PROPS: "['styles', 'classNames', 'rootClassName', 'offset', 'push', 'pull']",
+  UI_CLASS_PROPS: "['classNames', 'rootClassName']",
+  THEME_PROVIDERS: "['ConfigProvider']",
+  COLUMN_KEYS: "['dataIndex', 'render']",
+  NUMBER_OK: "['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 'step', 'tabIndex', 'count', 'defaultValue', 'pageSize', 'mouseEnterDelay', 'mouseLeaveDelay', 'duration', 'maxCount', 'level']",
+}
+/** antd 的填法上再换几项。 */
+const antd = (change: Change = {}): ESLint => project({ ...ANTD_FILL, ...change })
+/** 没用组件库（COMPONENT_LIBRARY 写 'none'），组件库那几项都空着，再换几项。 */
+const none = (change: Change = {}): ESLint => project({ COMPONENT_LIBRARY: "'none'", ...change })
+
+const ANTD = antd()
+const NONE = none()
 
 async function messages(eslint: ESLint, path: string, code: string): Promise<Linter.LintMessage[]> {
   const [result] = await eslint.lintText(code, { filePath: path })
@@ -49,7 +87,7 @@ async function messages(eslint: ESLint, path: string, code: string): Promise<Lin
 }
 
 /** 模板的规则报了哪些：每条写成"行号 类别"（提示里"："或"（"前面那段）。 */
-async function lint(path: string, code: string, eslint: ESLint = DEFAULT): Promise<string[]> {
+async function lint(path: string, code: string, eslint: ESLint = ANTD): Promise<string[]> {
   return (await messages(eslint, path, code)).filter(message => message.ruleId === RESTRICTED).map(message => `${message.line} ${message.message.split(/[：（]/)[0]}`)
 }
 
@@ -277,10 +315,11 @@ describe('专门放说明的位置：短也不准', () => {
     assert.deepEqual(await lint(PAGE, page("<Alert type='info' title='保存没成功，请稍后再试。' />")), ['2 说明用的横幅', '2 文字带了句子标点'])
   })
 
-  test('DESC_PROPS 填了的 [组件, 参数] 也禁，只禁对得上组件的那个参数、别的组件同名参数不禁；默认是空的，一个也不禁', async () => {
+  test('DESC_PROPS 加上的项目组件 [组件, 参数] 也禁，只禁对得上组件的那个参数、别的组件同名参数不禁；没加的不禁', async () => {
     const code = page("<PageHeader subTitle='名称' />", "<PageHeader hint='名称' />", "<Field help='名称' />", "<Other subTitle='名称' />", "<Other help='名称' />")
     assert.deepEqual(await lint(PAGE, code), [])
-    assert.deepEqual(await lint(PAGE, code, project({ DESC_PROPS: "[['PageHeader', 'subTitle'], ['Field', 'help']]" })), ['2 这个参数是放说明的', '4 这个参数是放说明的'])
+    const eslint = antd({ DESC_PROPS: "[['Form.Item', 'extra'], ['Form.Item', 'tooltip'], ['PageHeader', 'subTitle'], ['Field', 'help']]" })
+    assert.deepEqual(await lint(PAGE, code, eslint), ['2 这个参数是放说明的', '4 这个参数是放说明的'])
   })
 })
 
@@ -293,7 +332,7 @@ describe('项目自己的入口组件（按项目填）', () => {
       "<OtherBar text='删掉后找不回来，要删吗？' />",
     )
     assert.deepEqual(await lint(PAGE, code), ['2 文字带了句子标点', '3 文字超过 12 个字', '4 这个参数是放说明的', '5 文字带了句子标点'])
-    const eslint = project({ ENTRY_PROPS: "[['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle'], ['ConfirmBar', 'text'], ['Tip', 'description']]" })
+    const eslint = antd({ ENTRY_PROPS: "[['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle'], ['ConfirmBar', 'text'], ['Tip', 'description']]" })
     assert.deepEqual(await lint(PAGE, code, eslint), ['3 正文超过 16 个字', '5 文字带了句子标点'])
   })
 
@@ -304,13 +343,13 @@ describe('项目自己的入口组件（按项目填）', () => {
       "<span onClick={() => dialog.confirm({ content: '删掉后找不回来。要删吗' })} />",
     )
     assert.deepEqual(await lint(PAGE, code), ['2 文字带了句子标点', '3 文字超过 12 个字', '4 文字带了句子标点'])
-    assert.deepEqual(await lint(PAGE, code, project({ CONFIRM_CALLS: "['Modal', 'modal', 'dialog']" })), ['3 正文超过 16 个字', '4 正文不止一句'])
+    assert.deepEqual(await lint(PAGE, code, antd({ CONFIRM_CALLS: `[['Modal', ${MODAL_METHODS}, ['content']], ['modal', ${MODAL_METHODS}, ['content']], ['dialog', ${MODAL_METHODS}, ['content']]]` })), ['3 正文超过 16 个字', '4 正文不止一句'])
   })
 
   test('ENTRY_CHILDREN 加上的组件，子元素里的文字按正文算', async () => {
     const code = page('<ErrorBar>连不上服务，请稍后再试。</ErrorBar>', '<ErrorBar>连不上服务了请检查网络后再刷新一下</ErrorBar>', '<ErrorBar>连不上服务。请稍后再试</ErrorBar>')
     assert.deepEqual(await lint(PAGE, code), ['2 文字带了句子标点', '3 文字超过 12 个字', '4 文字带了句子标点'])
-    assert.deepEqual(await lint(PAGE, code, project({ ENTRY_CHILDREN: "['ErrorBar']" })), ['3 正文超过 16 个字', '4 正文不止一句'])
+    assert.deepEqual(await lint(PAGE, code, antd({ ENTRY_CHILDREN: "['ErrorBar']" })), ['3 正文超过 16 个字', '4 正文不止一句'])
   })
 
   test("ENTRY_CHILDREN 组件的子元素写成 {'…'}、{a ? '…' : '…'}、{a && '…'} 的也按正文算", async () => {
@@ -321,7 +360,7 @@ describe('项目自己的入口组件（按项目填）', () => {
       '<ErrorBar>{a && `连不上服务了请检查网络后再刷新一下`}</ErrorBar>',
       "<ErrorBar>{a ? '连不上服务，请稍后再试。' : b ? '没找到订单，请换个条件。' : '已保存'}</ErrorBar>",
     )
-    assert.deepEqual(await lint(PAGE, code, project({ ENTRY_CHILDREN: "['ErrorBar']" })), ['3 正文超过 16 个字', '4 正文不止一句', '5 正文超过 16 个字'])
+    assert.deepEqual(await lint(PAGE, code, antd({ ENTRY_CHILDREN: "['ErrorBar']" })), ['3 正文超过 16 个字', '4 正文不止一句', '5 正文超过 16 个字'])
   })
 })
 
@@ -329,7 +368,7 @@ describe('必须原样展示的整段文字（VERBATIM）', () => {
   const ICP = '鄂ICP备2024056407号-2'
   /** 超过正文、后台的字数，中间还有句号：放在哪都会报。 */
   const FOOTER = '版权所有：某某科技（武汉）有限公司。鄂ICP备2024056407号-2'
-  const VERBATIM = project({ VERBATIM: JSON.stringify([ICP, FOOTER]) })
+  const VERBATIM = antd({ VERBATIM: JSON.stringify([ICP, FOOTER]) })
   /** 同一处报了几类时先后不定：排好序比。 */
   const sorted = async (path: string, code: string, eslint?: ESLint): Promise<string[]> => (await lint(path, code, eslint)).sort()
 
@@ -358,12 +397,12 @@ describe('必须原样展示的整段文字（VERBATIM）', () => {
   test('后台（BACK）的文字也按整段放行', async () => {
     const code = `export const a = '${FOOTER}'\nexport const b = '${FOOTER}请稍后再试'\n`
     const BACK = { BACK: "['server/**/*.ts']" }
-    assert.deepEqual(await sorted('server/orders.ts', code, project(BACK)), ['1 文字带了句子标点', '1 文字超过 24 个字', '2 文字带了句子标点', '2 文字超过 24 个字'])
-    assert.deepEqual(await sorted('server/orders.ts', code, project({ ...BACK, VERBATIM: JSON.stringify([FOOTER]) })), ['2 文字带了句子标点', '2 文字超过 24 个字'])
+    assert.deepEqual(await sorted('server/orders.ts', code, antd(BACK)), ['1 文字带了句子标点', '1 文字超过 24 个字', '2 文字带了句子标点', '2 文字超过 24 个字'])
+    assert.deepEqual(await sorted('server/orders.ts', code, antd({ ...BACK, VERBATIM: JSON.stringify([FOOTER]) })), ['2 文字带了句子标点', '2 文字超过 24 个字'])
   })
 
   test('VERBATIM 里的文字带 /：载入配置时报错', async () => {
-    await assert.rejects(lint(PAGE, page('<span>名称</span>'), project({ VERBATIM: "['京ICP证/000000号']" })), /VERBATIM 里的文字不能带 \//)
+    await assert.rejects(lint(PAGE, page('<span>名称</span>'), antd({ VERBATIM: "['京ICP证/000000号']" })), /VERBATIM 里的文字不能带 \//)
   })
 })
 
@@ -534,7 +573,7 @@ describe('主题文件', () => {
   })
 
   test('就地改规则的注释不起作用：主题文件也开着 noInlineConfig', async () => {
-    const config = (await DEFAULT.calculateConfigForFile('src/theme.ts')) as Linter.Config
+    const config = (await ANTD.calculateConfigForFile('src/theme.ts')) as Linter.Config
     assert.equal(config.linterOptions?.noInlineConfig, true)
     assert.deepEqual(await lint('src/theme.ts', `/* eslint ${RESTRICTED}: ["error", "Literal"] */\nexport const theme = { colorPrimary: '#1677ff' }\n`), [])
   })
@@ -565,7 +604,7 @@ describe('后台（BACK）', () => {
   const BACK = { BACK: "['server/**/*.ts']", BACK_SKIP: "['server/seed/**']" }
 
   test('BACK、OUTPUT 为空（默认）时模板里没有后台、导出那两块', async () => {
-    const config = (await import(pathToFileURL(TEMPLATE).href)) as { default: Linter.Config[] }
+    const config = (await import(pathToFileURL(filled(ANTD_FILL).file).href)) as { default: Linter.Config[] }
     assert.deepEqual(
       config.default.map(block => block.files),
       [['src/**/*.{ts,tsx,js,jsx}'], ['src/ui/**/*.{ts,tsx,js,jsx}'], ['src/theme.ts']],
@@ -573,17 +612,17 @@ describe('后台（BACK）', () => {
   })
 
   test('填了以后：带中文的文字超过 24 个字报，用分号或不在末尾的句号连了两句报，逗号可以；样式、数字这些前端规则不管', async () => {
-    assert.deepEqual(await lint(SERVER, code, project(BACK)), ['1 文字超过 24 个字', '3 文字带了句子标点', '4 文字带了句子标点'])
+    assert.deepEqual(await lint(SERVER, code, antd(BACK)), ['1 文字超过 24 个字', '3 文字带了句子标点', '4 文字带了句子标点'])
   })
 
   test('BACK_SKIP 里的不查', async () => {
-    assert.deepEqual(await lint('server/seed/orders.ts', code, project(BACK)), [])
+    assert.deepEqual(await lint('server/seed/orders.ts', code, antd(BACK)), [])
   })
 })
 
 describe('导出、画图的代码（OUTPUT）', () => {
   const POSTER = 'src/export/poster.ts'
-  const OUTPUT = project({ OUTPUT: "['src/export/**']" })
+  const OUTPUT = antd({ OUTPUT: "['src/export/**']" })
   const code = [
     "import './poster.css'",
     "export const columns = [{ title: '名称', dataIndex: 'name', width: 120 }]",
@@ -620,9 +659,239 @@ describe('导出、画图的代码（OUTPUT）', () => {
   })
 })
 
+describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () => {
+  test('留空（模板默认）时载入配置就报错，说先填 COMPONENT_LIBRARY 和组件库那几项', async () => {
+    await assert.rejects(lint(PAGE, page('<span>名称</span>'), project()), /先填 COMPONENT_LIBRARY 和组件库那几项/)
+  })
+
+  test("写 'none' 时通用规则照报：字数、标点、<p>、<br>、空的 div/span、style 和 className、写死的数字和颜色、引样式文件、引测试目录", async () => {
+    const code = [
+      "import './a.css'",
+      "import { fake } from './__tests__/fake'",
+      'export const Page = () => (<>',
+      '<span>一二三四五六七八九十十一二</span>',
+      '<span>名称，编号</span>',
+      '<p>名称</p>',
+      '<br />',
+      '<div />',
+      '<span style={s} className={c} />',
+      '<Space size={4} />',
+      "<Icon color='#fff' />",
+      '</>)',
+      'export { fake }',
+      '',
+    ].join('\n')
+    assert.deepEqual(await lint(PAGE, code, NONE), [
+      '1 引样式文件',
+      '2 页面不用测试目录里的代码',
+      '4 文字超过 12 个字',
+      '5 文字带了句子标点',
+      '6 段落是放说明的',
+      '7 占位',
+      '8 占位',
+      '9 写样式',
+      '9 写样式',
+      '10 写死的数字',
+      '11 写死的颜色或长度',
+    ])
+  })
+
+  test("写 'none' 时就地关规则的注释照样不起作用", async () => {
+    assert.deepEqual(await lint(PAGE, `/* eslint-disable ${RESTRICTED} */\n${page('<p>名称</p>')}`, NONE), ['3 段落是放说明的'])
+    assert.deepEqual(await lint(PAGE, `/* eslint ${RESTRICTED}: off */\n${page('<p>名称</p>')}`, NONE), ['3 段落是放说明的'])
+  })
+
+  test("写 'none' 时组件库的写法一个都不认：说明组件和参数、横幅、样式参数、主题提供者、列宽不管，提示和确认框、校验、空状态里的文字按名字查", async () => {
+    const code = page(
+      '<Typography.Paragraph>名称</Typography.Paragraph>',
+      "<Form.Item extra='名称' tooltip='名称' />",
+      "<Card description='名称' />",
+      "<Alert type='info' title='名称' />",
+      '<Box sx={s} styles={s} classNames={c} rootClassName={c} offset={o} />',
+      '<ConfigProvider theme={t}><Button>新建</Button></ConfigProvider>',
+      "<span onClick={() => message.error('保存没成功，请稍后再试。')} />",
+      "<span onClick={() => Modal.confirm({ content: '删掉后找不回来，要删吗？' })} />",
+      "<Form.Item rules={[{ message: '必填，请输入' }]} />",
+      "<Popconfirm description='删掉后找不回来，要删吗？' />",
+    )
+    assert.deepEqual(await lint(PAGE, code, NONE), ['8 文字带了句子标点', '9 文字带了句子标点', '10 文字带了句子标点', '11 文字带了句子标点'])
+    assert.deepEqual(await lint('src/pages/columns.ts', "export const columns = [{ title: '名称', dataIndex: 'name', width: 120 }]\n", NONE), [])
+  })
+
+  test('模板默认的 NUMBER_OK 只放和组件库无关的（maxLength、minLength、min、max、rows、step、tabIndex、defaultValue）；组件库的 pageSize、precision、mouseEnterDelay 没加时照报', async () => {
+    const allowed = ['maxLength', 'minLength', 'min', 'max', 'rows', 'step', 'tabIndex', 'defaultValue']
+    assert.deepEqual(await lint(PAGE, page(...allowed.map(name => `<Input ${name}={3} />`)), NONE), [])
+    assert.deepEqual(await lint(PAGE, page('<Table pageSize={10} />', '<InputNumber precision={2} />', '<Tooltip mouseEnterDelay={1} />'), NONE), [
+      '2 写死的数字',
+      '3 写死的数字',
+      '4 写死的数字',
+    ])
+  })
+
+  test("写 'none' 时组件层、主题文件、后台照原来的规则", async () => {
+    const eslint = none({ BACK: "['server/**/*.ts']" })
+    const UI = 'src/ui/Button.tsx'
+    assert.deepEqual(await lint(UI, page('<button className={c} />', '<Btn style={s} />', '<p>名称</p>', '<Space size={4} />'), eslint), ['3 写样式', '4 段落是放说明的', '5 写死的数字'])
+    assert.deepEqual(await lint(UI, "import './a.css'\nimport '../b.css'\nexport const a = 1\n", eslint), ['2 只引同目录的样式文件'])
+    assert.deepEqual(await lint('src/theme.ts', "export const theme = { colorPrimary: '#1677ff', fontSize: 14 }\n", eslint), [])
+    const back = ["export const a = '订单号不对，请检查后重新输入一遍再提交给我们看看吧'", "export const c = '订单号不对；请检查'", "export const e = '订单号不对，请检查。'", ''].join('\n')
+    assert.deepEqual(await lint('server/orders.ts', back, eslint), ['1 文字超过 24 个字', '2 文字带了句子标点'])
+  })
+})
+
+describe('组件库那几项：按填进去的值起作用，没填的不管（用别家组件库的名字）', () => {
+  const OK = '保存没成功，请稍后再试。'
+  const LONG = '保存没成功，网络好像断开了请稍后再试'
+  /** 同一处报了几类时先后不定：排好序比（只用在 10 行以内的代码上）。 */
+  const sorted = async (path: string, code: string, eslint: ESLint): Promise<string[]> => (await lint(path, code, eslint)).sort()
+
+  test('STYLE_PROPS 填了 sx 才报 sx；没填（none、antd 的填法）不报', async () => {
+    const code = page('<Box sx={s} />', '<Box css={s} />')
+    assert.deepEqual(await lint(PAGE, code, NONE), [])
+    assert.deepEqual(await lint(PAGE, code, ANTD), [])
+    assert.deepEqual(await lint(PAGE, code, none({ STYLE_PROPS: "['sx']" })), ['2 写样式'])
+  })
+
+  test('THEME_PROVIDERS 填了才报页面上就地改主题；组件层里可以包', async () => {
+    const code = page('<ThemeProvider theme={t}><Button>新建</Button></ThemeProvider>')
+    assert.deepEqual(await lint(PAGE, code, NONE), [])
+    const eslint = none({ THEME_PROVIDERS: "['ThemeProvider']" })
+    assert.deepEqual(await lint(PAGE, code, eslint), ['2 就地改主题'])
+    assert.deepEqual(await lint('src/ui/Root.tsx', code, eslint), [])
+  })
+
+  test('COLUMN_KEYS 填了才报列宽：只报有这些键的对象里写死的 width', async () => {
+    const code = "export const columns = [{ field: 'name', headerName: '名称', width: 120 }]\nexport const sheet = [{ header: '名称', key: 'name', width: 20 }]\n"
+    assert.deepEqual(await lint('src/pages/columns.ts', code, NONE), [])
+    assert.deepEqual(await lint('src/pages/columns.ts', code, ANTD), [])
+    assert.deepEqual(await lint('src/pages/columns.ts', code, none({ COLUMN_KEYS: "['field']" })), ['1 写死的列宽'])
+  })
+
+  test('ERROR_BANNERS 填了才有出错横幅两条：出错级别的正文按正文算；别的级别、没写级别、级别写两次、带展开写法的报"说明用的横幅"', async () => {
+    const code = page(
+      `<Callout intent='danger' title='${OK}' />`,
+      `<Callout intent='danger' title='${LONG}' />`,
+      "<Callout intent='danger' title='保存没成功。请稍后再试' />",
+      "<Callout intent='primary' title='名称' />",
+      "<Callout title='名称' />",
+      "<Callout intent='danger' intent='primary' title='名称' />",
+      "<Callout {...props} intent='danger' title='名称' />",
+      "<Alert type='info' title='名称' />",
+    )
+    assert.deepEqual(await sorted(PAGE, code, NONE), ['2 文字带了句子标点', '3 文字带了句子标点', '3 文字超过 12 个字', '4 文字带了句子标点'])
+    assert.deepEqual(await lint(PAGE, code, none({ ERROR_BANNERS: "[['Callout', 'intent', ['danger'], 'title']]" })), [
+      '3 正文超过 16 个字',
+      '4 正文不止一句',
+      '5 说明用的横幅',
+      '6 说明用的横幅',
+      '7 说明用的横幅',
+      '8 说明用的横幅',
+    ])
+  })
+
+  test('DESC_ELEMENTS、DESC_PROPS 填了才禁（MUI 的 FormHelperText、TextField 的 helperText）；DESC_PROPS 只禁对得上的组件', async () => {
+    const code = page('<FormHelperText>名称</FormHelperText>', "<TextField helperText='名称' />", "<Select helperText='名称' />")
+    assert.deepEqual(await lint(PAGE, code, NONE), [])
+    const eslint = none({ DESC_ELEMENTS: "['FormHelperText']", DESC_PROPS: "[['TextField', 'helperText']]" })
+    assert.deepEqual(await lint(PAGE, code, eslint), ['2 段落是放说明的', '3 这个参数是放说明的'])
+  })
+
+  test('DESC_ANY 里的参数名在任何组件上都算说明；ENTRY_PROPS 里同名参数的那几个组件除外，按正文算（带点的组件名也一样）', async () => {
+    const code = page(
+      "<TextField hint='名称' />",
+      "<Card hint='名称' />",
+      `<ConfirmDialog hint='${OK}' />`,
+      "<ConfirmDialog hint='删掉后就再也找不回来了请先导出一份' />",
+      `<Dialog.Root hint='${OK}' />`,
+      "<Dialog.Other hint='名称' />",
+      "<EmptyState hint='名称' />",
+    )
+    assert.deepEqual(await sorted(PAGE, code, NONE), ['4 文字带了句子标点', '5 文字超过 12 个字', '6 文字带了句子标点'])
+    const eslint = none({ DESC_ANY: "['hint']", ENTRY_PROPS: "[['ConfirmDialog', 'hint'], ['Dialog.Root', 'hint'], ['EmptyState', 'body']]" })
+    assert.deepEqual(await lint(PAGE, code, eslint), ['2 这个参数是放说明的', '3 这个参数是放说明的', '5 正文超过 16 个字', '7 这个参数是放说明的', '8 这个参数是放说明的'])
+  })
+
+  test('NOTICE_CALLS、CONFIRM_CALLS、RULE_MESSAGES 按填的对象、方法、字段认正文：toast、modals.openConfirmModal、Controller 的 rules；没填的对象、方法、字段按名字查', async () => {
+    const code = page(
+      `<span onClick={() => toast.error('${OK}')} />`,
+      `<span onClick={() => toast.error({ description: '${LONG}' })} />`,
+      `<span onClick={() => toast.error({ title: '${OK}' })} />`,
+      `<span onClick={() => modals.openConfirmModal({ title: '${OK}' })} />`,
+      `<span onClick={() => modals.openConfirmModal({ title: '${LONG}' })} />`,
+      `<span onClick={() => modals.open({ title: '${OK}' })} />`,
+      `<span onClick={() => modals.openConfirmModal({ labels: '${OK}' })} />`,
+      `<Controller rules={{ required: '${OK}' }} />`,
+      `<Controller rules={{ required: '${LONG}' }} />`,
+      `<Controller rules={{ message: '${OK}' }} />`,
+      `<span onClick={() => message.error('${OK}')} />`,
+    )
+    const eslint = none({
+      NOTICE_CALLS: "[['toast', ['description']]]",
+      CONFIRM_CALLS: "[['modals', ['openConfirmModal'], ['title']]]",
+      RULE_MESSAGES: "[['rules', 'required']]",
+    })
+    assert.deepEqual(await lint(PAGE, code, eslint), [
+      '3 正文超过 16 个字',
+      '4 文字带了句子标点',
+      '6 正文超过 16 个字',
+      '7 文字带了句子标点',
+      '8 文字带了句子标点',
+      '10 正文超过 16 个字',
+      '11 文字带了句子标点',
+      '12 文字带了句子标点',
+    ])
+  })
+
+  test('组件名带点的照 JSX 里的写法认：DESC_ELEMENTS、DESC_PROPS、ENTRY_PROPS、ENTRY_CHILDREN、THEME_PROVIDERS、ERROR_BANNERS 都只认两段都对上的', async () => {
+    const code = page(
+      '<Field.HelperText>名称</Field.HelperText>',
+      '<HelperText>名称</HelperText>',
+      '<Other.HelperText>名称</Other.HelperText>',
+      "<Field.Root hint='名称' />",
+      "<Root hint='名称' />",
+      "<Field.Other hint='名称' />",
+      `<Dialog.Body text='${LONG}' />`,
+      `<Body text='${OK}' />`,
+      `<Toast.Description>${LONG}</Toast.Description>`,
+      `<Description>${OK}</Description>`,
+      '<Theme.Provider theme={t}><Button>新建</Button></Theme.Provider>',
+      '<Provider theme={t}><Button>新建</Button></Provider>',
+      `<Alert.Root status='error' title='${LONG}' />`,
+      "<Alert.Root status='info' title='名称' />",
+      "<Alert status='info' title='名称' />",
+    )
+    const eslint = none({
+      DESC_ELEMENTS: "['Field.HelperText']",
+      DESC_PROPS: "[['Field.Root', 'hint']]",
+      ENTRY_PROPS: "[['Dialog.Body', 'text']]",
+      ENTRY_CHILDREN: "['Toast.Description']",
+      THEME_PROVIDERS: "['Theme.Provider']",
+      ERROR_BANNERS: "[['Alert.Root', 'status', ['error'], 'title']]",
+    })
+    assert.deepEqual(await lint(PAGE, code, eslint), [
+      '2 段落是放说明的',
+      '5 这个参数是放说明的',
+      '8 正文超过 16 个字',
+      '9 文字带了句子标点',
+      '10 正文超过 16 个字',
+      '11 文字带了句子标点',
+      '12 就地改主题',
+      '14 正文超过 16 个字',
+      '15 说明用的横幅',
+    ])
+  })
+
+  test('页面上 style、className 和 STYLE_PROPS 全不准；组件层能用的 class 参数是 className 加上 UI_CLASS_PROPS（MUI 的 sx、classes）', async () => {
+    const code = page('<Button style={s} />', '<Button className={c} />', '<Button sx={s} />', '<Button classes={c} />', '<Button variant={v} />')
+    const eslint = none({ STYLE_PROPS: "['sx', 'classes']", UI_CLASS_PROPS: "['classes']" })
+    assert.deepEqual(await lint(PAGE, code, eslint), ['2 写样式', '3 写样式', '4 写样式', '5 写样式'])
+    assert.deepEqual(await lint('src/ui/Button.tsx', code, eslint), ['2 写样式', '4 写样式'])
+  })
+})
+
 describe('提示文字', () => {
   test('每条报错的提示都带"（codekeep 前端规则）"：页面、导出、组件层、后台的每一条', async () => {
-    const eslint = project({ BACK: "['server/**/*.ts']", OUTPUT: "['src/export/**']", DESC_PROPS: "[['PageHeader', 'hint']]", ENTRY_CHILDREN: "['ErrorBar']" })
+    const eslint = antd({ BACK: "['server/**/*.ts']", OUTPUT: "['src/export/**']", DESC_PROPS: "[['Form.Item', 'extra'], ['PageHeader', 'hint']]", ENTRY_CHILDREN: "['ErrorBar']" })
     for (const path of [PAGE, 'src/export/Poster.tsx', 'src/ui/Button.tsx', 'server/orders.ts']) {
       const config = (await eslint.calculateConfigForFile(path)) as Linter.Config
       const [, ...entries] = config.rules?.[RESTRICTED] as [unknown, ...Array<{ message: string }>]
