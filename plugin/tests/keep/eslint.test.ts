@@ -244,10 +244,14 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     const asked = pendingOf(r.out)
     assert.equal(asked.items.length, 1, asked.text)
     assert.match(asked.items[0] ?? '', /no-restricted-syntax.* 的参数改了，程序看不出是改松还是改紧/)
-    assert.match(asked.text, /超过 12 个字/)
-    assert.match(asked.text, /超过 20 个字/)
     assert.doesNotMatch(asked.text, /原来：\[/, '不整段列参数')
-    assert.ok(asked.text.length < 10_000, `整项 ${asked.text.length} 个字`)
+    // 只列改了的几处：列出来的每一处都是名字上限那条，原来是 12、现在是 20；没改的条目一条不列
+    const was = asked.text.split('\n').filter(line => line.includes(' 原来：'))
+    const now = asked.text.split('\n').filter(line => line.includes(' 现在：'))
+    assert.ok(was.length > 0, asked.text)
+    assert.equal(now.length, was.length, asked.text)
+    for (const line of was) assert.match(line, /超过 12 个字/)
+    for (const line of now) assert.match(line, /超过 20 个字/)
   })
 
   test('前端规则模板的 ENTRY_PROPS 加一项（选择器后面多一段、条目个数也变了）：加的那段出现在弹窗文字里', () => {

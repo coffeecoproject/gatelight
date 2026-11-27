@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { ESLint, type Linter } from 'eslint'
 import { NODE_MODULES, tempDir, write } from './helpers.ts'
 
@@ -87,7 +87,6 @@ const ANTD_FILL: Change = {
   STYLE_PROPS: "['styles', 'classNames', 'rootClassName', 'offset', 'push', 'pull']",
   UI_CLASS_PROPS: "['classNames', 'rootClassName']",
   THEME_PROVIDERS: "['ConfigProvider']",
-  COLUMN_KEYS: "['dataIndex', 'render']",
   NUMBER_OK: "['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 'step', 'tabIndex', 'count', 'defaultValue', 'pageSize', 'mouseEnterDelay', 'mouseLeaveDelay', 'duration', 'maxCount', 'level']",
 }
 /** antd 的填法上再换几项。 */
@@ -152,18 +151,37 @@ describe('页面上的固定文字只放名字', () => {
     )
   })
 
-  test('console 调用里的文字（直接参数、模板字符串、套在里面的对象和函数参数）不查字数和标点；同样的文字写在 console 外面照报', async () => {
+  test('写在 JSX 外面的文字不查字数和标点：变量、对象的字段、数组里的、函数参数（含 console）、标签模板，JSX 参数里套在函数调用里的也不查', async () => {
     const code = [
-      "console.log('保存没成功，请稍后再试。')",
-      'console.warn(`这是一段写给开发者看的调试用的文字${id}`)',
-      "console.error('订单', { detail: ['第一项，第二项'] }, fmt('套在函数参数里的文字，也不查'))",
-      "export const Page = () => <span onClick={() => console.info('点了，没反应')} />",
-      "logger.info('保存没成功，请稍后再试。')",
-      "export const tip = '保存没成功，请稍后再试。'",
-      'export const long = `这是一段写给开发者看的调试用的文字${id}`',
+      "export const prompt = '你是一个助手，请根据下面的资料回答用户的问题，不要编造'",
+      "export const options = [{ label: '很长很长很长的选项名字啊啊啊' }]",
+      "export const load = () => fetch(url).catch(() => console.error('获取失败，请重试'))",
+      "export const count = n => format('共有，条记录', n)",
+      'export const tip = `保存没成功，${name}请稍后再试。`',
+      'export const tagged = t`这是一段写在标签模板里的很长的文字啊`',
+      "export const Page = () => <span title={fmt('一二三，四')} onClick={() => track('点了，没反应')}>{prompt}</span>",
       '',
     ].join('\n')
-    assert.deepEqual(await lint('src/pages/log.tsx', code), ['5 文字带了句子标点', '6 文字带了句子标点', '7 文字超过 12 个字'])
+    assert.deepEqual(await lint('src/pages/data.tsx', code), [])
+  })
+
+  test('写在 JSX 里的文字照查：JSX 文字、参数直接写的、参数和子元素 {} 里直接写的、二选一、带条件的、再套一层二选一的、模板字符串', async () => {
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page(
+          '<span>这是一段写在页面上的很长的说明文字啊</span>',
+          '<Select placeholder="选择税率，必填" />',
+          "<span>{ok ? '甲，乙' : '乙'}</span>",
+          "<span>{ok && '甲，乙'}</span>",
+          "<span>{a ? '乙' : b ? '甲，乙' : '丙'}</span>",
+          "<span title={ok ? '甲，乙' : '乙'} />",
+          '<span title={`甲，${x}`} />',
+          "{'甲，乙'}",
+        ),
+      ),
+      ['2 文字超过 12 个字', '3 文字带了句子标点', '4 文字带了句子标点', '5 文字带了句子标点', '6 文字带了句子标点', '7 文字带了句子标点', '8 文字带了句子标点', '9 文字带了句子标点'],
+    )
   })
 
   test('UI_LANGUAGE 写 zh 时不带中文的文字不管：英文多长、带什么标点都不报', async () => {
@@ -213,52 +231,62 @@ describe('提示、确认框正文、报错按正文算：16 个字、一句话'
     })
   }
 
-  test('Modal 别的方法、别的对象的 content、不在 CONFIRM_CALLS 里的对象的 confirm、不在入口里的二选一不算入口：按名字查', async () => {
+  test('写在 JSX 外面的提示、确认框也按正文算：不在组件里的函数照样查', async () => {
+    const code = [
+      "export const save = () => message.error('保存失败。请重试')",
+      `export const warn = () => notification.error({ message: '${LONG}' })`,
+      `export const remove = () => Modal.confirm({ title: '删除订单', content: '${OK}' })`,
+      '',
+    ].join('\n')
+    assert.deepEqual(await lint('src/pages/actions.ts', code), ['1 正文不止一句', '2 正文超过 16 个字'])
+  })
+
+  test('Modal 别的方法、别的对象的 content、不在 CONFIRM_CALLS 里的对象的 confirm 不算入口：写在 JSX 外面，不查；JSX 参数里不在入口里的二选一按名字查', async () => {
     assert.deepEqual(
       await lint(
         PAGE,
         page(
-          `<span onClick={() => Modal.open({ content: '${OK}' })} />`,
-          `<span onClick={() => show({ content: '${OK}' })} />`,
-          `<span onClick={() => other.confirm({ content: '${OK}' })} />`,
+          `<span onClick={() => Modal.open({ content: '${LONG}' })} />`,
+          `<span onClick={() => show({ content: '${LONG}' })} />`,
+          `<span onClick={() => other.confirm({ content: '${LONG}' })} />`,
           `<span title={a ? '${OK}' : '无'} />`,
         ),
       ),
-      ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点', '5 文字带了句子标点'],
+      ['5 文字带了句子标点'],
     )
   })
 
-  test('message.*、notification.* 只认直接参数和参数对象里放正文的字段（message 的 content，notification 的 message、title、description）：别的字段、函数参数、更深的对象按名字查', async () => {
+  test('message.*、notification.* 只认直接参数和参数对象里放正文的字段（message 的 content，notification 的 message、title、description）：别的字段、函数参数、更深的对象不算正文，写在 JSX 外面，不查', async () => {
     assert.deepEqual(
       await lint(
         PAGE,
         page(
-          `<span onClick={() => notification.warning({ content: '${OK}' })} />`,
-          `<span onClick={() => message.open({ title: '${OK}' })} />`,
-          `<span onClick={() => message.error(fmt('${OK}'))} />`,
-          `<span onClick={() => message.open({ content: fmt('${OK}') })} />`,
-          `<span onClick={() => message.open({ content: { text: '${OK}' } })} />`,
+          `<span onClick={() => notification.warning({ content: '${LONG}' })} />`,
+          `<span onClick={() => message.open({ title: '${LONG}' })} />`,
+          `<span onClick={() => message.error(fmt('${LONG}'))} />`,
+          `<span onClick={() => message.open({ content: fmt('${LONG}') })} />`,
+          `<span onClick={() => message.open({ content: { text: '${LONG}' } })} />`,
         ),
       ),
-      ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点', '5 文字带了句子标点', '6 文字带了句子标点'],
+      [],
     )
   })
 
-  test('Modal.confirm 这些只认参数对象直接的 content：content 里的函数参数、回调里别的 content 按名字查', async () => {
+  test('Modal.confirm 这些只认参数对象直接的 content：content 里的函数参数、回调里别的 content、更深的对象不算正文，写在 JSX 外面，不查', async () => {
     assert.deepEqual(
       await lint(
         PAGE,
         page(
-          `<span onClick={() => Modal.confirm({ title: '删除订单', content: fmt('${OK}') })} />`,
-          `<span onClick={() => Modal.confirm({ title: '删除订单', onOk: () => show({ content: '${OK}' }) })} />`,
-          `<span onClick={() => Modal.warning({ footer: { content: '${OK}' } })} />`,
+          `<span onClick={() => Modal.confirm({ title: '删除订单', content: fmt('${LONG}') })} />`,
+          `<span onClick={() => Modal.confirm({ title: '删除订单', onOk: () => show({ content: '${LONG}' }) })} />`,
+          `<span onClick={() => Modal.warning({ footer: { content: '${LONG}' } })} />`,
         ),
       ),
-      ['2 文字带了句子标点', '3 文字带了句子标点', '4 文字带了句子标点'],
+      [],
     )
   })
 
-  test('嵌在入口里的标签、按钮文字、函数参数、数组按名字查（12 个字、不准句子标点）', async () => {
+  test('嵌在入口里的标签、按钮文字按名字查（12 个字、不准句子标点）；入口里的函数参数、数组不算正文，也不查', async () => {
     assert.deepEqual(
       await lint(
         PAGE,
@@ -271,7 +299,7 @@ describe('提示、确认框正文、报错按正文算：16 个字、一句话'
           "<Alert type='error' title={ok && <Tag title='没找到订单，请换个条件' />} />",
         ),
       ),
-      ['2 文字带了句子标点', '3 文字超过 12 个字', '4 文字超过 12 个字', '5 文字超过 12 个字', '6 文字带了句子标点', '7 文字带了句子标点'],
+      ['2 文字带了句子标点', '3 文字超过 12 个字', '4 文字超过 12 个字', '7 文字带了句子标点'],
     )
   })
 })
@@ -411,13 +439,13 @@ describe('项目自己的入口组件（按项目填）', () => {
     assert.deepEqual(await lint(PAGE, code, eslint), ['3 正文超过 16 个字', '5 文字带了句子标点'])
   })
 
-  test('CONFIRM_CALLS 加上的实例名，它的 confirm 这些的 content 按正文算', async () => {
+  test('CONFIRM_CALLS 加上的实例名，它的 confirm 这些的 content 按正文算；没加时写在 JSX 外面，不查', async () => {
     const code = page(
       "<span onClick={() => dialog.confirm({ content: '删掉后找不回来，要删吗？' })} />",
       "<span onClick={() => dialog.warning({ content: '删掉后就再也找不回来了请先导出一份' })} />",
       "<span onClick={() => dialog.confirm({ content: '删掉后找不回来。要删吗' })} />",
     )
-    assert.deepEqual(await lint(PAGE, code), ['2 文字带了句子标点', '3 文字超过 12 个字', '4 文字带了句子标点'])
+    assert.deepEqual(await lint(PAGE, code), [])
     assert.deepEqual(await lint(PAGE, code, antd({ CONFIRM_CALLS: `[['Modal', ${MODAL_METHODS}, ['content']], ['modal', ${MODAL_METHODS}, ['content']], ['dialog', ${MODAL_METHODS}, ['content']]]` })), ['3 正文超过 16 个字', '4 正文不止一句'])
   })
 
@@ -548,17 +576,27 @@ describe('英文页面（UI_LANGUAGE 写 en）', () => {
     )
   })
 
-  test('不像文字的字符串不当文字查，长了也不报：样式类名、日期格式、全大写的 SQL、带连字符的键、URL、单个词', async () => {
+  test('JSX 参数里不像文字的字符串不当文字查，长了也不报：样式类名、日期格式、全大写的 SQL、带连字符的键、URL、单个词', async () => {
+    const code = page(
+      "<Tag variant='flex items-center gap-2 px-4 py-2 rounded-md shadow-sm' />",
+      "<DatePicker format='YYYY-MM-DD HH:mm' />",
+      "<Query sql='SELECT id FROM users WHERE id = 1' />",
+      "<Input name='user-id' />",
+      "<a href='https://example.com/orders?page=2&size=20' />",
+      "<span title='Internationalization' />",
+    )
+    assert.deepEqual(await lint(PAGE, code, EN), [])
+  })
+
+  test('写在 JSX 外面的不查：标签模板（gql 查询）、变量、对象里的长句；写在 JSX 文字里的长句照报', async () => {
     const code = [
-      "export const cls = 'flex items-center gap-2 px-4 py-2 rounded-md shadow-sm'",
-      "export const format = 'YYYY-MM-DD HH:mm'",
-      "export const sql = 'SELECT id FROM users WHERE id = 1'",
-      "export const key = 'user-id'",
-      "export const url = 'https://example.com/orders?page=2&size=20'",
-      "export const word = 'Internationalization'",
+      'export const QUERY = gql`query { user { name email } }`',
+      "export const hint = 'Learn more about how billing works here today'",
+      "export const options = [{ label: 'Show all orders from last week, please.' }]",
+      'export const Page = () => <Learn>Learn more about how billing works here today</Learn>',
       '',
     ].join('\n')
-    assert.deepEqual(await lint('src/pages/values.ts', code, EN), [])
+    assert.deepEqual(await lint('src/pages/billing.tsx', code, EN), ['4 文字超过 5 个词'])
   })
 
   test('入口（message.error）按正文算：10 个词以内、带逗号、末尾句号放行；超过 10 个词报；中间有句号、分号报不止一句', async () => {
@@ -595,35 +633,39 @@ describe('不写具体的值', () => {
     assert.deepEqual(await lint(PAGE, page(...allowed.map(name => `<Input ${name}={3} />`), '<Typography.Title level={2}>订单</Typography.Title>', '<Upload maxCount={3} />', '<InputNumber min={-1} />')), [])
   })
 
-  test('对象里写数字的尺寸报"写死的尺寸"：minWidth、maxWidth、minHeight、maxHeight、fontSize、lineHeight、gap、margin*、padding*、zIndex', async () => {
-    const keys = ['minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'fontSize', 'lineHeight', 'gap', 'margin', 'marginTop', 'padding', 'paddingInline', 'zIndex']
-    const code = `${keys.map(key => `export const a${key} = { ${key}: 8 }`).join('\n')}\nexport const other = { total: 8, height: size }\n`
+  test('JSX 参数里的颜色、长度报"写死的颜色或长度"：#fff、#1677ff、12px、-4px、50%、2rem、1.5em、100vh；primary、不带单位的 12 不报', async () => {
+    const values = ['#fff', '#1677ff', '12px', '-4px', '50%', '2rem', '1.5em', '100vh']
     assert.deepEqual(
-      await lint('src/pages/sizes.ts', code),
-      keys.map((_, index) => `${index + 1} 写死的尺寸`),
+      await lint(PAGE, page(...values.map(value => `<Tag color='${value}' />`), "<Tag color='primary' />", "<Tag size='12' />")),
+      values.map((_, index) => `${index + 2} 写死的颜色或长度`),
     )
   })
 
-  test('width 只在表格列（同一个对象里有 dataIndex 或 render）里报"写死的列宽"；导出表格的 { header, key, width } 不报', async () => {
+  test('颜色、长度写在参数的 {} 里、二选一、带条件的也报', async () => {
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page("<Tag color={'#f50'} />", "<Tag color={ok ? '#f50' : '#000'} />", "<Tag color={ok && 'rgb(1, 2, 3)'} />", "<Tag width={a ? '8px' : b ? '50%' : 'auto'} />", "<Tag color={ok ? `rgb(${r}, 0, 0)` : 'red'} />"),
+      ),
+      ['2 写死的颜色或长度', '3 写死的颜色或长度', '3 写死的颜色或长度', '4 写死的颜色或长度', '5 写死的颜色或长度', '5 写死的颜色或长度', '6 写死的颜色或长度'],
+    )
+  })
+
+  test('写在 JSX 外面的数字、颜色、长度不查：对象里的金额和毛利、字号、税率、锚点、变量里的颜色和拼的长度，JSX 参数里套在函数调用里的', async () => {
     const code = [
-      "export const columns = [{ title: '名称', dataIndex: 'name', width: 120 }]",
-      "export const actions = [{ title: '操作', render: () => null, width: 80 }]",
-      "export const sheet = [{ header: '名称', key: 'name', width: 20 }]",
+      'export const order = { price: 100, margin: 20, gap: 5 }',
+      'export const font = { fontSize: 12 }',
+      "export const rates = [{ label: '13%' }]",
+      "export const anchor = '#feed'",
+      "export const c = '#f50'",
+      'export const w = `${x}px`',
+      "export const Page = () => <Button onClick={() => go('#feed', 12)}>{c}</Button>",
       '',
     ].join('\n')
-    assert.deepEqual(await lint('src/pages/columns.ts', code), ['1 写死的列宽', '2 写死的列宽'])
+    assert.deepEqual(await lint('src/pages/data.tsx', code), [])
   })
 
-  test('颜色、长度字面量报"写死的颜色或长度"：#fff、#1677ff、12px、-4px、50%、2rem、1.5em、100vh', async () => {
-    const values = ['#fff', '#1677ff', '12px', '-4px', '50%', '2rem', '1.5em', '100vh']
-    const code = `${values.map((value, index) => `export const v${index} = '${value}'`).join('\n')}\nexport const name = 'primary'\nexport const size = '12'\n`
-    assert.deepEqual(
-      await lint('src/pages/values.ts', code),
-      values.map((_, index) => `${index + 1} 写死的颜色或长度`),
-    )
-  })
-
-  test('颜色函数（rgb、rgba、hsl、hsla、hwb、lab、lch、oklab、oklch、color）也报，不分大小写；前后的空格不算', async () => {
+  test('JSX 参数里的颜色函数（rgb、rgba、hsl、hsla、hwb、lab、lch、oklab、oklch、color）也报，不分大小写；前后的空格不算', async () => {
     const values = [
       'rgba(0, 0, 0, 0.45)',
       'rgb(22, 119, 255)',
@@ -642,28 +684,24 @@ describe('不写具体的值', () => {
       ' 12px',
       ' rgb(1, 2, 3)',
     ]
-    const code = `${values.map((value, index) => `export const v${index} = '${value}'`).join('\n')}\nexport const word = 'colorful'\nexport const lab = 'lab results'\n`
     assert.deepEqual(
-      await lint('src/pages/colors.ts', code),
-      values.map((_, index) => `${index + 1} 写死的颜色或长度`),
+      await lint(PAGE, page(...values.map(value => `<Tag color='${value}' />`), "<Tag color='colorful' />", "<Tag color='lab results' />")),
+      values.map((_, index) => `${index + 2} 写死的颜色或长度`),
     )
   })
 
-  test('模板字符串拼的颜色（`rgb(${r}, 0, 0)`）和长度（`${w}px`、rem、vh、vw）也报；不是颜色、长度的拼接不报', async () => {
-    const code = [
-      'export const a = `rgb(${r}, 0, 0)`',
-      'export const b = `oklch(${l} 0.1 200)`',
-      'export const c = `${w}px`',
-      'export const d = `${w}rem`',
-      'export const e = `${h}vh`',
-      'export const f = `${w}vw`',
-      'export const g = `${a}-${b}`',
-      'export const h = `${count} 个`',
-      'export const i = `${w}pixels`',
-      'export const Tag2 = () => <Tag color={`rgb(${x},0,0)`} width={`${x}px`} />',
-      '',
-    ].join('\n')
-    assert.deepEqual(await lint(PAGE, code), ['1 写死的颜色或长度', '2 写死的颜色或长度', '3 写死的颜色或长度', '4 写死的颜色或长度', '5 写死的颜色或长度', '6 写死的颜色或长度', '10 写死的颜色或长度', '10 写死的颜色或长度'])
+  test('JSX 参数里模板字符串拼的颜色（`rgb(${r}, 0, 0)`）和长度（`${w}px`、rem、vh、vw）也报；不是颜色、长度的拼接不报', async () => {
+    const templates = ['`rgb(${r}, 0, 0)`', '`oklch(${l} 0.1 200)`', '`${w}px`', '`${w}rem`', '`${h}vh`', '`${w}vw`', '`${a}-${b}`', '`${count} 个`', '`${w}pixels`']
+    assert.deepEqual(await lint(PAGE, page(...templates.map(value => `<Tag color={${value}} />`), '<Tag color={`rgb(${x},0,0)`} width={`${x}px`} />')), [
+      '2 写死的颜色或长度',
+      '3 写死的颜色或长度',
+      '4 写死的颜色或长度',
+      '5 写死的颜色或长度',
+      '6 写死的颜色或长度',
+      '7 写死的颜色或长度',
+      '11 写死的颜色或长度',
+      '11 写死的颜色或长度',
+    ])
   })
 })
 
@@ -722,7 +760,7 @@ describe('代码里就地关规则不起作用', () => {
     assert.deepEqual(await lint(PAGE, `/* eslint-disable ${RESTRICTED} */\n${page('<p>名称</p>')}`), ['3 段落是放说明的'])
     assert.deepEqual(await lint(PAGE, `/* eslint ${RESTRICTED}: off */\n${page('<p>名称</p>')}`), ['3 段落是放说明的'])
     assert.deepEqual(await lint(PAGE, 'export const Page = () => (<>\n{/* eslint-disable-next-line */}\n<p>名称</p>\n</>)\n'), ['3 段落是放说明的'])
-    assert.deepEqual(await lint(PAGE, `export const a = 1\n// eslint-disable-next-line ${RESTRICTED}\nexport const b = '#fff'\n`), ['3 写死的颜色或长度'])
+    assert.deepEqual(await lint(PAGE, `export const a = 1\n// eslint-disable-next-line ${RESTRICTED}\nexport const B = () => <Icon color='#fff' />\n`), ['3 写死的颜色或长度'])
   })
 })
 
@@ -770,59 +808,12 @@ describe('测试文件', () => {
 })
 
 describe('服务端代码（不在 FRONT 里）', () => {
-  test('模板里没有 BACK、BACK_SKIP 这两项；服务端代码里带中文的长句、两句都不报（同样的代码放在 FRONT 里照报）', async () => {
+  test('模板里没有 BACK、BACK_SKIP 这两项；服务端代码里 JSX 写的说明、两句的提示都不报（同样的代码放在 FRONT 里照报）', async () => {
     const text = readFileSync(TEMPLATE, 'utf8')
     assert.doesNotMatch(text, /^const BACK(_SKIP)? = /m)
-    const code = ["export const prompt = '你是订单助手，请根据用户的问题先查订单状态，再用一句话回答。不要编造订单号'", "export const tip = '订单号不对；请检查后重新输入'", ''].join('\n')
-    assert.deepEqual(await lint('server/orders.ts', code), [])
-    assert.deepEqual((await lint('src/pages/orders.ts', code)).sort(), ['1 文字带了句子标点', '1 文字超过 12 个字', '2 文字带了句子标点', '2 文字超过 12 个字'], '同样的代码放在 FRONT 里照报')
-  })
-})
-
-describe('导出、画图的代码（OUTPUT）', () => {
-  const POSTER = 'src/export/poster.ts'
-  const OUTPUT = antd({ OUTPUT: "['src/export/**']" })
-  const code = [
-    "import './poster.css'",
-    "export const columns = [{ title: '名称', dataIndex: 'name', width: 120 }]",
-    'export const font = { fontSize: 14, padding: 8 }',
-    "export const colors = ['#fff', 'rgba(0, 0, 0, 0.45)', '12px', `${w}px`]",
-    "export const tip = '保存没成功，请稍后再试。'",
-    "export const sheet = '一二三四五六七八九十十一二'",
-    '',
-  ].join('\n')
-  const OTHERS = ['1 引样式文件', '5 文字带了句子标点', '6 文字超过 12 个字']
-  const VALUES = ['2 写死的列宽', '3 写死的尺寸', '3 写死的尺寸', '4 写死的颜色或长度', '4 写死的颜色或长度', '4 写死的颜色或长度', '4 写死的颜色或长度']
-  const byLine = (list: string[]): string[] => [...list].sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
-
-  test('OUTPUT 为空（默认）时模板里没有导出那块：只有前端、组件层、主题三块', async () => {
-    const config = (await import(pathToFileURL(filled(ANTD_FILL).file).href)) as { default: Linter.Config[] }
-    assert.deepEqual(
-      config.default.map(block => block.files),
-      [['src/**/*.{ts,tsx,js,jsx}'], ['src/ui/**/*.{ts,tsx,js,jsx}'], ['src/theme.ts']],
-    )
-  })
-
-  test('填了以后：这些文件里写死的数字、颜色、长度、尺寸、列宽不报；文字、引样式文件照报', async () => {
-    assert.deepEqual(await lint(POSTER, code, OUTPUT), OTHERS)
-  })
-
-  test('同一段代码放在页面文件里照报具体的值；OUTPUT 为空（默认）时导出的文件也照报', async () => {
-    assert.deepEqual(await lint('src/pages/poster.ts', code, OUTPUT), byLine([...OTHERS, ...VALUES]))
-    assert.deepEqual(await lint(POSTER, code), byLine([...OTHERS, ...VALUES]))
-  })
-
-  test('不准写 JSX（标签、<></>），每个标签都报；具体的值照旧不查', async () => {
-    const jsx = ['export const Size = () => <Space size={4} />', 'export const Hint = () => <><Button>新建</Button></>', "export const fill = '#fff'", ''].join('\n')
-    assert.deepEqual(await lint('src/export/Poster.tsx', jsx, OUTPUT), ['1 导出、画图的代码里不写页面组件', '2 导出、画图的代码里不写页面组件', '2 导出、画图的代码里不写页面组件'])
-    assert.deepEqual(await lint('src/export/Poster.tsx', jsx), ['1 写死的数字', '3 写死的颜色或长度'], 'OUTPUT 为空时照页面查')
-  })
-
-  test('OUTPUT 文件里就地关规则的注释照样不起作用', async () => {
-    const tip = "export const tip = '名称，编号'\n"
-    assert.deepEqual(await lint(POSTER, `/* eslint-disable ${RESTRICTED} */\n${tip}`, OUTPUT), ['2 文字带了句子标点'])
-    assert.deepEqual(await lint(POSTER, `/* eslint ${RESTRICTED}: off */\n${tip}`, OUTPUT), ['2 文字带了句子标点'])
-    assert.deepEqual(await lint('src/export/Poster.tsx', `// eslint-disable-next-line ${RESTRICTED}\nexport const P = () => <p />\n`, OUTPUT), ['2 导出、画图的代码里不写页面组件'])
+    const code = ["export const Mail = () => <p>你是订单助手，请根据用户的问题先查订单状态。</p>", "export const save = () => message.error('订单号不对；请检查后重新输入')", ''].join('\n')
+    assert.deepEqual(await lint('server/orders.tsx', code), [])
+    assert.deepEqual((await lint('src/pages/orders.tsx', code)).sort(), ['1 文字带了句子标点', '1 文字超过 12 个字', '1 段落是放说明的', '2 正文不止一句'], '同样的代码放在 FRONT 里照报')
   })
 })
 
@@ -868,7 +859,7 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
     assert.deepEqual(await lint(PAGE, `/* eslint ${RESTRICTED}: off */\n${page('<p>名称</p>')}`, NONE), ['3 段落是放说明的'])
   })
 
-  test("写 'none' 时组件库的写法一个都不认：说明组件和参数、横幅、样式参数、主题提供者、列宽不管，提示和确认框、校验、空状态里的文字按名字查", async () => {
+  test("写 'none' 时组件库的写法一个都不认：说明组件和参数、横幅、样式参数、主题提供者不管；提示和确认框、校验里的文字写在 JSX 外面，不查；空状态参数里的文字按名字查", async () => {
     const code = page(
       '<Typography.Paragraph>名称</Typography.Paragraph>',
       "<Form.Item extra='名称' tooltip='名称' />",
@@ -881,8 +872,7 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
       "<Form.Item rules={[{ message: '必填，请输入' }]} />",
       "<Popconfirm description='删掉后找不回来，要删吗？' />",
     )
-    assert.deepEqual(await lint(PAGE, code, NONE), ['8 文字带了句子标点', '9 文字带了句子标点', '10 文字带了句子标点', '11 文字带了句子标点'])
-    assert.deepEqual(await lint('src/pages/columns.ts', "export const columns = [{ title: '名称', dataIndex: 'name', width: 120 }]\n", NONE), [])
+    assert.deepEqual(await lint(PAGE, code, NONE), ['11 文字带了句子标点'])
   })
 
   test('模板默认的 NUMBER_OK 只放和组件库无关的（maxLength、minLength、min、max、rows、step、tabIndex、defaultValue）；组件库的 pageSize、precision、mouseEnterDelay 没加时照报', async () => {
@@ -922,13 +912,6 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
     const eslint = none({ THEME_PROVIDERS: "['ThemeProvider']" })
     assert.deepEqual(await lint(PAGE, code, eslint), ['2 就地改主题'])
     assert.deepEqual(await lint('src/ui/Root.tsx', code, eslint), [])
-  })
-
-  test('COLUMN_KEYS 填了才报列宽：只报有这些键的对象里写死的 width', async () => {
-    const code = "export const columns = [{ field: 'name', headerName: '名称', width: 120 }]\nexport const sheet = [{ header: '名称', key: 'name', width: 20 }]\n"
-    assert.deepEqual(await lint('src/pages/columns.ts', code, NONE), [])
-    assert.deepEqual(await lint('src/pages/columns.ts', code, ANTD), [])
-    assert.deepEqual(await lint('src/pages/columns.ts', code, none({ COLUMN_KEYS: "['field']" })), ['1 写死的列宽'])
   })
 
   test('ERROR_BANNERS 填了才有出错横幅两条：出错级别的正文按正文算；别的级别、没写级别、级别写两次、带展开写法的报"说明用的横幅"', async () => {
@@ -975,35 +958,26 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
     assert.deepEqual(await lint(PAGE, code, eslint), ['2 这个参数是放说明的', '3 这个参数是放说明的', '5 正文超过 16 个字', '7 这个参数是放说明的', '8 这个参数是放说明的'])
   })
 
-  test('NOTICE_CALLS、CONFIRM_CALLS、RULE_MESSAGES 按填的对象、方法、字段认正文：toast、modals.openConfirmModal、Controller 的 rules；没填的对象、方法、字段按名字查', async () => {
+  test('NOTICE_CALLS、CONFIRM_CALLS、RULE_MESSAGES 按填的对象、方法、字段认正文：toast、modals.openConfirmModal、Controller 的 rules；没填的对象、方法、字段不算正文，写在 JSX 外面，不查', async () => {
     const code = page(
       `<span onClick={() => toast.error('${OK}')} />`,
       `<span onClick={() => toast.error({ description: '${LONG}' })} />`,
-      `<span onClick={() => toast.error({ title: '${OK}' })} />`,
+      `<span onClick={() => toast.error({ title: '${LONG}' })} />`,
       `<span onClick={() => modals.openConfirmModal({ title: '${OK}' })} />`,
       `<span onClick={() => modals.openConfirmModal({ title: '${LONG}' })} />`,
-      `<span onClick={() => modals.open({ title: '${OK}' })} />`,
-      `<span onClick={() => modals.openConfirmModal({ labels: '${OK}' })} />`,
+      `<span onClick={() => modals.open({ title: '${LONG}' })} />`,
+      `<span onClick={() => modals.openConfirmModal({ labels: '${LONG}' })} />`,
       `<Controller rules={{ required: '${OK}' }} />`,
       `<Controller rules={{ required: '${LONG}' }} />`,
-      `<Controller rules={{ message: '${OK}' }} />`,
-      `<span onClick={() => message.error('${OK}')} />`,
+      `<Controller rules={{ message: '${LONG}' }} />`,
+      `<span onClick={() => message.error('${LONG}')} />`,
     )
     const eslint = none({
       NOTICE_CALLS: "[['toast', ['description']]]",
       CONFIRM_CALLS: "[['modals', ['openConfirmModal'], ['title']]]",
       RULE_MESSAGES: "[['rules', 'required']]",
     })
-    assert.deepEqual(await lint(PAGE, code, eslint), [
-      '3 正文超过 16 个字',
-      '4 文字带了句子标点',
-      '6 正文超过 16 个字',
-      '7 文字带了句子标点',
-      '8 文字带了句子标点',
-      '10 正文超过 16 个字',
-      '11 文字带了句子标点',
-      '12 文字带了句子标点',
-    ])
+    assert.deepEqual(await lint(PAGE, code, eslint), ['3 正文超过 16 个字', '6 正文超过 16 个字', '10 正文超过 16 个字'])
   })
 
   test('组件名带点的照 JSX 里的写法认：DESC_ELEMENTS、DESC_PROPS、ENTRY_PROPS、ENTRY_CHILDREN、THEME_PROVIDERS、ERROR_BANNERS 都只认两段都对上的', async () => {
@@ -1054,9 +1028,9 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
 })
 
 describe('提示文字', () => {
-  test('每条报错的提示都带"（codekeep 前端规则）"：页面、导出、组件层的每一条', async () => {
-    const eslint = antd({ OUTPUT: "['src/export/**']", DESC_PROPS: "[['Form.Item', 'extra'], ['PageHeader', 'hint']]", ENTRY_CHILDREN: "['ErrorBar']" })
-    for (const path of [PAGE, 'src/export/Poster.tsx', 'src/ui/Button.tsx']) {
+  test('每条报错的提示都带"（codekeep 前端规则）"：页面、组件层的每一条', async () => {
+    const eslint = antd({ DESC_PROPS: "[['Form.Item', 'extra'], ['PageHeader', 'hint']]", ENTRY_CHILDREN: "['ErrorBar']" })
+    for (const path of [PAGE, 'src/ui/Button.tsx']) {
       const config = (await eslint.calculateConfigForFile(path)) as Linter.Config
       const [, ...entries] = config.rules?.[RESTRICTED] as [unknown, ...Array<{ message: string }>]
       assert.ok(entries.length > 0, path)
