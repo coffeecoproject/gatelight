@@ -385,7 +385,7 @@ describe('项目自己的入口组件（按项目填）', () => {
 
 describe('必须原样展示的整段文字（VERBATIM）', () => {
   const ICP = '鄂ICP备2024056407号-2'
-  /** 超过正文、后台的字数，中间还有句号：放在哪都会报。 */
+  /** 超过名字、正文的字数，中间还有句号：放在哪都会报。 */
   const FOOTER = '版权所有：某某科技（武汉）有限公司。鄂ICP备2024056407号-2'
   const VERBATIM = antd({ VERBATIM: JSON.stringify([ICP, FOOTER]) })
   /** 同一处报了几类时先后不定：排好序比。 */
@@ -413,21 +413,14 @@ describe('必须原样展示的整段文字（VERBATIM）', () => {
     assert.deepEqual(await sorted(PAGE, code, VERBATIM), ['3 正文不止一句', '3 正文超过 16 个字'])
   })
 
-  test('后台（BACK）的文字也按整段放行', async () => {
-    const code = `export const a = '${FOOTER}'\nexport const b = '${FOOTER}请稍后再试'\n`
-    const BACK = { BACK: "['server/**/*.ts']" }
-    assert.deepEqual(await sorted('server/orders.ts', code, antd(BACK)), ['1 文字带了句子标点', '1 文字超过 24 个字', '2 文字带了句子标点', '2 文字超过 24 个字'])
-    assert.deepEqual(await sorted('server/orders.ts', code, antd({ ...BACK, VERBATIM: JSON.stringify([FOOTER]) })), ['2 文字带了句子标点', '2 文字超过 24 个字'])
-  })
-
   test('VERBATIM 里的文字带 /：载入配置时报错', async () => {
     await assert.rejects(lint(PAGE, page('<span>名称</span>'), antd({ VERBATIM: "['京ICP证/000000号']" })), /VERBATIM 里的文字不能带 \//)
   })
 })
 
 describe('页面文字的语言（UI_LANGUAGE 写 LANGUAGES 里的一套）', () => {
-  /** 一套假的语言：认片假名、按字数，名字 3 个字、正文 5 个字、后台 8 个字，名字里不准、。 */
-  const KATAKANA = String.raw`{ text: '[\\u30a0-\\u30ff]', words: false, name: 3, entry: 5, back: 8, namePunct: '[、。]', sentence: '。(?!\\s*$)' }`
+  /** 一套假的语言：认片假名、按字数，名字 3 个字、正文 5 个字，名字里不准、。 */
+  const KATAKANA = String.raw`{ text: '[\\u30a0-\\u30ff]', words: false, name: 3, entry: 5, namePunct: '[、。]', sentence: '。(?!\\s*$)' }`
 
   test('UI_LANGUAGE 留空（模板默认）时载入配置就报错，说写 LANGUAGES 里的一套', async () => {
     await assert.rejects(lint(PAGE, page('<span>名称</span>'), project({ COMPONENT_LIBRARY: "'antd'" })), /UI_LANGUAGE 写 LANGUAGES 里的一套/)
@@ -438,7 +431,7 @@ describe('页面文字的语言（UI_LANGUAGE 写 LANGUAGES 里的一套）', ()
   })
 
   test('用的那一套语言的正则带 /：载入配置时报错', async () => {
-    const slash = "{ text: 'a/b', words: false, name: 3, entry: 5, back: 8, namePunct: '[、]', sentence: '。' }"
+    const slash = "{ text: 'a/b', words: false, name: 3, entry: 5, namePunct: '[、]', sentence: '。' }"
     await assert.rejects(lint(PAGE, page('<span>名称</span>'), antd({ 'LANGUAGES.xx': slash, UI_LANGUAGE: "'xx'" })), /LANGUAGES 里的正则不能带 \//)
   })
 
@@ -499,7 +492,7 @@ describe('英文页面（UI_LANGUAGE 写 en）', () => {
     )
   })
 
-  test('不像文字的字符串不当文字查，长了也不报：样式类名、日期格式、SQL、带连字符的键、URL、单个词', async () => {
+  test('不像文字的字符串不当文字查，长了也不报：样式类名、日期格式、全大写的 SQL、带连字符的键、URL、单个词', async () => {
     const code = [
       "export const cls = 'flex items-center gap-2 px-4 py-2 rounded-md shadow-sm'",
       "export const format = 'YYYY-MM-DD HH:mm'",
@@ -520,50 +513,6 @@ describe('英文页面（UI_LANGUAGE 写 en）', () => {
       "<span onClick={() => message.error('Saved; reload the page')} />",
     )
     assert.deepEqual(await lint(PAGE, code, EN), ['3 正文超过 10 个词', '4 正文不止一句', '5 正文不止一句'])
-  })
-
-  test('后台（BACK）：超过 15 个词报，两句报，带逗号的一句不报；SQL 不当文字查', async () => {
-    const code = [
-      "export const a = 'The order number is wrong, please check it and enter it again before you submit it'",
-      "export const b = 'The order number is wrong, please check it and enter it again before you submit'",
-      "export const c = 'The order number is wrong. Please check it'",
-      "export const d = 'The order number is wrong; please check it'",
-      "export const e = 'The order number is wrong, please check it.'",
-      "export const f = 'SELECT id FROM orders WHERE status = 2 AND total > 100 ORDER BY created_at DESC LIMIT 20'",
-      '',
-    ].join('\n')
-    assert.deepEqual(await lint('server/orders.ts', code, antd({ UI_LANGUAGE: "'en'", BACK: "['server/**/*.ts']" })), ['1 文字超过 15 个词', '3 文字带了句子标点', '4 文字带了句子标点'])
-  })
-
-  describe('SQL 开头（SELECT、INSERT、UPDATE、DELETE、WITH、CREATE、ALTER，不分大小写）的字符串不当文字：列清单像英文单词也不报', () => {
-    const BACK = antd({ UI_LANGUAGE: "'en'", BACK: "['server/**/*.ts']" })
-    /** 第一段是 SQL 开头的模板字符串：后面几段是带逗号的列清单、超过 15 个词，单看像英文。 */
-    const TEMPLATE_SQL = 'export const q = `  select id, status, total ${extra} , note, owner, created_at, customer name, shipping address, billing address, phone number from orders where id = ${id}`'
-
-    test('后台：超过 15 个词、带分号连着两条的 SQL 不报；小写 select 开头的模板字符串整个不报；不是 SQL 开头的英文模板字符串两句照报、同样的列清单不以 SQL 开头照报超长', async () => {
-      const code = [
-        "export const a = 'SELECT id, status, total, note, owner, created_at FROM orders WHERE status = 2 AND owner = 3; DELETE FROM carts WHERE expired = true'",
-        TEMPLATE_SQL,
-        'export const c = `Could not save ${name}. Please try again`',
-        "export const d = 'id, status, total, note, owner, created_at FROM orders WHERE status = 2 AND owner = 3 AND total = 4'",
-        '',
-      ].join('\n')
-      assert.deepEqual(await lint('server/orders.ts', code, BACK), ['3 文字带了句子标点', '4 文字超过 15 个词'])
-    })
-
-    test('页面：SQL 开头的字符串、模板字符串也不当文字查', async () => {
-      const code = ["export const q = 'SELECT id, name FROM users WHERE name = $1'", TEMPLATE_SQL, "export const r = 'id, name FROM users'", ''].join('\n')
-      assert.deepEqual(await lint('src/pages/query.ts', code, EN), ['3 文字带了句子标点'])
-    })
-
-    test('入口（message.error）的正文不受影响：Select 开头的两句照报不止一句', async () => {
-      assert.deepEqual(await lint(PAGE, page("<span onClick={() => message.error('Select one order. Then try again')} />"), EN), ['2 正文不止一句'])
-    })
-
-    test('zh 下也一样：SQL 开头、里面带中文的字符串不当文字', async () => {
-      const code = ["export const q = \"SELECT id FROM orders WHERE note = '订单号不对，请检查后重新输入一遍'\"", "export const r = '订单号不对，请检查后重新输入一遍'", ''].join('\n')
-      assert.deepEqual((await lint('src/pages/query.ts', code)).sort(), ['2 文字带了句子标点', '2 文字超过 12 个字'])
-    })
   })
 
   test('VERBATIM 里的整段文字照样放行；多一句的照常报', async () => {
@@ -759,33 +708,13 @@ describe('测试文件', () => {
   })
 })
 
-describe('后台（BACK）', () => {
-  const SERVER = 'server/orders.ts'
-  const code = [
-    "export const a = '订单号不对，请检查后重新输入一遍再提交给我们看看吧'",
-    "export const b = '订单号不对，请检查后重新输入一遍再提交给我们看看'",
-    "export const c = '订单号不对；请检查'",
-    "export const d = '订单号不对。请检查'",
-    "export const e = '订单号不对，请检查。'",
-    "export const f = { padding: 8, color: '#fff', style: '12px' }",
-    '',
-  ].join('\n')
-  const BACK = { BACK: "['server/**/*.ts']", BACK_SKIP: "['server/seed/**']" }
-
-  test('BACK、OUTPUT 为空（默认）时模板里没有后台、导出那两块', async () => {
-    const config = (await import(pathToFileURL(filled(ANTD_FILL).file).href)) as { default: Linter.Config[] }
-    assert.deepEqual(
-      config.default.map(block => block.files),
-      [['src/**/*.{ts,tsx,js,jsx}'], ['src/ui/**/*.{ts,tsx,js,jsx}'], ['src/theme.ts']],
-    )
-  })
-
-  test('填了以后：带中文的文字超过 24 个字报，用分号或不在末尾的句号连了两句报，逗号可以；样式、数字这些前端规则不管', async () => {
-    assert.deepEqual(await lint(SERVER, code, antd(BACK)), ['1 文字超过 24 个字', '3 文字带了句子标点', '4 文字带了句子标点'])
-  })
-
-  test('BACK_SKIP 里的不查', async () => {
-    assert.deepEqual(await lint('server/seed/orders.ts', code, antd(BACK)), [])
+describe('服务端代码（不在 FRONT 里）', () => {
+  test('模板里没有 BACK、BACK_SKIP 这两项；服务端代码里带中文的长句、两句都不报（同样的代码放在 FRONT 里照报）', async () => {
+    const text = readFileSync(TEMPLATE, 'utf8')
+    assert.doesNotMatch(text, /^const BACK(_SKIP)? = /m)
+    const code = ["export const prompt = '你是订单助手，请根据用户的问题先查订单状态，再用一句话回答。不要编造订单号'", "export const tip = '订单号不对；请检查后重新输入'", ''].join('\n')
+    assert.deepEqual(await lint('server/orders.ts', code), [])
+    assert.deepEqual((await lint('src/pages/orders.ts', code)).sort(), ['1 文字带了句子标点', '1 文字超过 12 个字', '2 文字带了句子标点', '2 文字超过 12 个字'], '同样的代码放在 FRONT 里照报')
   })
 })
 
@@ -804,6 +733,14 @@ describe('导出、画图的代码（OUTPUT）', () => {
   const OTHERS = ['1 引样式文件', '5 文字带了句子标点', '6 文字超过 12 个字']
   const VALUES = ['2 写死的列宽', '3 写死的尺寸', '3 写死的尺寸', '4 写死的颜色或长度', '4 写死的颜色或长度', '4 写死的颜色或长度', '4 写死的颜色或长度']
   const byLine = (list: string[]): string[] => [...list].sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
+
+  test('OUTPUT 为空（默认）时模板里没有导出那块：只有前端、组件层、主题三块', async () => {
+    const config = (await import(pathToFileURL(filled(ANTD_FILL).file).href)) as { default: Linter.Config[] }
+    assert.deepEqual(
+      config.default.map(block => block.files),
+      [['src/**/*.{ts,tsx,js,jsx}'], ['src/ui/**/*.{ts,tsx,js,jsx}'], ['src/theme.ts']],
+    )
+  })
 
   test('填了以后：这些文件里写死的数字、颜色、长度、尺寸、列宽不报；文字、引样式文件照报', async () => {
     assert.deepEqual(await lint(POSTER, code, OUTPUT), OTHERS)
@@ -897,14 +834,11 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
     ])
   })
 
-  test("写 'none' 时组件层、主题文件、后台照原来的规则", async () => {
-    const eslint = none({ BACK: "['server/**/*.ts']" })
+  test("写 'none' 时组件层、主题文件照原来的规则", async () => {
     const UI = 'src/ui/Button.tsx'
-    assert.deepEqual(await lint(UI, page('<button className={c} />', '<Btn style={s} />', '<p>名称</p>', '<Space size={4} />'), eslint), ['3 写样式', '4 段落是放说明的', '5 写死的数字'])
-    assert.deepEqual(await lint(UI, "import './a.css'\nimport '../b.css'\nexport const a = 1\n", eslint), ['2 只引同目录的样式文件'])
-    assert.deepEqual(await lint('src/theme.ts', "export const theme = { colorPrimary: '#1677ff', fontSize: 14 }\n", eslint), [])
-    const back = ["export const a = '订单号不对，请检查后重新输入一遍再提交给我们看看吧'", "export const c = '订单号不对；请检查'", "export const e = '订单号不对，请检查。'", ''].join('\n')
-    assert.deepEqual(await lint('server/orders.ts', back, eslint), ['1 文字超过 24 个字', '2 文字带了句子标点'])
+    assert.deepEqual(await lint(UI, page('<button className={c} />', '<Btn style={s} />', '<p>名称</p>', '<Space size={4} />'), NONE), ['3 写样式', '4 段落是放说明的', '5 写死的数字'])
+    assert.deepEqual(await lint(UI, "import './a.css'\nimport '../b.css'\nexport const a = 1\n", NONE), ['2 只引同目录的样式文件'])
+    assert.deepEqual(await lint('src/theme.ts', "export const theme = { colorPrimary: '#1677ff', fontSize: 14 }\n", NONE), [])
   })
 })
 
@@ -1059,9 +993,9 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
 })
 
 describe('提示文字', () => {
-  test('每条报错的提示都带"（codekeep 前端规则）"：页面、导出、组件层、后台的每一条', async () => {
-    const eslint = antd({ BACK: "['server/**/*.ts']", OUTPUT: "['src/export/**']", DESC_PROPS: "[['Form.Item', 'extra'], ['PageHeader', 'hint']]", ENTRY_CHILDREN: "['ErrorBar']" })
-    for (const path of [PAGE, 'src/export/Poster.tsx', 'src/ui/Button.tsx', 'server/orders.ts']) {
+  test('每条报错的提示都带"（codekeep 前端规则）"：页面、导出、组件层的每一条', async () => {
+    const eslint = antd({ OUTPUT: "['src/export/**']", DESC_PROPS: "[['Form.Item', 'extra'], ['PageHeader', 'hint']]", ENTRY_CHILDREN: "['ErrorBar']" })
+    for (const path of [PAGE, 'src/export/Poster.tsx', 'src/ui/Button.tsx']) {
       const config = (await eslint.calculateConfigForFile(path)) as Linter.Config
       const [, ...entries] = config.rules?.[RESTRICTED] as [unknown, ...Array<{ message: string }>]
       assert.ok(entries.length > 0, path)
