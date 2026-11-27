@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -818,6 +818,219 @@ describe('停止门', () => {
     sh(fresh, `git add src && git -c user.name=t -c user.email=t@t commit -qm '只提交代码'`)
     focused(fresh)
     assert.equal(stop(fresh, 'g'), undefined)
+  })
+})
+
+describe('停止门：提交了还没合', () => {
+  const NUDGE = '这些改动都还没经过合并时的整组，接入了 testcraft 的，测试也要合并时才写'
+
+  /** 示例项目副本，切到分支 branch 上再开始会话。 */
+  function onBranch(session: string, branch = 'feat'): string {
+    const repo = sampleRepo()
+    sh(repo, `git checkout -qb ${branch}`)
+    handle({ hook_event_name: 'SessionStart', session_id: session, cwd: repo }, Date.now(), 'claude')
+    return repo
+  }
+
+  /** 往文件末尾加一行（没有就新建）。 */
+  function touch(repo: string, file: string, text = '// 改过\n'): void {
+    mkdirSync(dirname(join(repo, file)), { recursive: true })
+    appendFileSync(join(repo, file), text)
+  }
+
+  /** 改 src/price.mjs 再提交。 */
+  function commitChange(repo: string, message: string): void {
+    touch(repo, 'src/price.mjs', `// ${message}\n`)
+    commit(repo, message)
+  }
+
+  /** 第一个提交那天（git 按提交时的时区写出来的日期）。 */
+  const firstDay = (repo: string, base = 'main'): string => sh(repo, `git log --reverse --format=%cd --date=short ${base}..HEAD`).split('\n')[0]!
+
+  /** "该合了"那一项摆出来的事实。 */
+  const facts = (branch: string, count: number, since: string, files: number, list: string): string =>
+    `分支 ${branch} 攒了 ${count} 个提交没合进 main（从 ${since} 起，改了 ${files} 个文件）：${list}`
+
+  /** 停止门给出的、和"该合了"那一项有关的：拦不拦、给 agent 的话里事实那一段（到固定的说明之前）、给用户的话里"gatelight："那一行。 */
+  function told(output: Output): { decision?: string; reason?: string; notice?: string } {
+    return {
+      decision: output?.decision,
+      reason: output?.reason?.split(NUDGE)[0],
+      // 默认分支动了时给用户的话里另有 testpace 的提示
+      notice: output?.systemMessage?.split('\n').find(line => line.startsWith('gatelight：')),
+    }
+  }
+
+  /** 提醒该合了：给 agent 的话以"这个会话提交了。"开头摆出事实，给用户的那一行以"gatelight："开头、同样的事实、以"每件事做完就合。"结尾。 */
+  const nudge = (said: string): ReturnType<typeof told> => ({
+    decision: 'block',
+    reason: `这个会话提交了。${said}。`,
+    notice: `gatelight：${said}。${NUDGE}。每件事做完就合。`,
+  })
+
+  /** 这一项没提醒：不拦，给用户的话里也没有"gatelight："那一行。 */
+  const quiet = (output: Output): unknown[] => [output?.reason, told(output).notice]
+
+  test('会话在功能分支上提交了改代码的提交、工作区干净、没合进默认分支：拦一次，摆出分支、个数、从哪天起、改了几个文件、各提交说明开头；同时给用户看一行；只改 ignore 路径的文件不算进文件数', () => {
+    const repo = onBranch('u1')
+    assert.equal(stop(repo, 'u1'), undefined, '还没提交')
+    commitChange(repo, '改价格：第一步')
+    touch(repo, 'src/price.mjs')
+    touch(repo, 'src/discount.mjs')
+    touch(repo, 'docs/more.md', '说明\n')
+    commit(repo, '加折扣，顺便写说明')
+    focused(repo)
+    assert.deepEqual(told(stop(repo, 'u1')), nudge(facts('feat', 2, firstDay(repo), 2, '改价格、加折扣')))
+  })
+
+  test('同一个 HEAD 只拦一次；再提交一个又拦一次，个数跟着变多', () => {
+    const repo = onBranch('u2')
+    commitChange(repo, '改价格')
+    focused(repo)
+    assert.deepEqual(told(stop(repo, 'u2')), nudge(facts('feat', 1, firstDay(repo), 1, '改价格')))
+    assert.equal(stop(repo, 'u2'), undefined, '同一个 HEAD 只拦一次')
+    commitChange(repo, '再改一处')
+    focused(repo)
+    assert.deepEqual(told(stop(repo, 'u2')), nudge(facts('feat', 2, firstDay(repo), 1, '改价格、再改一处')))
+  })
+
+  test('提交了、当前内容又没跑过 focused：先拦跑 focused，下一次才轮到该合了，再下一次不拦', () => {
+    const repo = onBranch('u3')
+    commitChange(repo, '改价格')
+    const first = stop(repo, 'u3')
+    assert.match(first?.reason ?? '', NOT_FOCUSED)
+    assert.equal(first?.systemMessage, undefined, '跑 focused 那一项没有给用户的那一行')
+    assert.deepEqual(told(stop(repo, 'u3')), nudge(facts('feat', 1, firstDay(repo), 1, '改价格')))
+    assert.equal(stop(repo, 'u3'), undefined)
+  })
+
+  test('不提醒：在默认分支上、在 merge/ 开头的合并分支上、detached HEAD、提交只改了 ignore 路径', () => {
+    const main = sampleRepo()
+    handle({ hook_event_name: 'SessionStart', session_id: 'q1', cwd: main }, Date.now(), 'claude')
+    commitChange(main, '直接在 main 上改')
+    focused(main)
+    assert.deepEqual(quiet(stop(main, 'q1')), [undefined, undefined], '默认分支上')
+
+    const merging = onBranch('q2', 'merge/20261127-feat')
+    commitChange(merging, '合并分支上的提交')
+    focused(merging)
+    assert.equal(stop(merging, 'q2'), undefined, '合并分支上')
+
+    const detached = onBranch('q3')
+    commitChange(detached, '改价格')
+    focused(detached)
+    sh(detached, 'git checkout -q --detach')
+    assert.equal(stop(detached, 'q3'), undefined, 'detached HEAD')
+    sh(detached, 'git checkout -q feat')
+    assert.deepEqual(told(stop(detached, 'q3')), nudge(facts('feat', 1, firstDay(detached), 1, '改价格')))
+
+    const docs = onBranch('q4')
+    touch(docs, 'docs/more.md', '说明\n')
+    commit(docs, '只写说明')
+    assert.equal(stop(docs, 'q4'), undefined, '提交只改了 ignore 路径')
+  })
+
+  test('工作区还有没提交的代码改动时不提醒；没提交的只有 ignore 路径的照样提醒', () => {
+    const repo = onBranch('w1')
+    commitChange(repo, '改价格')
+    touch(repo, 'src/price.mjs', '// 还在改\n')
+    focused(repo)
+    assert.equal(stop(repo, 'w1'), undefined, '这件事还在做')
+    sh(repo, 'git checkout -q src/price.mjs')
+    touch(repo, 'docs/more.md', '说明\n')
+    focused(repo)
+    assert.deepEqual(told(stop(repo, 'w1')), nudge(facts('feat', 1, firstDay(repo), 1, '改价格')))
+  })
+
+  test('会话起点以来 HEAD 没动不提醒：分支上的提交时间晚于会话开始也一样', () => {
+    const repo = sampleRepo()
+    sh(repo, 'git checkout -qb feat')
+    touch(repo, 'src/price.mjs')
+    // 提交时间排在会话开始以后（比如别的会话刚提交的）：只靠 HEAD 没动认出不是这个会话提交的
+    sh(repo, `git add -A && GIT_COMMITTER_DATE=@${Math.floor(Date.now() / 1000) + 3600} git commit -qm '会话开始前就在的提交'`)
+    handle({ hook_event_name: 'SessionStart', session_id: 'h1', cwd: repo }, Date.now(), 'claude')
+    assert.equal(stop(repo, 'h1'), undefined)
+  })
+
+  test('合进本地默认分支或 origin 上默认分支的提交算合了：只推到 origin 也算', () => {
+    const repo = onBranch('m1')
+    commitChange(repo, '第一件')
+    commitChange(repo, '第二件')
+    focused(repo)
+    sh(repo, 'git update-ref refs/heads/main HEAD~1')
+    assert.deepEqual(told(stop(repo, 'm1')), nudge(facts('feat', 1, sh(repo, 'git log -1 --format=%cd --date=short').trim(), 1, '第二件')))
+    sh(repo, 'git update-ref refs/remotes/origin/main HEAD')
+    assert.deepEqual(quiet(stopAgain(repo, 'm1')), [undefined, undefined], '推到了 origin/main')
+  })
+
+  test('照合并技能在另一个 worktree 建 merge/ 分支、--no-ff 合进功能分支后，从功能分支收尾不提醒；别的分支上有这些提交不算', () => {
+    const repo = onBranch('m2')
+    commitChange(repo, '改价格')
+    focused(repo)
+    sh(repo, 'git branch backup')
+    assert.deepEqual(told(stop(repo, 'm2')), nudge(facts('feat', 1, firstDay(repo), 1, '改价格')))
+    const merging = join(tempDir('testpace-merge-'), 'merge')
+    sh(repo, `git worktree add -q -b merge/20261127-feat ${merging} main && cd ${merging} && git merge -q --no-ff --no-edit feat`)
+    assert.equal(stopAgain(repo, 'm2'), undefined)
+  })
+
+  test('会话只是换到一个分支、分支上的提交都早于会话开始：不提醒；会话自己再提交一个后提醒，旧提交一起列出、算进个数，从最早那个旧提交那天起', () => {
+    const repo = sampleRepo()
+    sh(repo, 'git checkout -qb other')
+    touch(repo, 'src/price.mjs')
+    sh(repo, "git add -A && GIT_COMMITTER_DATE=2026-11-01T10:00:00 GIT_AUTHOR_DATE=2026-11-01T10:00:00 git commit -qm '旧的：别的会话做的'")
+    touch(repo, 'src/price.mjs', '// 第二个旧的\n')
+    sh(repo, "git add -A && GIT_COMMITTER_DATE=2026-11-02T10:00:00 GIT_AUTHOR_DATE=2026-11-02T10:00:00 git commit -qm '又一个旧的'")
+    sh(repo, 'git checkout -q main')
+    handle({ hook_event_name: 'SessionStart', session_id: 'o1', cwd: repo }, Date.now(), 'claude')
+    sh(repo, 'git checkout -q other')
+    focused(repo)
+    assert.equal(stop(repo, 'o1'), undefined, '只是换了分支')
+    touch(repo, 'src/new.mjs')
+    commit(repo, '我的')
+    focused(repo)
+    assert.deepEqual(told(stop(repo, 'o1')), nudge(facts('other', 3, '2026-11-01', 2, '旧的、又一个旧的、我的')))
+  })
+
+  test('超过 8 个提交时只列前 8 个说明开头、后面写"等 N 个"，从旧到新', () => {
+    const repo = onBranch('l1')
+    for (let i = 1; i <= 10; i++) commitChange(repo, `第 ${i} 件：细节`)
+    focused(repo)
+    const list = `${Array.from({ length: 8 }, (_, i) => `第 ${i + 1} 件`).join('、')} 等 10 个`
+    assert.deepEqual(told(stop(repo, 'l1')), nudge(facts('feat', 10, firstDay(repo), 1, list)))
+  })
+
+  test('说明开头取到第一个冒号、逗号、句号、分号为止（全角半角都算），超过 24 个字截断加"…"', () => {
+    const repo = onBranch('t1')
+    const exactly24 = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯'
+    const subjects = ['fix(price): rounding', '加折扣，顺便改文案', 'v1.2.3, bump', '整理。再说', '拆文件；补注释', 'lint; format', exactly24, `${exactly24}辰`]
+    for (const subject of subjects) commitChange(repo, subject)
+    focused(repo)
+    const list = ['fix(price)', '加折扣', 'v1.2.3', '整理', '拆文件', 'lint', exactly24, `${exactly24}…`].join('、')
+    assert.deepEqual(told(stop(repo, 't1')), nudge(facts('feat', 8, firstDay(repo), 1, list)))
+  })
+
+  test('会话从仓库外开始、用改文件的工具改过那个仓库时提醒，话里带仓库路径；只 cd 进去看过的不提醒', () => {
+    const repo = sampleRepo()
+    sh(repo, 'git checkout -qb feat')
+    const root = sh(repo, 'git rev-parse --show-toplevel').trim()
+    const parent = tempDir('testpace-parent-')
+    handle({ hook_event_name: 'SessionStart', session_id: 'r1', cwd: parent }, Date.now(), 'claude')
+    handle({ hook_event_name: 'PreToolUse', session_id: 'r1', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && ls` } }, Date.now(), 'claude')
+    commitChange(repo, '改价格')
+    focused(repo)
+    assert.equal(stop(parent, 'r1'), undefined, '只 cd 进去看过')
+    handle({ hook_event_name: 'PreToolUse', session_id: 'r1', cwd: parent, tool_name: 'Edit', tool_input: { file_path: join(repo, 'src', 'price.mjs'), new_string: '// x' } }, Date.now(), 'claude')
+    assert.deepEqual(told(stop(parent, 'r1')), nudge(`${root} 的${facts('feat', 1, firstDay(repo), 1, '改价格')}`))
+  })
+
+  test('Codex 和 Claude Code 用同一种格式：拦下来的同时也有给用户的那一行', () => {
+    const repo = sampleRepo()
+    sh(repo, 'git checkout -qb feat')
+    handle({ hook_event_name: 'SessionStart', session_id: 'x1', cwd: repo }, Date.now(), 'codex')
+    commitChange(repo, '改价格')
+    focused(repo)
+    assert.deepEqual(told(handle({ hook_event_name: 'Stop', session_id: 'x1', cwd: repo }, Date.now(), 'codex') as Output), nudge(facts('feat', 1, firstDay(repo), 1, '改价格')))
   })
 })
 

@@ -207,6 +207,32 @@ export function landings(root: string, branch: string, sinceMs: number): Landing
   return result
 }
 
+export interface BranchCommit {
+  commit: string
+  time: number
+  /** 提交说明的第一行。 */
+  subject: string
+  /** 这个提交改了的路径（相对仓库根目录）。 */
+  paths: string[]
+}
+
+/** head 上有、bases 哪一个上都没有的提交（不含合并提交），从新到旧，带各自改了的路径。 */
+export function commitsSince(root: string, bases: readonly string[], head: string): BranchCommit[] {
+  const out = git(root, ['log', '-z', '--no-merges', '--no-renames', '--format=%x01%H%x1f%ct%x1f%s', '--name-only', head, '--not', ...bases, '--'])
+  return out
+    .split('\x01')
+    .filter(Boolean)
+    .map(chunk => {
+      const end = chunk.search(/[\n\0]/)
+      const [commit = '', time = '0', subject = ''] = (end < 0 ? chunk : chunk.slice(0, end)).split('\x1f')
+      const paths = (end < 0 ? '' : chunk.slice(end))
+        .split('\0')
+        .map(path => path.replace(/^\n+/, ''))
+        .filter(Boolean)
+      return { commit, time: Number(time) * 1000, subject, paths }
+    })
+}
+
 /** 一个提交（或分支、标签）的树；找不到返回 undefined。 */
 export function treeOf(root: string, rev: string): string | undefined {
   return gitOr(root, ['rev-parse', '--verify', '--quiet', `${rev}^{tree}`])
@@ -359,6 +385,11 @@ export function refTip(root: string, ref: string): { commit: string; tree: strin
   if (!out) return undefined
   const [commit = '', tree = ''] = out.split(' ')
   return { commit, tree }
+}
+
+/** 名字以 prefix 开头的引用（比如 refs/heads/merge/），完整的引用名。 */
+export function refsUnder(root: string, prefix: string): string[] {
+  return (gitOr(root, ['for-each-ref', '--format=%(refname)', prefix]) ?? '').split('\n').filter(Boolean)
 }
 
 /** 远程上的同名分支（refs/remotes/<远程>/<分支>）里有没有一个已经包含这个提交。 */
