@@ -6,7 +6,7 @@
 import comments from '@eslint-community/eslint-plugin-eslint-comments'
 
 // ==== 按项目填 ====
-/** 前端代码（页面、业务组件、组件层、主题都在里面）。发给 AI 的提示词这类不上页面的长文字放在这外面的文件里。 */
+/** 前端代码（页面、业务组件、组件层、主题都在里面）。 */
 const FRONT = ['src/**/*.{ts,tsx,js,jsx}']
 /** 主题文件：具体的颜色、尺寸、列宽的几档写在这里。 */
 const THEME = ['src/theme.ts']
@@ -17,8 +17,6 @@ const TESTS = ['**/*.{test,spec}.{ts,tsx,js,jsx}', '**/__tests__/**']
 /** 上面那几处在 import 里的写法（正则）：页面不准 import 它们，不然放进测试目录的组件就绕开了规则。TESTS 里加了别的目录的，这里也加上；斜杠写成 \\x2F（规则的写法里不能有 /）。 */
 const TEST_IMPORTS = '(^|\\x2F)__tests__(\\x2F|$)|\\.(test|spec)(\\.[cm]?[jt]sx?)?$'
 
-/** 生成下载文件、画图的代码（导出 Excel、canvas 画的海报这类）：做出来的不在页面上，不查具体的值，文字照查；不准写 JSX（页面组件放进来就绕开了）。没有就留空。 */
-const OUTPUT = []
 /** 能写数字的参数：和外观无关的。组件库和项目自己组件里和外观无关的（分页大小、小数位数、延迟、名字最长几个字）也加进来。 */
 const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'step', 'tabIndex', 'defaultValue']
 /** 必须原样展示的固定文字：备案号、许可证号、公司全称这类，法规或合同要求照录、缩不了的。写准确的整段文字（不能带 /），这几段不查字数和标点；说明文字不放这里。 */
@@ -80,8 +78,6 @@ const STYLE_PROPS = []
 const UI_CLASS_PROPS = []
 /** 就地改主题的组件（主题提供者）：页面上不准，组件层的根上可以包。 */
 const THEME_PROVIDERS = []
-/** 认得出一个对象是表格列的键（比如 'dataIndex'）：列宽写死了报。 */
-const COLUMN_KEYS = []
 // ==== 按项目填完 ====
 
 const LANG = LANGUAGES[UI_LANGUAGE]
@@ -139,31 +135,39 @@ const ENTRY = [
   }),
 ]
 const notEntry = ENTRY.length ? `:not(${ENTRY.join(', ')})` : ''
-/** 写在 console 调用里的：只给开发者看，不上页面。 */
-const notConsole = ":not(CallExpression[callee.object.name='console'] *)"
-const value = { Literal: 'value', TemplateElement: 'value.cooked', JSXText: 'value' }
+/**
+ * 写在 JSX 里、一定上页面的位置：JSX 文字，参数里、子元素里直接写的字符串（含二选一、带条件的）。
+ * 文字和具体的值只在这里查：写在 JSX 外面的（变量、对象、函数参数）分不出上不上页面、是不是样式，
+ * 哪里都查会把日志、提示词、查询语句、业务字段（毛利 margin、税率 '13%'）当成页面文字和样式，逼着改业务内容。
+ */
+const ATTRIBUTE = [...strings('JSXAttribute'), ...strings('JSXAttribute > JSXExpressionContainer')]
+const IN_JSX = ['JSXText', ...ATTRIBUTE, ...strings(':matches(JSXElement, JSXFragment) > JSXExpressionContainer')]
+const fieldOf = at => (at.endsWith('TemplateElement') ? 'value.cooked' : 'value')
 const NAME_HINT = '：页面上只放名字，说明不写；要告诉用户的写进提示、确认框正文或报错（codekeep 前端规则）'
 const ENTRY_HINT = '：提示、确认框正文、报错只说一句，说清怎么了、怎么办（codekeep 前端规则）'
 const STYLE_HINT = '：组件不合适就告诉用户，不在这里补；具体的值只写在主题和组件层的样式文件里，改要用户同意（codekeep 前端规则）'
 
-/** 名字：认得出是文字（LANG.text）、超过 LANG.name 个字的固定文字，或带了名字里不准的标点。JSX 文字、字符串、模板字符串的每一段，入口那几处和 console 里的除外。 */
-const nameText = Object.entries(value).flatMap(([node, field]) => [
-  { selector: `${node}[${field}=/${LANG.text}/][${field}=${longer(LANG.name, node === 'JSXText')}]${notEntry}${notConsole}${notVerbatim(field)}`, message: `文字超过 ${LANG.name} 个${UNIT}${NAME_HINT}` },
-  { selector: `${node}[${field}=/${LANG.text}/][${field}=/${LANG.namePunct}/]${notEntry}${notConsole}${notVerbatim(field)}`, message: `文字带了句子标点${NAME_HINT}` },
-])
+/** 名字：写在 JSX 里（IN_JSX）、认得出是文字（LANG.text）、超过 LANG.name 个字的固定文字，或带了名字里不准的标点。入口那几处除外。 */
+const nameText = IN_JSX.flatMap(at => {
+  const field = fieldOf(at)
+  return [
+    { selector: `${at}[${field}=/${LANG.text}/][${field}=${longer(LANG.name, at === 'JSXText')}]${notEntry}${notVerbatim(field)}`, message: `文字超过 ${LANG.name} 个${UNIT}${NAME_HINT}` },
+    { selector: `${at}[${field}=/${LANG.text}/][${field}=/${LANG.namePunct}/]${notEntry}${notVerbatim(field)}`, message: `文字带了句子标点${NAME_HINT}` },
+  ]
+})
 const entryText = ENTRY.flatMap(entry => {
-  const field = entry.endsWith('TemplateElement') ? 'value.cooked' : 'value'
+  const field = fieldOf(entry)
   return [
     { selector: `${entry}[${field}=${longer(LANG.entry, entry.endsWith('JSXText'))}]${notVerbatim(field)}`, message: `正文超过 ${LANG.entry} 个${UNIT}${ENTRY_HINT}` },
     { selector: `${entry}[${field}=/${LANG.sentence}/]${notVerbatim(field)}`, message: `正文不止一句${ENTRY_HINT}` },
   ]
 })
 // 放说明的地方只在写了固定文字时报，报在那段文字上：放的是数据（{reply}、{item.address}）的是内容，不是说明。
-// 固定文字：认得出是文字（LANG.text）的，里面任何一层的 JSX 文字，或直接写的字符串（含二选一、带条件的）；挪进变量的照样受名字的字数上限管
+// 固定文字：认得出是文字（LANG.text）的，里面任何一层的 JSX 文字，或直接写的字符串（含二选一、带条件的）
 // 不用 :has(> a > b)：esquery 里它永远不匹配
 const fixedIn = (place, children) => [
   `${place} JSXText[value=/${LANG.text}/]`,
-  ...strings(children).map(at => (at.endsWith('TemplateElement') ? `${at}[value.cooked=/${LANG.text}/]` : `${at}[value=/${LANG.text}/]`)),
+  ...strings(children).map(at => `${at}[${fieldOf(at)}=/${LANG.text}/]`),
 ]
 const descText = (places, message) => places.map(selector => ({ selector, message }))
 const descPlaces = [
@@ -189,14 +193,11 @@ const COLOR_OR_LENGTH = '/^\\s*(#[0-9a-f]{3,8}|-?\\d+(\\.\\d+)?(px|%|rem|em|vh|v
 const values = [
   { selector: `JSXAttribute:not([name.name=/^(${names(NUMBER_OK)})$/]) > JSXExpressionContainer > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
   { selector: `JSXAttribute:not([name.name=/^(${names(NUMBER_OK)})$/]) > JSXExpressionContainer > UnaryExpression > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
-  { selector: `Property[key.name=/^(minWidth|maxWidth|minHeight|maxHeight|fontSize|lineHeight|gap|margin\\w*|padding\\w*|zIndex)$/] > ${NUMBER}`, message: `写死的尺寸${STYLE_HINT}` },
-  // 表格的列（有 COLUMN_KEYS 里的键的对象）：导出表格这类别的 width 不管
-  ...(COLUMN_KEYS.length
-    ? [{ selector: `ObjectExpression:has(> Property[key.name=/^(${names(COLUMN_KEYS)})$/]) > Property[key.name='width'] > ${NUMBER}`, message: `写死的列宽（用主题里的几档，或不写）${STYLE_HINT}` }]
-    : []),
-  { selector: `Literal[value=${COLOR_OR_LENGTH}]`, message: `写死的颜色或长度${STYLE_HINT}` },
-  // 模板字符串拼的：`rgb(${r}, 0, 0)`、`${width}px`
-  { selector: `TemplateElement:matches([value.cooked=${COLOR_OR_LENGTH}], [value.cooked=/^(px|rem|vh|vw)\\b/])`, message: `写死的颜色或长度${STYLE_HINT}` },
+  // 参数里写的颜色、长度；模板字符串拼的：`rgb(${r}, 0, 0)`、`${width}px`
+  ...ATTRIBUTE.map(at => ({
+    selector: at.endsWith('TemplateElement') ? `${at}:matches([value.cooked=${COLOR_OR_LENGTH}], [value.cooked=/^(px|rem|vh|vw)\\b/])` : `${at}[value=${COLOR_OR_LENGTH}]`,
+    message: `写死的颜色或长度${STYLE_HINT}`,
+  })),
 ]
 const STYLE_FILE = 'ImportDeclaration[source.value=/\\.(css|less|s[ac]ss|styl)$/]'
 const channels = (allowed = []) => [
@@ -221,27 +222,25 @@ const front = {
   linterOptions: { noInlineConfig: true },
 }
 
-/** 页面和业务组件的规则；output 为 true 时是导出、画图的代码：不查具体的值，不准写 JSX。 */
-const pageRules = output => ({
+/** 页面和业务组件的规则。 */
+const pageRules = {
   [RESTRICTED]: [
     'error',
     ...nameText,
     ...entryText,
     ...descPlaces,
-    ...(output ? [{ selector: ':matches(JSXElement, JSXFragment)', message: '导出、画图的代码里不写页面组件：这里不查具体的值，页面上的放回页面目录（codekeep 前端规则）' }] : values),
+    ...values,
     fromTests,
     ...channels(),
     ...THEME_PROVIDERS.map(component => ({ selector: opening(component), message: `就地改主题${STYLE_HINT}` })),
     { selector: STYLE_FILE, message: `引样式文件${STYLE_HINT}` },
   ],
   ...noDisable,
-})
+}
 
 export default [
   // 页面和业务组件：只准用组件和主题给的档位
-  { ...front, files: FRONT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(false) },
-  // 导出、画图：做出来的文件和图片不在页面上，具体的值不查
-  ...(OUTPUT.length ? [{ ...front, files: OUTPUT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(true) }] : []),
+  { ...front, files: FRONT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules },
   // 组件层：可以用 className（和 UI_CLASS_PROPS）指向同目录的样式文件、在根上包主题提供者接主题；不准写行内样式和具体的值
   {
     ...front,
