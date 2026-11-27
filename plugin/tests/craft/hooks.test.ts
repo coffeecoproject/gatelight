@@ -4,7 +4,7 @@ import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { runs } from '../helpers.ts'
-import { ENV, hook, MEMBER_PRICE, sampleRepo, sh, tempDir, TEST_HEAD, TESTPACE, write } from './helpers.ts'
+import { ENV, hook, MEMBER_PRICE, sampleRepo, sh, TEST_HEAD, TESTPACE, write } from './helpers.ts'
 
 /**
  * 停止门：testcraft 拦没拦、出没出声。停止门里"跑测试"那一项（testpace 的：改了代码、当前内容没跑过 testpace focused）
@@ -54,14 +54,15 @@ describe('hooks', () => {
     assert.doesNotMatch(quiet, /testcraft/)
   })
 
-  test('会话开始：不留记录类的 .md，规则在测试里，原因写进提交说明，测试守不住的陷阱处留一句注释；方案合并时删掉，合并分支上还有会被拦；看不出为什么的代码先看提交说明', () => {
+  test('会话开始：不留记录类的 .md，规则在测试里，原因写进提交说明，测试守不住的陷阱处留一句注释；方案合并时写进提交说明、删掉文件，不说会被拦；看不出为什么的代码先看提交说明', () => {
     const told = hook(sampleRepo(), 'SessionStart')?.hookSpecificOutput.additionalContext
     const item = /^3\. .*$/m.exec(told)?.[0] ?? ''
     assert.match(item, /以测试名为准/)
     assert.match(item, /不留记录（方案、设计、说明）：规则在测试里/)
     assert.match(item, /为什么这样定、否掉的做法、用户拍板的、还没定的写进做这件事的提交说明/)
     assert.match(item, /AI 很可能好心改掉、测试又守不住的地方，在那段代码旁边留一句为什么/)
-    assert.match(item, /合并时写进提交说明、删掉文件；合并分支上收尾时仓库里还有记录类的 \.md，会被拦一次/)
+    assert.match(item, /方案只在分支上讨论时写，合并时写进提交说明、删掉文件。/)
+    assert.doesNotMatch(item, /会被拦/)
     assert.match(item, /先看那几行的提交说明（git log -L、git blame）/)
     assert.doesNotMatch(item, /设计文档只写/)
   })
@@ -80,117 +81,14 @@ describe('hooks', () => {
     rmSync(join(repo, 'tests/price.test.mjs'))
     assert.equal(stopped(repo, 's'), undefined)
   })
-})
 
-describe('停止门：合并分支上收记录', () => {
-  /** 停止门里"收记录"这一项拦下来时给 agent 的话；没拦（或拦的是别的）为 undefined。 */
-  const records = (repo: string, session: string): string | undefined => {
-    const reason: string = hook(repo, 'Stop', { session_id: session })?.reason ?? ''
-    return /落地前收记录/.test(reason) ? reason : undefined
-  }
-  /** 话里列出来的文件，排好序。 */
-  const listed = (reason: string | undefined): string[] => (/还有记录类的 \.md（([^）]*)）/.exec(reason ?? '')?.[1] ?? '').split('、').filter(Boolean).sort()
-  const commitAll = (repo: string, message: string): void => void sh(repo, `git add -A && git commit -qm '${message}'`)
-  const toMerge = (repo: string): void => void sh(repo, 'git checkout -qb merge/20261127-feature')
-
-  test('合并分支上还有记录类的 .md：拦一次，列出文件，要把原因写进提交说明、删掉、重新合；同一个提交第二次不拦，有了新提交还有就再拦，删掉提交后不拦', () => {
+  test('停止门：合并分支上仓库里留着方案这类 .md，testcraft 不拦', () => {
     const repo = sampleRepo()
-    write(repo, 'docs/plan.md', '# 方案\n')
-    write(repo, 'design.md', '# 设计\n')
-    write(repo, 'src/notes.md', '# 说明\n')
-    commitAll(repo, '写方案')
-    assert.equal(records(repo, 's'), undefined, '功能分支上不拦')
-    toMerge(repo)
-    const reason = records(repo, 's')
-    assert.match(reason ?? '', /^落地前收记录：仓库里还有记录类的 \.md/)
-    assert.deepEqual(listed(reason), ['design.md', 'docs/plan.md', 'src/notes.md'])
-    assert.match(reason!, /写进提交说明/)
-    assert.match(reason!, /删掉这些文件/)
-    assert.match(reason!, /重新合一次/)
-    assert.equal(records(repo, 's'), undefined, '同一个提交只拦一次')
-    write(repo, 'docs/plan.md', '# 方案\n\n补一句\n')
-    commitAll(repo, '改方案')
-    assert.deepEqual(listed(records(repo, 's')), ['design.md', 'docs/plan.md', 'src/notes.md'], '新提交上还有，再拦')
-    sh(repo, "git rm -q docs/plan.md design.md src/notes.md && git commit -qm '收记录'")
-    assert.equal(records(repo, 's'), undefined, '删掉提交后不拦')
-  })
-
-  test('只算提交了的：合并分支上没提交的记录类 .md（新写的、暂存了的）不拦', () => {
-    const repo = sampleRepo()
-    toMerge(repo)
-    write(repo, 'docs/draft.md', '# 草稿\n')
-    write(repo, 'docs/staged.md', '# 暂存\n')
-    sh(repo, 'git add docs/staged.md')
-    assert.equal(records(repo, 's'), undefined)
-    sh(repo, "git commit -qm '提交暂存的'")
-    assert.deepEqual(listed(records(repo, 's')), ['docs/staged.md'], '提交了的才算，没提交的草稿照样不列')
-  })
-
-  test('默认分支上不拦；没接入 testcraft 的仓库在合并分支上也不拦', () => {
-    const repo = sampleRepo(dir => write(dir, 'docs/plan.md', '# 方案\n'))
-    sh(repo, 'git checkout -q main')
-    assert.equal(records(repo, 's'), undefined, '默认分支上不拦')
-    toMerge(repo)
-    assert.deepEqual(listed(records(repo, 's')), ['docs/plan.md'], '默认分支上就有的记录，合并分支上照样算')
-    const outside = sampleRepo(dir => {
-      rmSync(join(dir, '.testcraft'), { recursive: true })
-      write(dir, 'docs/plan.md', '# 方案\n')
-    })
-    toMerge(outside)
-    assert.equal(records(outside, 's'), undefined)
-  })
-
-  test('指令类的 .md 不算记录：任何目录下的 CLAUDE.md、AGENTS.md、MODULE.md，路径里有 skills、.testcraft、.claude 目录的；只有这些不拦', () => {
-    const repo = sampleRepo()
-    for (const path of [
-      'CLAUDE.md',
-      'src/AGENTS.md',
-      'src/pay/MODULE.md',
-      'plugin/skills/merge/SKILL.md',
-      'skills/a.md',
-      '.testcraft/rules/1.md',
-      '.claude/agents/writer.md',
-      'packages/app/.claude/notes.md',
-    ])
-      write(repo, path, '# 指令\n')
-    commitAll(repo, '指令')
-    toMerge(repo)
-    assert.equal(records(repo, 's'), undefined)
-    // 名字像、但不是那几个目录或文件名的照样算记录
-    write(repo, 'docs/skills.md', '# 记录\n')
-    write(repo, 'myskills/plan.md', '# 记录\n')
-    write(repo, 'src/CLAUDE-notes.md', '# 记录\n')
-    commitAll(repo, '记录')
-    assert.deepEqual(listed(records(repo, 's')), ['docs/skills.md', 'myskills/plan.md', 'src/CLAUDE-notes.md'])
-  })
-
-  test('README.md 只在这个分支相对默认分支的分叉点新加或改过时才算记录，没改过的不拦', () => {
-    const repo = sampleRepo(dir => {
-      write(dir, 'README.md', '# 怎么装\n')
-      write(dir, 'src/README.md', '# 怎么装\n')
-    })
-    toMerge(repo)
-    assert.equal(records(repo, 's'), undefined, '没改过的 README 不拦')
-    write(repo, 'src/README.md', '# 怎么装\n\n这次的方案\n')
-    commitAll(repo, '改 README')
-    assert.deepEqual(listed(records(repo, 's')), ['src/README.md'])
-    write(repo, 'pkg/README.md', '# 新包\n')
-    commitAll(repo, '加 README')
-    assert.deepEqual(listed(records(repo, 's')), ['pkg/README.md', 'src/README.md'])
-  })
-
-  test('会话从仓库外开始、改过那个仓库：话里写出仓库路径', () => {
-    const repo = sampleRepo()
-    write(repo, 'docs/plan.md', '# 方案\n')
-    commitAll(repo, '写方案')
-    toMerge(repo)
-    const root = sh(repo, 'git rev-parse --show-toplevel').trim()
-    const parent = tempDir('testcraft-parent-')
-    const env = { CLAUDE_PLUGIN_DATA: tempDir('testcraft-data-') }
-    hook(parent, 'SessionStart', { session_id: 'n' }, env)
-    hook(parent, 'PreToolUse', { session_id: 'n', tool_name: 'Edit', tool_input: { file_path: join(repo, 'src', 'price.mjs'), new_string: '// x' } }, env)
-    const reason: string = hook(parent, 'Stop', { session_id: 'n' }, env)?.reason ?? ''
-    assert.ok(reason.startsWith(`落地前收记录：${root} 里还有记录类的 .md（docs/plan.md）`), reason)
+    write(repo, '方案.md', '# 方案\n')
+    write(repo, 'docs/design.md', '# 设计\n')
+    sh(repo, "git add -A && git commit -qm '写方案' && git checkout -qb merge/20261127-feature")
+    hook(repo, 'SessionStart', { session_id: 's' })
+    assert.equal(stopped(repo, 's'), undefined)
   })
 })
 

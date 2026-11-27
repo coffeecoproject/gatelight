@@ -152,6 +152,20 @@ describe('页面上的固定文字只放名字', () => {
     )
   })
 
+  test('console 调用里的文字（直接参数、模板字符串、套在里面的对象和函数参数）不查字数和标点；同样的文字写在 console 外面照报', async () => {
+    const code = [
+      "console.log('保存没成功，请稍后再试。')",
+      'console.warn(`这是一段写给开发者看的调试用的文字${id}`)',
+      "console.error('订单', { detail: ['第一项，第二项'] }, fmt('套在函数参数里的文字，也不查'))",
+      "export const Page = () => <span onClick={() => console.info('点了，没反应')} />",
+      "logger.info('保存没成功，请稍后再试。')",
+      "export const tip = '保存没成功，请稍后再试。'",
+      'export const long = `这是一段写给开发者看的调试用的文字${id}`',
+      '',
+    ].join('\n')
+    assert.deepEqual(await lint('src/pages/log.tsx', code), ['5 文字带了句子标点', '6 文字带了句子标点', '7 文字超过 12 个字'])
+  })
+
   test('UI_LANGUAGE 写 zh 时不带中文的文字不管：英文多长、带什么标点都不报', async () => {
     assert.deepEqual(await lint(PAGE, page('<span>This is a very long english sentence, really.</span>', "<span title='Hello, world! (yes): no.' />")), [])
   })
@@ -262,12 +276,54 @@ describe('提示、确认框正文、报错按正文算：16 个字、一句话'
   })
 })
 
-describe('专门放说明的位置：短也不准', () => {
-  test('<p> 和 Typography.Paragraph 报"段落是放说明的"，一个段落只报一次', async () => {
+describe('专门放说明的位置：写了固定文字，短也不准；放数据的不报', () => {
+  test('<p> 和 Typography.Paragraph 里写了固定文字报"段落是放说明的"；Typography.Text 不算', async () => {
     assert.deepEqual(await lint(PAGE, page('<p>名称</p>', '<Typography.Paragraph>名称</Typography.Paragraph>', '<Typography.Text>名称</Typography.Text>')), [
       '2 段落是放说明的',
       '3 段落是放说明的',
     ])
+  })
+
+  test('段落里放的是数据（变量、字段、图片、数字）或空着：不报；写了固定文字的报在那段文字上：任何一层的 JSX 文字、直接写的字符串、二选一、模板字符串', async () => {
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page(
+          '<p>{reply}</p>',
+          '<Typography.Paragraph>{item.summary}</Typography.Paragraph>',
+          '<p><Image width={100} src={x} /></p>',
+          '<p>{3}</p>',
+          '<p />',
+          '<p>说明</p>',
+          '<p><span>嵌套</span></p>',
+          "<p>{ok ? '甲' : '乙'}</p>",
+          '<p>{`模板 ${x}`}</p>',
+          '<Typography.Paragraph>{item.name} 说明</Typography.Paragraph>',
+        ),
+      ),
+      ['4 写死的数字', '7 段落是放说明的', '8 段落是放说明的', '9 段落是放说明的', '9 段落是放说明的', '10 段落是放说明的', '11 段落是放说明的'],
+    )
+  })
+
+  test('放说明的参数（DESC_PROPS、DESC_ANY）放的是数据不报；写了固定文字的报：直接写的、带条件的、二选一、参数里的标签里写的', async () => {
+    assert.deepEqual(
+      await lint(
+        PAGE,
+        page(
+          "<Card.Meta title='订单' description={item.address} />",
+          "<Card.Meta title='订单' description={<span>{item.city}</span>} />",
+          "<Form.Item name='a' extra={hint} />",
+          "<Card.Meta title='订单' description='固定' />",
+          "<Card.Meta title='订单' description={ok && '固定'} />",
+          "<Card.Meta title='订单' description={<span>固定</span>} />",
+          "<Form.Item name='a' extra={ok ? '甲' : '乙'} />",
+          "<Form.Item name='a' tooltip={<span>固定</span>} />",
+        ),
+      ),
+      ['5 这个参数是放说明的', '6 这个参数是放说明的', '7 这个参数是放说明的', '8 这个参数是放说明的', '8 这个参数是放说明的', '9 这个参数是放说明的'],
+    )
+    const eslint = none({ DESC_ANY: "['extra']" })
+    assert.deepEqual(await lint(PAGE, page("<Card extra='固定' />", '<Card extra={item.extra} />'), eslint), ['2 这个参数是放说明的'])
   })
 
   test('Form.Item 的 extra、tooltip 报；Card、Result、Drawer 的 extra 是放按钮的，不报', async () => {
@@ -280,7 +336,7 @@ describe('专门放说明的位置：短也不准', () => {
     )
   })
 
-  test('description 属性都报，Popconfirm、Empty 这些入口组件除外；Alert 的 description 照禁，出错横幅也禁', async () => {
+  test('description 属性写了固定文字都报，Popconfirm、Empty 这些入口组件除外；Alert 的 description 照禁，出错横幅也禁', async () => {
     assert.deepEqual(
       await lint(
         PAGE,
@@ -513,6 +569,11 @@ describe('英文页面（UI_LANGUAGE 写 en）', () => {
       "<span onClick={() => message.error('Saved; reload the page')} />",
     )
     assert.deepEqual(await lint(PAGE, code, EN), ['3 正文超过 10 个词', '4 正文不止一句', '5 正文不止一句'])
+  })
+
+  test('放说明的地方按英文认固定文字：单个词不算文字、不报，两个词以上的报', async () => {
+    const code = page('<p>Note</p>', '<p>Learn more</p>', "<Card.Meta title='Order' description='Details' />", "<Card.Meta title='Order' description='Learn more' />")
+    assert.deepEqual(await lint(PAGE, code, EN), ['3 段落是放说明的', '5 这个参数是放说明的'])
   })
 
   test('VERBATIM 里的整段文字照样放行；多一句的照常报', async () => {
@@ -761,7 +822,7 @@ describe('导出、画图的代码（OUTPUT）', () => {
     const tip = "export const tip = '名称，编号'\n"
     assert.deepEqual(await lint(POSTER, `/* eslint-disable ${RESTRICTED} */\n${tip}`, OUTPUT), ['2 文字带了句子标点'])
     assert.deepEqual(await lint(POSTER, `/* eslint ${RESTRICTED}: off */\n${tip}`, OUTPUT), ['2 文字带了句子标点'])
-    assert.deepEqual(await lint('src/export/Poster.tsx', `// eslint-disable-next-line ${RESTRICTED}\nexport const P = () => <p />\n`, OUTPUT), ['2 导出、画图的代码里不写页面组件', '2 段落是放说明的'])
+    assert.deepEqual(await lint('src/export/Poster.tsx', `// eslint-disable-next-line ${RESTRICTED}\nexport const P = () => <p />\n`, OUTPUT), ['2 导出、画图的代码里不写页面组件'])
   })
 })
 
