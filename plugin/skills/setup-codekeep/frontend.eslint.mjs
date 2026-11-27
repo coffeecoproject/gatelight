@@ -1,5 +1,5 @@
-// codekeep 的前端规则模板（React + antd）：照 setup-codekeep 技能"有前端代码的项目"一节，复制到项目里（比如 eslint.frontend.mjs），
-// 改好"按项目填"的几项，在 eslint.config.mjs 里 `...frontend` 接进去。只用 eslint 自带的 no-restricted-syntax 和 eslint-comments 插件。
+// codekeep 的前端规则模板（React，和组件库无关）：照 setup-codekeep 技能"有前端代码的项目"一节，复制到项目里（比如 eslint.frontend.mjs），
+// 改好"按项目填"的几项（组件库那几项照项目用的组件库的文档填），在 eslint.config.mjs 里 `...frontend` 接进去。只用 eslint 自带的 no-restricted-syntax 和 eslint-comments 插件。
 // 管两件事：页面上不加说明文字；用了组件不在页面里写样式、写具体的值去补。规则是"默认都不准，只放行少数几种"。
 // 项目自己的配置里也用了 no-restricted-syntax 的：同一个文件只认最后一份，要把两边的条目合进一份。
 
@@ -23,25 +23,47 @@ const OUTPUT = []
 const BACK = []
 /** 后台不管的：种子数据、演示数据、测试、迁移。 */
 const BACK_SKIP = []
-/** 能写数字的参数：和外观无关的。项目自己组件里的（名字最长几个字、最早哪一年）也加进来。 */
-const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'precision', 'step', 'tabIndex', 'count', 'defaultValue', 'pageSize', 'mouseEnterDelay', 'mouseLeaveDelay', 'duration', 'maxCount', 'level']
-/** 项目自己组件里专门放说明的参数（副标题、帮助文字这类）：[组件名, 参数名]。确认框、出错和空状态组件的正文参数不放这里，放 ENTRY_PROPS。 */
-const DESC_PROPS = []
-/** 前端提示：[调用的对象名, 参数对象里放正文的字段]（message.success('…')、notification.error({ message, description }) 这种）。直接写在参数里的文字都算。 */
-const NOTICE_CALLS = [['message', ['content']], ['notification', ['message', 'title', 'description']]]
-/** 确认框的调用对象：静态的 Modal，和 App.useApp()、Modal.useModal() 拿到的实例（项目里给实例起了别的名字的加进来）。 */
-const CONFIRM_CALLS = ['Modal', 'modal']
-/** 确认框、出错和空状态的正文：[组件名, 参数名]。项目自己封装的确认框、出错条、空状态组件加进来。 */
-const ENTRY_PROPS = [['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle']]
-/** 正文写在子元素里的项目组件（<ErrorBar>连不上服务</ErrorBar>）。 */
-const ENTRY_CHILDREN = []
+/** 能写数字的参数：和外观无关的。组件库和项目自己组件里和外观无关的（分页大小、小数位数、延迟、名字最长几个字）也加进来。 */
+const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'step', 'tabIndex', 'defaultValue']
 /** 必须原样展示的固定文字：备案号、许可证号、公司全称这类，法规或合同要求照录、缩不了的。写准确的整段文字（不能带 /），这几段不查字数和标点；说明文字不放这里。 */
 const VERBATIM = []
 /** 名字、正文、后台的字数上限。 */
 const NAME_MAX = 12
 const ENTRY_MAX = 16
 const BACK_MAX = 24
+
+// ---- 组件库：照项目用的组件库的文档填（gatelight 不预填哪一家），项目自己封装的组件也填进来。组件名带点的照 JSX 里写（'Form.Item'）----
+/** 项目用的组件库（比如 'antd'、'@mui/material'），没用组件库的写 'none'。不填会报错：下面几项要照它的文档填，留空的地方规则就管不到。 */
+const COMPONENT_LIBRARY = ''
+/** 放说明的元素（段落、帮助文字这类组件）。<p> 已经算了。 */
+const DESC_ELEMENTS = []
+/** 放说明的参数（副标题、帮助文字、提示气泡这类）：[组件名, 参数名]，一律不准写。只认组件名对得上的。 */
+const DESC_PROPS = []
+/** 不管哪个组件上都算说明的参数名（比如 'description'）；ENTRY_PROPS 里同名的那几处按正文算。 */
+const DESC_ANY = []
+/** 出错条：[组件名, 级别参数, [出错的级别...], 正文参数]。只准标成这几种级别（级别参数只写一次、不用展开写法），正文按正文算；别的级别是放说明的横幅，不准。 */
+const ERROR_BANNERS = []
+/** 提示：[调用的对象名, [参数对象里放正文的字段...]]（toast('…')、notify.error({ message }) 这种），直接写在参数里的文字也算。 */
+const NOTICE_CALLS = []
+/** 确认框：[调用的对象名, [方法名...], [参数对象里放正文的字段...]]。用 hook 拿到实例、起了别的名字的，按项目里的名字加。 */
+const CONFIRM_CALLS = []
+/** 表单校验没过时的那一句：[参数名, 字段名]（写进这个参数的对象里这个字段的文字）。 */
+const RULE_MESSAGES = []
+/** 确认框、出错和空状态组件的正文：[组件名, 参数名]。 */
+const ENTRY_PROPS = []
+/** 正文写在子元素里的组件（<ErrorBar>连不上服务</ErrorBar>）。 */
+const ENTRY_CHILDREN = []
+/** style、className 以外能写样式、改布局的参数（各家叫法不同，比如 sx、css、styles、classNames、栅格的 offset），页面上都不准。 */
+const STYLE_PROPS = []
+/** 组件层里可以指向同目录样式文件的参数：className 以外的（比如 classNames）。 */
+const UI_CLASS_PROPS = []
+/** 就地改主题的组件（主题提供者）：页面上不准，组件层的根上可以包。 */
+const THEME_PROVIDERS = []
+/** 认得出一个对象是表格列的键（比如 'dataIndex'）：列宽写死了报。 */
+const COLUMN_KEYS = []
 // ==== 按项目填完 ====
+
+if (!COMPONENT_LIBRARY) throw new Error('codekeep 前端规则：先填 COMPONENT_LIBRARY 和组件库那几项（照 setup-codekeep 技能"有前端代码的项目"一节）')
 
 const CJK = '[\\u4e00-\\u9fff]'
 /** 名字里不准的标点；末尾的一个冒号（"名称：值"）放行。 */
@@ -53,41 +75,49 @@ const longer = max => `/^[\\s\\S]{${max + 1},}$/`
 if (VERBATIM.some(text => text.includes('/'))) throw new Error('VERBATIM 里的文字不能带 /（esquery 的正则写不了）')
 /** 不是 VERBATIM 里的整段文字（JSX 文字前后的空白不算）。 */
 const notVerbatim = field => (VERBATIM.length ? `:not([${field}=/^\\s*(${names(VERBATIM)})\\s*$/])` : '')
+/** 按 JSX 里的名字认组件：prefix 是名字所在的位置（开标签上是 ''，整个元素上是 'openingElement.'），带点的（Form.Item）认两段。 */
+const named = (prefix, component) => {
+  const [object, property] = component.split('.')
+  return property ? `[${prefix}name.object.name='${object}'][${prefix}name.property.name='${property}']` : `[${prefix}name.name='${object}']`
+}
+const opening = component => `JSXOpeningElement${named('', component)}`
 
 // 入口：写在这几处的文字按正文算（16 个字、一句话），不按名字算
 // 放行只对准那一处：都是直接子节点，不用后代（后代会把嵌在里面的标签、按钮、函数参数也放成正文）
-const confirm = `CallExpression[callee.object.name=/^(${names(CONFIRM_CALLS)})$/][callee.property.name=/^(confirm|info|success|error|warning)$/] > ObjectExpression > Property[key.name='content']`
 // 写在 parent 下的固定文字：直接写的，和写成二选一（a ? '…' : '…'）、带条件（a && '…'）的，再套一层二选一的也算
 const branch = ':matches(ConditionalExpression, LogicalExpression)'
 const strings = parent =>
   [parent, `${parent} > ${branch}`, `${parent} > ${branch} > ${branch}`].flatMap(at => [`${at} > Literal`, `${at} > TemplateLiteral > TemplateElement`])
-// 出错条：antd 的 Alert 只准 error、warning 两种（写成两者二选一的也算），它的 title 就是出错那一句；description 照样禁。
-// type 只写一次、没有展开写法（{...props}）的才算：React 取最后一个值，写两次、展开的看不出最后是哪种
-const ERROR_LEVEL = '/^(error|warning)$/'
-const errorType = `JSXAttribute[name.name='type']:matches([value.value=${ERROR_LEVEL}], [value.expression.value=${ERROR_LEVEL}], [value.expression.type='ConditionalExpression'][value.expression.consequent.value=${ERROR_LEVEL}][value.expression.alternate.value=${ERROR_LEVEL}])`
-const typeTwice = "JSXAttribute[name.name='type'] ~ JSXAttribute[name.name='type']"
-const errorAlert = `JSXOpeningElement[name.name='Alert']:has(> ${errorType}):not(:has(> JSXSpreadAttribute)):not(:has(> ${typeTwice}))`
-const errorTitle = `${errorAlert} > JSXAttribute[name.name='title']`
+// 出错条：级别只写一次、没有展开写法（{...props}）的才认得出是出错：React 取最后一个值，写两次、展开的看不出最后是哪种
+const banners = ERROR_BANNERS.map(([component, levelProp, levels, titleProp]) => {
+  const level = `/^(${names(levels)})$/`
+  const isError = `JSXAttribute[name.name='${levelProp}']:matches([value.value=${level}], [value.expression.value=${level}], [value.expression.type='ConditionalExpression'][value.expression.consequent.value=${level}][value.expression.alternate.value=${level}])`
+  const twice = `JSXAttribute[name.name='${levelProp}'] ~ JSXAttribute[name.name='${levelProp}']`
+  return {
+    title: `${opening(component)}:has(> ${isError}):not(:has(> JSXSpreadAttribute)):not(:has(> ${twice})) > JSXAttribute[name.name='${titleProp}']`,
+    other: `${opening(component)}:matches(:not(:has(> ${isError})), :has(> JSXSpreadAttribute), :has(> ${twice}))`,
+  }
+})
 const ENTRY = [
-  `${errorTitle} > Literal`,
-  ...strings(`${errorTitle} > JSXExpressionContainer`),
+  ...banners.flatMap(({ title }) => [`${title} > Literal`, ...strings(`${title} > JSXExpressionContainer`)]),
   ...NOTICE_CALLS.flatMap(([object, fields]) => {
     const call = `CallExpression[callee.object.name='${object}']`
     return [...strings(call), ...strings(`${call} > ObjectExpression > Property[key.name=/^(${names(fields)})$/]`)]
   }),
-  ...strings(confirm),
-  // 表单校验没过时的那一句
-  ...strings("JSXAttribute[name.name='rules'] Property[key.name='message']"),
+  ...CONFIRM_CALLS.flatMap(([object, methods, fields]) =>
+    strings(`CallExpression[callee.object.name='${object}'][callee.property.name=/^(${names(methods)})$/] > ObjectExpression > Property[key.name=/^(${names(fields)})$/]`),
+  ),
+  ...RULE_MESSAGES.flatMap(([prop, field]) => strings(`JSXAttribute[name.name='${prop}'] Property[key.name='${field}']`)),
   ...ENTRY_PROPS.flatMap(([component, prop]) => {
-    const attr = `JSXOpeningElement[name.name='${component}'] > JSXAttribute[name.name='${prop}']`
+    const attr = `${opening(component)} > JSXAttribute[name.name='${prop}']`
     return [`${attr} > Literal`, ...strings(`${attr} > JSXExpressionContainer`)]
   }),
   ...ENTRY_CHILDREN.flatMap(component => {
-    const element = `JSXElement[openingElement.name.name='${component}']`
+    const element = `JSXElement${named('openingElement.', component)}`
     return [`${element} > JSXText`, ...strings(`${element} > JSXExpressionContainer`)]
   }),
 ]
-const notEntry = `:not(${ENTRY.join(', ')})`
+const notEntry = ENTRY.length ? `:not(${ENTRY.join(', ')})` : ''
 const value = { Literal: 'value', TemplateElement: 'value.cooked', JSXText: 'value' }
 /** 带中文、超过 max 个字的固定文字，或带了 punct 里的标点：JSX 文字、字符串、模板字符串的每一段。 */
 const textRules = (max, punct, tail, what) =>
@@ -109,19 +139,13 @@ const entryText = ENTRY.flatMap(entry => {
   ]
 })
 const descPlaces = [
-  { selector: "JSXOpeningElement[name.name='p']", message: `段落是放说明的${NAME_HINT}` },
-  { selector: "JSXOpeningElement > JSXMemberExpression[object.name='Typography'][property.name='Paragraph']", message: `段落是放说明的${NAME_HINT}` },
-  // 表单项的 extra、tooltip 是帮助文字；别的组件的 extra 是放按钮的地方（Card、Result、Drawer），不管
-  { selector: "JSXOpeningElement[name.object.name='Form'][name.property.name='Item'] > JSXAttribute[name.name=/^(extra|tooltip)$/]", message: `这个参数是放说明的${NAME_HINT}` },
-  ...DESC_PROPS.map(([component, prop]) => ({ selector: `JSXOpeningElement[name.name='${component}'] > JSXAttribute[name.name='${prop}']`, message: `这个参数是放说明的${NAME_HINT}` })),
-  {
-    selector: `JSXOpeningElement:not([name.name=/^(${names(ENTRY_PROPS.filter(([, prop]) => prop === 'description').map(([component]) => component))})$/]) > JSXAttribute[name.name='description']`,
-    message: `这个参数是放说明的${NAME_HINT}`,
-  },
-  {
-    selector: `JSXOpeningElement[name.name='Alert']:matches(:not(:has(> ${errorType})), :has(> JSXSpreadAttribute), :has(> ${typeTwice}))`,
-    message: `说明用的横幅${NAME_HINT}`,
-  },
+  ...['p', ...DESC_ELEMENTS].map(component => ({ selector: opening(component), message: `段落是放说明的${NAME_HINT}` })),
+  ...DESC_PROPS.map(([component, prop]) => ({ selector: `${opening(component)} > JSXAttribute[name.name='${prop}']`, message: `这个参数是放说明的${NAME_HINT}` })),
+  ...DESC_ANY.map(prop => {
+    const entries = ENTRY_PROPS.filter(([, entryProp]) => entryProp === prop).map(([component]) => named('', component))
+    return { selector: `JSXOpeningElement${entries.length ? `:not(${entries.join(', ')})` : ''} > JSXAttribute[name.name='${prop}']`, message: `这个参数是放说明的${NAME_HINT}` }
+  }),
+  ...banners.map(({ other }) => ({ selector: other, message: `说明用的横幅${NAME_HINT}` })),
 ]
 
 const NUMBER = 'Literal[raw=/^\\d/]'
@@ -131,11 +155,10 @@ const values = [
   { selector: `JSXAttribute:not([name.name=/^(${names(NUMBER_OK)})$/]) > JSXExpressionContainer > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
   { selector: `JSXAttribute:not([name.name=/^(${names(NUMBER_OK)})$/]) > JSXExpressionContainer > UnaryExpression > ${NUMBER}`, message: `写死的数字${STYLE_HINT}` },
   { selector: `Property[key.name=/^(minWidth|maxWidth|minHeight|maxHeight|fontSize|lineHeight|gap|margin\\w*|padding\\w*|zIndex)$/] > ${NUMBER}`, message: `写死的尺寸${STYLE_HINT}` },
-  // 表格的列（有 dataIndex 或 render 的对象）：导出表格这类别的 width 不管
-  {
-    selector: `ObjectExpression:has(> Property[key.name=/^(dataIndex|render)$/]) > Property[key.name='width'] > ${NUMBER}`,
-    message: `写死的列宽（用主题里的几档，或不写）${STYLE_HINT}`,
-  },
+  // 表格的列（有 COLUMN_KEYS 里的键的对象）：导出表格这类别的 width 不管
+  ...(COLUMN_KEYS.length
+    ? [{ selector: `ObjectExpression:has(> Property[key.name=/^(${names(COLUMN_KEYS)})$/]) > Property[key.name='width'] > ${NUMBER}`, message: `写死的列宽（用主题里的几档，或不写）${STYLE_HINT}` }]
+    : []),
   { selector: `Literal[value=${COLOR_OR_LENGTH}]`, message: `写死的颜色或长度${STYLE_HINT}` },
   // 模板字符串拼的：`rgb(${r}, 0, 0)`、`${width}px`
   { selector: `TemplateElement:matches([value.cooked=${COLOR_OR_LENGTH}], [value.cooked=/^(px|rem|vh|vw)\\b/])`, message: `写死的颜色或长度${STYLE_HINT}` },
@@ -143,7 +166,7 @@ const values = [
 const STYLE_FILE = 'ImportDeclaration[source.value=/\\.(css|less|s[ac]ss|styl)$/]'
 const channels = (allowed = []) => [
   {
-    selector: `JSXAttribute[name.name=/^(${['style', 'className', 'styles', 'classNames', 'rootClassName', 'offset', 'push', 'pull'].filter(name => !allowed.includes(name)).join('|')})$/]`,
+    selector: `JSXAttribute[name.name=/^(${names(['style', 'className', ...STYLE_PROPS].filter(name => !allowed.includes(name)))})$/]`,
     message: `写样式${STYLE_HINT}`,
   },
   { selector: "JSXOpeningElement[name.name='br']", message: `占位${STYLE_HINT}` },
@@ -173,7 +196,7 @@ const pageRules = output => ({
     ...(output ? [{ selector: ':matches(JSXElement, JSXFragment)', message: '导出、画图的代码里不写页面组件：这里不查具体的值，页面上的放回页面目录（codekeep 前端规则）' }] : values),
     fromTests,
     ...channels(),
-    { selector: "JSXOpeningElement[name.name='ConfigProvider']", message: `就地改主题${STYLE_HINT}` },
+    ...THEME_PROVIDERS.map(component => ({ selector: opening(component), message: `就地改主题${STYLE_HINT}` })),
     { selector: STYLE_FILE, message: `引样式文件${STYLE_HINT}` },
   ],
   ...noDisable,
@@ -184,7 +207,7 @@ export default [
   { ...front, files: FRONT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(false) },
   // 导出、画图：做出来的文件和图片不在页面上，具体的值不查
   ...(OUTPUT.length ? [{ ...front, files: OUTPUT, ignores: [...THEME, ...UI, ...TESTS], rules: pageRules(true) }] : []),
-  // 组件层：可以用 className 指向同目录的样式文件、在根上包 ConfigProvider 接主题；不准写行内样式和具体的值
+  // 组件层：可以用 className（和 UI_CLASS_PROPS）指向同目录的样式文件、在根上包主题提供者接主题；不准写行内样式和具体的值
   {
     ...front,
     files: UI.map(dir => `${dir.replace(/\/\*\*$/, '')}/**/*.{ts,tsx,js,jsx}`),
@@ -197,7 +220,7 @@ export default [
         ...descPlaces,
         ...values,
         fromTests,
-        ...channels(['className', 'classNames', 'rootClassName']),
+        ...channels(['className', ...UI_CLASS_PROPS]),
         { selector: `${STYLE_FILE}:not([source.value=/^\\.\\x2F[^\\x2F]+$/])`, message: `只引同目录的样式文件${STYLE_HINT}` },
       ],
       ...noDisable,

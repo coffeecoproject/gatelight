@@ -152,6 +152,11 @@ describe('比较生效的规则', () => {
 
 const CHECKS = [{ name: 'types', command: 'true' }]
 const TEMPLATE = fileURLToPath(new URL('../../skills/setup-codekeep/frontend.eslint.mjs', import.meta.url))
+/** 前端规则模板像项目那样填好组件库那几项（不填载入就报错）：用 antd，确认框、空状态的正文参数也填上。 */
+const frontendTemplate = (): string =>
+  readFileSync(TEMPLATE, 'utf8')
+    .replace(/^const COMPONENT_LIBRARY = .*$/m, "const COMPONENT_LIBRARY = 'antd'")
+    .replace(/^const ENTRY_PROPS = .*$/m, "const ENTRY_PROPS = [['Popconfirm', 'description'], ['Empty', 'description'], ['Result', 'subTitle']]")
 const JOINED = { '.codekeep/config.json': keepConfig({ checks: CHECKS, eslint: { config: 'eslint.config.mjs' } }) }
 const CODE = { 'src/a.js': 'export const a = 1\n', 'src/b.js': 'export const b = 1\n', 'src/legacy/old.js': 'export const old = 1\n', 'src/legacy/older.js': 'export const older = 1\n' }
 
@@ -227,7 +232,7 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
   })
 
   test('前端规则模板的 NAME_MAX 从 12 改成 20：只列改了的几处，看得到"超过 12 个字"和"超过 20 个字"，不整段列', () => {
-    const template = readFileSync(TEMPLATE, 'utf8')
+    const template = frontendTemplate()
     const page = { 'src/pages/Orders.js': 'export const a = 1\n' }
     const repo = keepRepo({ ...JOINED, ...page, 'eslint.config.mjs': template })
     write(repo, 'eslint.config.mjs', template.replace(/^const NAME_MAX = 12$/m, 'const NAME_MAX = 20'))
@@ -243,7 +248,7 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
   })
 
   test('前端规则模板的 ENTRY_PROPS 加一项（选择器后面多一段、条目个数也变了）：加的那段出现在弹窗文字里', () => {
-    const template = readFileSync(TEMPLATE, 'utf8')
+    const template = frontendTemplate()
     const repo = keepRepo({ ...JOINED, 'src/pages/Orders.js': 'export const a = 1\n', 'eslint.config.mjs': template })
     const entryProps = /^const ENTRY_PROPS = \[(.*)\]$/m
     assert.match(template, entryProps)
