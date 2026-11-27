@@ -147,18 +147,18 @@ describe('默认清单条目', () => {
     const repo = sampleRepo(dir => write(dir, '.testcraft/defaults', '0.21.1\n'))
     for (const [where, out] of told(repo)) {
       assert.match(out, named('same-number.md'), where)
-      assert.doesNotMatch(out, /dev-login|docs-rules/, `${where}：版本不比记的新的不点名`)
+      assert.doesNotMatch(out, /dev-login/, `${where}：版本不比记的新的不点名`)
       assert.match(out, /照 gatelight:setup-testcraft 技能/, where)
       assert.ok(out.includes(`把 .testcraft/defaults 写成 ${VERSION}`), `${where}：${out}`)
     }
-    // 比记的版本新、项目里已有同名文件的不点名
+    // 比记的版本新、项目里已有同名文件的不点名；另一条比记的版本新的照样点名
     const has = sampleRepo(dir => {
-      write(dir, '.testcraft/defaults', '0.16.1\n')
+      write(dir, '.testcraft/defaults', '0.16.0\n')
       write(dir, '.testcraft/checklist/same-number.md', readFileSync(join(DEFAULTS, 'same-number.md'), 'utf8'))
     })
     for (const [where, out] of told(has)) {
-      assert.match(out, named('docs-rules.md'), where)
-      assert.doesNotMatch(out, /same-number|dev-login/, where)
+      assert.match(out, named('dev-login.md'), where)
+      assert.doesNotMatch(out, /same-number/, where)
     }
   })
 

@@ -129,7 +129,8 @@ function contractRepos(dirs: Iterable<string>): Repo[] {
  * 同一个仓库的另一个工作区不会再说节奏，起点照样要记）。会话所在目录的工作区记成它干活的地方；cd 进去的不算（noteWorking）。
  * 返回还没给这个会话说过节奏的。
  * 已知的缺口：会话没进某个工作区、从外面按路径往里写了文件（cp、重定向这类），这里看不到，那个工作区的起点要到会话进去时才记，
- * 已经带着它写的东西；停止门不提醒这一部分，合并前的整组照样查（整体设计方案 9.4）。
+ * 已经带着它写的东西；停止门不提醒这一部分，合并前的整组照样查。
+ * 试过按字面认命令里别的工作区的路径来补：相对路径、软链认不出，只提到路径也会提前记起点成误报；每条命令前后各比一次各工作区又拖慢每条命令，所以不补。
  */
 function untoldRepos(command: string, cwd: string, sessionId: string, now: number): Array<{ repo: Repo; state: SessionState }> {
   const repos = contractRepos([cwd, ...invocations(command, cwd).map(call => call.cwd)])

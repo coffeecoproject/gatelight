@@ -1,10 +1,10 @@
-// modwall db check：R6 里库的那部分，查迁移跑完之后库里的现状（设计方案第 5 节「R6 分两处查」）。
+// modwall db check：R6 里库的那部分，查迁移跑完之后库里的现状。
 // 不连数据库、不装客户端库：把查系统目录的 SQL 从标准输入交给项目给的命令（psql $DATABASE_URL、napbox exec postgres -- psql），
 // 读它输出的一行 JSON 再比对。查的是：
 //   不对应任何模块的 schema；public 里的对象；入口 schema 里的表；跨模块的外键；函数的 search_path；
 //   视图、函数跨模块引用内部 schema（视图和 BEGIN ATOMIC 的函数看 pg_depend，plpgsql 和 AS $$…$$ 的 sql 函数读正文）；
 //   视图、BEGIN ATOMIC 的函数硬依赖在别的模块入口里的视图、函数上（pg_depend 里有记录；用对方入口里的类型可以）；函数正文直接写别的模块入口里的视图。
-// 按模块的数据库角色（设计方案第 4 节）：
+// 按模块的数据库角色：
 //   每个模块有同名的角色，共享层有 shared 角色：不能登录、不是超级用户、不能绕过行级权限、不能建角色和库，不能在 public 里建对象、不能在库里建 schema；
 //   模块两个 schema 和里面的对象归模块的角色，shared 的归 shared 角色；除了超级用户和 schema 的主人，没有角色（包括经继承）能用模块的内部 schema、
 //   能在模块的两个 schema 和 shared 里建对象；函数都是 SECURITY DEFINER（函数里也就切不了身份），入口视图没有设 security_invoker；

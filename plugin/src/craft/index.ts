@@ -3,10 +3,12 @@
 
 import type { Module } from '../base/module.ts'
 import { fullPart } from './full.ts'
+import { unfinished } from './records.ts'
 import { brief } from './session.ts'
 
 export const craft: Module = {
   name: 'craft',
   brief,
   fullPart,
+  unfinished,
 }
