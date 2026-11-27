@@ -2,7 +2,7 @@
 // 这几次运行不记进 runs.jsonl（不是开发中的测试，不该算进报告），但和别的测试一样占住工作区。
 
 import { failureCause, type Repo, runClaimed } from '../base/repo.ts'
-import type { RunningMarker } from '../base/store.ts'
+import type { RunMarker } from '../base/store.ts'
 
 /** 核对时交给 files 的不存在的路径。 */
 export const MISSING = 'testpace-verify-no-such-file.test.js'
@@ -25,7 +25,7 @@ export function firstTest(text: string): { line: number; column: number } | unde
 
 export type VerifyResult =
   | { kind: 'done'; failed: number; skipped: number }
-  | { kind: 'busy'; marker: RunningMarker }
+  | { kind: 'busy'; marker: RunMarker }
   | { kind: 'interrupted' }
 
 class Stopped {

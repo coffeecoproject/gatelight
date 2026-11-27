@@ -1,6 +1,6 @@
 // 结果记录：放在仓库共用的 .git/testpace/ 下，不进版本库，也不影响工作区内容哈希。
 //   runs.jsonl   每次运行一行，只追加
-//   running/     每个工作区正在跑的命令（或借用工作区的工具，见 testpace hold）一份，结束时删掉；等着用整组结果的会话另记一份
+//   running/     每个工作区正在跑的命令一份，结束时删掉；等着用整组结果的会话另记一份
 //   logs/        每次运行的完整输出
 //   flaky/       时好时坏的测试的名单，一个测试一份（所有工作区共用）
 //   rounds/      每个工作区里各测试连着几轮没过
@@ -53,7 +53,7 @@ export interface RunStep {
 /** testpace 跑项目命令时占着工作区的登记。 */
 export interface RunMarker {
   id: string
-  /** 跑的什么：整组是 full，别的由模块定。不会是 hold。 */
+  /** 跑的什么：整组是 full，别的由模块定。 */
   kind: string
   /** testpace 进程。 */
   pid: number
@@ -65,25 +65,6 @@ export interface RunMarker {
   /** 同 RunRecord.session。 */
   session?: string
   log: string
-}
-
-/** 别的工具借用工作区时的登记（testpace hold），比如 testcraft 建副本：占着时不跑测试。 */
-export interface HoldMarker {
-  id: string
-  kind: 'hold'
-  /** 谁、为什么占着，比如"testcraft 建副本"。 */
-  by: string
-  /** 借用工作区的那个进程：它不在了，占用就作废。 */
-  pid: number
-  worktree: string
-  startedAt: number
-}
-
-export type RunningMarker = RunMarker | HoldMarker
-
-/** 这份登记是借用工作区的（testpace hold），不是在跑命令。 */
-export function isHold(marker: RunningMarker): marker is HoldMarker {
-  return marker.kind === 'hold'
 }
 
 export interface SessionState {
@@ -169,7 +150,7 @@ export class Store {
    * 占住这个工作区来跑 marker 这次命令：原子地创建这个工作区唯一的一份登记。
    * 已经有在跑的，返回它，不占；登记的进程都不在了的（被强杀、机器重启）清掉再占。
    */
-  claim(marker: RunningMarker): RunningMarker | undefined {
+  claim(marker: RunMarker): RunMarker | undefined {
     mkdirSync(this.runningDir, { recursive: true })
     const path = this.markerPath(marker.worktree)
     // 先写好一份完整的，再用 link 原子地放到位：别人看到的登记总是完整的，不会把写了一半的当成坏了清掉
@@ -245,7 +226,7 @@ export class Store {
   }
 
   /** 正在等这次运行结果的会话。 */
-  waiting(marker: RunningMarker): string[] {
+  waiting(marker: RunMarker): string[] {
     const path = this.waitingPath(marker.worktree)
     if (!existsSync(path)) return []
     return readFileSync(path, 'utf8')
@@ -295,12 +276,12 @@ export class Store {
   }
 
   /** 各工作区正在跑的命令。进程都不在了的登记不算，留给下一次 claim 清掉。 */
-  running(): RunningMarker[] {
+  running(): RunMarker[] {
     if (!existsSync(this.runningDir)) return []
     return readdirSync(this.runningDir)
       .filter(name => name.endsWith('.json'))
       .map(name => readMarker(join(this.runningDir, name)))
-      .filter((marker): marker is RunningMarker => marker !== undefined && markerAlive(marker))
+      .filter((marker): marker is RunMarker => marker !== undefined && markerAlive(marker))
   }
 }
 
@@ -319,17 +300,17 @@ export function writeWhole(path: string, text: string): void {
   renameSync(next, path)
 }
 
-function readMarker(path: string): RunningMarker | undefined {
+function readMarker(path: string): RunMarker | undefined {
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as RunningMarker
+    return JSON.parse(readFileSync(path, 'utf8')) as RunMarker
   } catch {
     return undefined
   }
 }
 
-/** 登记的进程（testpace、借用工作区的进程）或测试的进程组还有一个在。 */
-function markerAlive(marker: RunningMarker): boolean {
-  return processAlive(marker.pid) || (!isHold(marker) && marker.group !== undefined && processAlive(-marker.group))
+/** 登记的 testpace 进程或测试的进程组还有一个在。 */
+function markerAlive(marker: RunMarker): boolean {
+  return processAlive(marker.pid) || (marker.group !== undefined && processAlive(-marker.group))
 }
 
 /** 进程（pid 为负时是进程组）还在。 */

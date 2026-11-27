@@ -5,11 +5,11 @@ import { currentAgent } from './agent.ts'
 import { CONTRACT_FILE } from './contract.ts'
 import { type Coverage, findCoverage } from './coverage.ts'
 import { failureExcerpt } from './excerpt.ts'
-import { type Execution, execute, RUN_ENV } from './execute.ts'
+import { type Execution, execute } from './execute.ts'
 import { duration, when } from './format.ts'
 import { changedPaths, commonDir, defaultBranch, refTip, repoRoot } from './git.ts'
 import { matcher } from './glob.ts'
-import { isHold, newRunId, processAlive, type RunningMarker, type RunRecord, Store } from './store.ts'
+import { newRunId, processAlive, type RunMarker, type RunRecord, Store } from './store.ts'
 import { VERSION } from './version.ts'
 
 export interface Repo {
@@ -65,25 +65,22 @@ export function defaultTips(repo: Repo): Record<string, string> {
 
 /**
  * 在跑的那次是什么时候、哪个进程起的。testpace 被强杀后测试可能还在跑，说清楚怎么停。
- * 借用工作区的登记只认那一个进程，列得出来就是它还在。
  */
-export function started(marker: RunningMarker): string {
-  const owner = isHold(marker) || processAlive(marker.pid)
+export function started(marker: RunMarker): string {
+  const owner = processAlive(marker.pid)
     ? `进程 ${marker.pid}`
     : `起它的 testpace 已经退出，测试进程组 ${marker.group} 还在跑，不要了用 kill -- -${marker.group} 停掉`
   return `开始于 ${when(marker.startedAt)}，${owner}`
 }
 
-/** 这个工作区在跑的是哪种命令（或被谁借用着）、什么时候哪个进程起的。 */
-export function runningText(marker: RunningMarker): string {
-  if (isHold(marker)) return `这个工作区正被 ${marker.by} 占着（${started(marker)}）`
+/** 这个工作区在跑的是哪种命令、什么时候哪个进程起的。 */
+function runningText(marker: RunMarker): string {
   const what = marker.kind === 'full' ? '整组' : ` ${marker.kind} `
   return `这个工作区正在跑${what}（${started(marker)}）`
 }
 
 /** 因为这个工作区已经在跑测试而不跑时的说明。 */
-export function busyText(marker: RunningMarker, tree: string): string {
-  if (isHold(marker)) return `${runningText(marker)}，占着时不跑测试，等它放开再跑。`
+export function busyText(marker: RunMarker, tree: string): string {
   const stale = marker.kind === 'full' && marker.tree !== tree ? '那次整组开始后代码改过，它跑完的结果不算当前代码的记录。' : ''
   return `${runningText(marker)}，同一个工作区一次只跑一轮测试，等它结束再跑。${stale}`
 }
@@ -99,7 +96,7 @@ export async function runClaimed(
   args: string[],
   tree: string,
   env: Record<string, string> = {},
-): Promise<{ id: string; startedAt: number; log: string; execution: Execution } | { busy: RunningMarker }> {
+): Promise<{ id: string; startedAt: number; log: string; execution: Execution } | { busy: RunMarker }> {
   const startedAt = Date.now()
   const id = newRunId(startedAt)
   const log = repo.store.logPath(id)
@@ -111,29 +108,6 @@ export async function runClaimed(
   } finally {
     repo.store.release(repo.root, id)
   }
-}
-
-/**
- * 借用这个工作区（只占这个工作区，别的工作区不管）：要复制或接着用工作区的时候用，比如建一次性副本。
- * 借用期间别的 testpace 命令不跑，免得跑到一半的状态（锁文件、临时文件）被带进副本。
- * 查有没有在跑的和占上是同一步（同 runClaimed 的登记），问完到用完之间不会有新起的插进来。
- * 登记的是借用的那个进程（pid）：它被杀了，占用跟着作废，不会把工作区永远锁住。
- * 在跑的正是调用它的这一轮（环境变量 RUN_ENV 里的运行 id 和登记的一样）时不另占、没有 id：只有整组里测试之前的段拿得到它，
- * 那时还没有测试在跑，工作区已经是这一轮的。已经有在跑的、被借用着的，返回它。
- */
-export function borrow(repo: Repo, pid: number, by: string): { id?: string } | { busy: RunningMarker } {
-  const current = repo.store.running().find(marker => marker.worktree === repo.root)
-  if (current && current.id === process.env[RUN_ENV]) return {}
-  const startedAt = Date.now()
-  const id = newRunId(startedAt)
-  const busy = repo.store.claim({ id, kind: 'hold', by, pid, worktree: repo.root, startedAt })
-  return busy ? { busy } : { id }
-}
-
-/** 放开 borrow 占的工作区。只放借用的登记：跑着的命令自己结束时放开。已经放开、借用的进程已经不在的，什么也不做。 */
-export function giveBack(repo: Repo, id: string): void {
-  const current = repo.store.running().find(marker => marker.worktree === repo.root)
-  if (current && isHold(current) && current.id === id) repo.store.release(repo.root, id)
 }
 
 /** 命令为什么算失败：退出码、信号，或没能启动。 */

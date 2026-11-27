@@ -1,55 +1,17 @@
-// 底座的命令：借用工作区（hold、release）、这台机器配一次（install）、git 钩子调的 gate。
+// 底座的命令：这台机器配一次（install）、git 钩子调的 gate。
 // 命令行入口（src/cli.ts）分发到这里；各模块的命令在各自的目录里。
 
 import { readFileSync } from 'node:fs'
 import { ENTRY_COMMANDS, entryDir, entryPath, installEntries } from './entry.ts'
 import { EXIT } from './exit.ts'
 import { checkRefUpdates, GATE_REJECT, GATE_UNCHECKED, gateProblem, installGate } from './gate.ts'
-import { borrow, giveBack, openRepo, type Repo, runningText } from './repo.ts'
-import { processAlive } from './store.ts'
+import { openRepo, type Repo } from './repo.ts'
 
 /** 命令所在的仓库；不在 git 仓库里时说一句。 */
 export function context(): Repo | undefined {
   const repo = openRepo(process.cwd())
   if (!repo) console.error('testpace 要在 git 仓库里运行。')
   return repo
-}
-
-/** testpace hold：别的工具借用这个工作区（见 repo.ts 的 borrow）。占上了输出借用的 id，放开时用。 */
-export function hold(args: string[], usage: string): number {
-  const [pid, ...what] = args
-  const by = what.join(' ').trim()
-  if (!pid || !/^[1-9]\d*$/.test(pid) || !by) {
-    console.error(usage)
-    return EXIT.usage
-  }
-  // 进程不在了的登记马上作废，调用方会以为占上了
-  if (!processAlive(Number(pid))) {
-    console.error(`进程 ${pid} 不在，借用要登记正在用工作区的那个进程。`)
-    return EXIT.usage
-  }
-  const ctx = context()
-  if (!ctx) return EXIT.usage
-  const held = borrow(ctx, Number(pid), by)
-  if ('busy' in held) {
-    console.log(`${runningText(held.busy)}。`)
-    return EXIT.busy
-  }
-  if (held.id) console.log(held.id)
-  return EXIT.ok
-}
-
-/** testpace release：放开 hold 占的工作区。 */
-export function release(args: string[], usage: string): number {
-  const [id] = args
-  if (!id || args.length !== 1) {
-    console.error(usage)
-    return EXIT.usage
-  }
-  const ctx = context()
-  if (!ctx) return EXIT.usage
-  giveBack(ctx, id)
-  return EXIT.ok
 }
 
 export function install(): number {
