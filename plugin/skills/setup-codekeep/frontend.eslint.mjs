@@ -27,10 +27,37 @@ const BACK_SKIP = []
 const NUMBER_OK = ['maxLength', 'minLength', 'min', 'max', 'rows', 'step', 'tabIndex', 'defaultValue']
 /** 必须原样展示的固定文字：备案号、许可证号、公司全称这类，法规或合同要求照录、缩不了的。写准确的整段文字（不能带 /），这几段不查字数和标点；说明文字不放这里。 */
 const VERBATIM = []
-/** 名字、正文、后台的字数上限。 */
-const NAME_MAX = 12
-const ENTRY_MAX = 16
-const BACK_MAX = 24
+/** 页面文字用的语言：LANGUAGES 里的一套（'zh'、'en'），别的语言照这两套在 LANGUAGES 里加一套再写它。不填会报错。 */
+const UI_LANGUAGE = ''
+/**
+ * 每种语言怎么认文字、怎么数、哪些标点算句子：
+ * text：认得出是给人看的文字的正则（不把 'user-id'、URL、样式类名这类当文字）；words：按词数（true）还是按字数算上限；
+ * name、entry、back：名字、正文、后台返回给页面的文字的上限；namePunct：名字里不准的标点；sentence：正文、后台文字不止一句的写法（末尾的句号放行）。
+ * 正则里不能有 /（esquery 的正则写不了）。上限是默认值，不用改。
+ */
+const LANGUAGES = {
+  zh: {
+    text: '[\\u4e00-\\u9fff]',
+    words: false,
+    name: 12,
+    entry: 16,
+    back: 24,
+    // 末尾的一个冒号（"名称："）放行
+    namePunct: '[，。；！？（）]|：(?!\\s*$)',
+    sentence: '[；]|。(?!\\s*$)',
+  },
+  en: {
+    // 两个挨着的普通单词，中间可以隔一个标点、括号（全大写的、带连字符的不算：SQL 关键字、样式类名、日期格式）
+    text: '(^|\\s)[A-Za-z][a-z]*[,.:;!?]?\\s+\\(?[A-Za-z][a-z]*([\\s.,!?:;)]|$)',
+    words: true,
+    name: 5,
+    entry: 10,
+    back: 15,
+    // 末尾的一个冒号（"Name:"）放行
+    namePunct: '[.!?;](\\s|$)|,\\s|[()]|:\\s+\\S',
+    sentence: ';|\\.\\s+\\S',
+  },
+}
 
 // ---- 组件库：照项目用的组件库的文档填（gatelight 不预填哪一家），项目自己封装的组件也填进来。组件名带点的照 JSX 里写（'Form.Item'）----
 /** 项目用的组件库（比如 'antd'、'@mui/material'），没用组件库的写 'none'。不填会报错：下面几项要照它的文档填，留空的地方规则就管不到。 */
@@ -63,15 +90,15 @@ const THEME_PROVIDERS = []
 const COLUMN_KEYS = []
 // ==== 按项目填完 ====
 
+const LANG = LANGUAGES[UI_LANGUAGE]
+if (!LANG) throw new Error(`codekeep 前端规则：UI_LANGUAGE 写 LANGUAGES 里的一套（${Object.keys(LANGUAGES).join('、')}），别的语言先在 LANGUAGES 里加一套`)
+if (Object.values(LANG).some(value => typeof value === 'string' && value.includes('/'))) throw new Error('LANGUAGES 里的正则不能带 /（esquery 的正则写不了）')
 if (!COMPONENT_LIBRARY) throw new Error('codekeep 前端规则：先填 COMPONENT_LIBRARY 和组件库那几项（照 setup-codekeep 技能"有前端代码的项目"一节）')
 
-const CJK = '[\\u4e00-\\u9fff]'
-/** 名字里不准的标点；末尾的一个冒号（"名称：值"）放行。 */
-const PUNCT = '[，。；！？（）]|：(?!\\s*$)'
-/** 正文只准一句：不准用句号、分号连起来（末尾的句号放行）。 */
-const SENTENCE = '[；]|。(?!\\s*$)'
+const UNIT = LANG.words ? '词' : '字'
 const names = list => list.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-const longer = max => `/^[\\s\\S]{${max + 1},}$/`
+/** 超过 max 个字（词）。JSX 文字按一行算，前后的空白不算。 */
+const longer = (max, jsx) => (LANG.words ? `/(\\S+\\s+){${max}}\\S/` : jsx ? `/\\S[^\\n]{${max - 1},}\\S/` : `/^[\\s\\S]{${max + 1},}$/`)
 if (VERBATIM.some(text => text.includes('/'))) throw new Error('VERBATIM 里的文字不能带 /（esquery 的正则写不了）')
 /** 不是 VERBATIM 里的整段文字（JSX 文字前后的空白不算）。 */
 const notVerbatim = field => (VERBATIM.length ? `:not([${field}=/^\\s*(${names(VERBATIM)})\\s*$/])` : '')
@@ -82,7 +109,7 @@ const named = (prefix, component) => {
 }
 const opening = component => `JSXOpeningElement${named('', component)}`
 
-// 入口：写在这几处的文字按正文算（16 个字、一句话），不按名字算
+// 入口：写在这几处的文字按正文算（LANG.entry 个字、一句话），不按名字算
 // 放行只对准那一处：都是直接子节点，不用后代（后代会把嵌在里面的标签、按钮、函数参数也放成正文）
 // 写在 parent 下的固定文字：直接写的，和写成二选一（a ? '…' : '…'）、带条件（a && '…'）的，再套一层二选一的也算
 const branch = ':matches(ConditionalExpression, LogicalExpression)'
@@ -119,23 +146,25 @@ const ENTRY = [
 ]
 const notEntry = ENTRY.length ? `:not(${ENTRY.join(', ')})` : ''
 const value = { Literal: 'value', TemplateElement: 'value.cooked', JSXText: 'value' }
-/** 带中文、超过 max 个字的固定文字，或带了 punct 里的标点：JSX 文字、字符串、模板字符串的每一段。 */
+/** SQL 不是文字（英文的列清单 'id, status' 像两个单词）：SQL 开头的字符串；模板字符串按第一段看，拼进去的后几段一起算。 */
+const SQL = '/^\\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER)\\b/i'
+const notSql = { Literal: `:not([value=${SQL}])`, TemplateElement: `:not(TemplateLiteral[quasis.0.value.cooked=${SQL}] > TemplateElement)`, JSXText: '' }
+/** 认得出是文字（LANG.text）、超过 max 个字的固定文字，或带了 punct 里的标点：JSX 文字、字符串、模板字符串的每一段。 */
 const textRules = (max, punct, tail, what) =>
   Object.entries(value).flatMap(([node, field]) => [
-    { selector: `${node}[${field}=/${CJK}/][${field}=${node === 'JSXText' ? `/\\S[^\\n]{${max - 1},}\\S/` : longer(max)}]${tail}${notVerbatim(field)}`, message: `${what}超过 ${max} 个字` },
-    { selector: `${node}[${field}=/${CJK}/][${field}=/${punct}/]${tail}${notVerbatim(field)}`, message: `${what}带了句子标点` },
+    { selector: `${node}[${field}=/${LANG.text}/][${field}=${longer(max, node === 'JSXText')}]${notSql[node]}${tail}${notVerbatim(field)}`, message: `${what}超过 ${max} 个${UNIT}` },
+    { selector: `${node}[${field}=/${LANG.text}/][${field}=/${punct}/]${notSql[node]}${tail}${notVerbatim(field)}`, message: `${what}带了句子标点` },
   ])
 const NAME_HINT = '：页面上只放名字，说明不写；要告诉用户的写进提示、确认框正文或报错（codekeep 前端规则）'
 const ENTRY_HINT = '：提示、确认框正文、报错只说一句，说清怎么了、怎么办（codekeep 前端规则）'
 const STYLE_HINT = '：组件不合适就告诉用户，不在这里补；具体的值只写在主题和组件层的样式文件里，改要用户同意（codekeep 前端规则）'
 
-const nameText = textRules(NAME_MAX, PUNCT, notEntry, '文字').map(rule => ({ ...rule, message: rule.message + NAME_HINT }))
+const nameText = textRules(LANG.name, LANG.namePunct, notEntry, '文字').map(rule => ({ ...rule, message: rule.message + NAME_HINT }))
 const entryText = ENTRY.flatMap(entry => {
   const field = entry.endsWith('TemplateElement') ? 'value.cooked' : 'value'
-  const max = entry.endsWith('JSXText') ? `/\\S[^\\n]{${ENTRY_MAX - 1},}\\S/` : longer(ENTRY_MAX)
   return [
-    { selector: `${entry}[${field}=${max}]${notVerbatim(field)}`, message: `正文超过 ${ENTRY_MAX} 个字${ENTRY_HINT}` },
-    { selector: `${entry}[${field}=/${SENTENCE}/]${notVerbatim(field)}`, message: `正文不止一句${ENTRY_HINT}` },
+    { selector: `${entry}[${field}=${longer(LANG.entry, entry.endsWith('JSXText'))}]${notVerbatim(field)}`, message: `正文超过 ${LANG.entry} 个${UNIT}${ENTRY_HINT}` },
+    { selector: `${entry}[${field}=/${LANG.sentence}/]${notVerbatim(field)}`, message: `正文不止一句${ENTRY_HINT}` },
   ]
 })
 const descPlaces = [
@@ -228,7 +257,7 @@ export default [
   },
   // 主题：不查值，只不准就地关规则
   { ...front, files: THEME },
-  // 后台：返回给页面的中文 24 个字、一句话
+  // 后台：返回给页面的文字 LANG.back 个字、一句话
   ...(BACK.length
     ? [
         {
@@ -236,7 +265,7 @@ export default [
           files: BACK,
           ignores: BACK_SKIP,
           rules: {
-            [RESTRICTED]: ['error', ...textRules(BACK_MAX, SENTENCE, '', '文字').map(rule => ({ ...rule, message: `${rule.message}：返回给页面的原因、提示只说一句，说清怎么了、怎么办（codekeep 前端规则）` }))],
+            [RESTRICTED]: ['error', ...textRules(LANG.back, LANG.sentence, '', '文字').map(rule => ({ ...rule, message: `${rule.message}：返回给页面的原因、提示只说一句，说清怎么了、怎么办（codekeep 前端规则）` }))],
             ...noDisable,
           },
         },

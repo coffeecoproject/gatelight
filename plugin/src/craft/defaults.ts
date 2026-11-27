@@ -2,9 +2,6 @@
 // 项目在 .testcraft/defaults 里记一行版本号：补到了 gatelight 哪一版的默认条目（setup-testcraft 接入、补条目时写）。
 // 只提醒比它新、项目清单里又没有同名文件的条目：项目不要的条目，不复制、照样把版本号改到这一版，就不再提醒。
 // 没有这个文件的（这个机制之前接入的）当作一条都没补过：没有的默认条目都提醒。
-//
-// 来由（2026-11-27）：same-number 是从 CrocWork 一次漏改（9b21af3e）总结出来的，可 CrocWork 接入时只有 dev-login，
-// 后来加的条目从没补进去；它的 MCN 分支改的全是钱怎么算，testcraft checklist 却报"一条也没命中"。新条目只有用户想起来要才会补。
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
