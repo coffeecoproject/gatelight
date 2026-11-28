@@ -8,6 +8,7 @@ import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { handle, sessionBrief } from '../src/base/hook.ts'
 import { GATE_REJECT, HOOK_COMMAND } from '../src/base/gate.ts'
+import type { AgentKind } from '../src/base/agent.ts'
 import { Store } from '../src/base/store.ts'
 import { agent, commit, ENV, fakeLayermap, gatedRepo, globalGitConfig, runs, sampleRepo, setConfig, sh, tempDir, testpace } from './helpers.ts'
 
@@ -33,7 +34,7 @@ function stop(cwd: string, session = 's1'): Output {
 // 停止门每次整组只拦一次。要看"现在还算不算没看结果"时，先清掉这个会话拦过的记录再问。
 function stopAgain(repo: string, session: string): Output {
   const store = new Store(join(repo, '.git'))
-  store.saveSession(session, { ...store.session(session, Date.now()), blocked: [] })
+  store.saveSession(session, { ...store.session(session, Date.now()), blocked: [], blockedActs: {} })
   return stop(repo, session)
 }
 
@@ -44,6 +45,17 @@ function fullIn(repo: string, session: string): number | null {
 
 function change(repo: string, text = '// 改过\n'): void {
   writeFileSync(join(repo, 'src', 'price.mjs'), `${sh(repo, 'cat src/price.mjs')}${text}`)
+}
+
+/** 会话要用改文件的工具改 repo 里的 file（发 Edit 的 PreToolUse）：停止门只为会话自己动过手的内容拦。cwd 是 hook 给的目录。 */
+function editing(repo: string, session: string, file = 'src/price.mjs', cwd = repo): void {
+  handle({ hook_event_name: 'PreToolUse', session_id: session, cwd, tool_name: 'Edit', tool_input: { file_path: join(repo, file), new_string: '' } }, Date.now(), 'claude')
+}
+
+/** 会话用改文件的工具往 src/price.mjs 末尾加一行。 */
+function edit(repo: string, session: string, text?: string): void {
+  editing(repo, session)
+  change(repo, text)
 }
 
 /** 跑一次 testpace focused：假的 layermap 给出的结果就是 layermap（默认选不出相关测试，只跑 fast）。返回它的输出。 */
@@ -671,13 +683,13 @@ describe('停止门', () => {
     const repo = sampleRepo()
     handle({ hook_event_name: 'SessionStart', session_id: 'p1', cwd: repo }, Date.now(), 'claude')
     assert.equal(stop(repo, 'p1'), undefined, '没改东西不拦')
-    change(repo)
+    edit(repo, 'p1')
     const first = stop(repo, 'p1')
     assert.equal(first?.decision, 'block')
     assert.match(first?.reason ?? '', /^这个会话改了代码，当前内容还没跑过 testpace focused。向用户汇报之前跑一次。/)
     assert.match(first?.reason ?? '', /因为这次改了需求才不过的留到合并时改，focused 照样每轮跑；"留到合并"说的是改那些没过的测试，不是不跑测试。/)
     assert.equal(stop(repo, 'p1'), undefined, '同一份内容只拦一次')
-    change(repo, '// 又改了\n')
+    edit(repo, 'p1', '// 又改了\n')
     assert.match(stop(repo, 'p1')?.reason ?? '', NOT_FOCUSED, '改了以后又没跑，再拦')
   })
 
@@ -691,24 +703,24 @@ describe('停止门', () => {
   test('当前内容跑过 focused（fast 没过也算）或整组的不拦；只单独跑了 testpace files 的照样拦；相对跑过的内容只改了 ignore 路径的不拦', () => {
     const repo = sampleRepo()
     handle({ hook_event_name: 'SessionStart', session_id: 'p3', cwd: repo }, Date.now(), 'claude')
-    change(repo)
+    edit(repo, 'p3')
     assert.equal(focused(repo).code, 0)
     assert.equal(stop(repo, 'p3'), undefined)
     writeFileSync(join(repo, 'docs', 'more.md'), '说明\n')
     assert.equal(stop(repo, 'p3'), undefined, '相对跑过的内容只改了 ignore 路径')
 
-    change(repo, '// 只跑 files\n')
+    edit(repo, 'p3', '// 只跑 files\n')
     assert.equal(testpace(repo, ['files', 'tests/price.test.mjs']).code, 0)
     assert.match(stop(repo, 'p3')?.reason ?? '', NOT_FOCUSED, '单独跑的 testpace files 不算')
 
-    change(repo, 'export const = 1\n')
+    edit(repo, 'p3', 'export const = 1\n')
     const failed = focused(repo)
     assert.equal(failed.code, 1, failed.out)
     assert.match(failed.out, /^fast 失败/m)
     assert.equal(stop(repo, 'p3'), undefined, 'fast 没过也算跑过')
 
     sh(repo, 'git checkout -q src/price.mjs')
-    change(repo, '// 跑整组\n')
+    edit(repo, 'p3', '// 跑整组\n')
     assert.equal(testpace(repo, ['full']).code, 0)
     assert.equal(stop(repo, 'p3'), undefined, '整组跑过的不拦')
   })
@@ -716,6 +728,7 @@ describe('停止门', () => {
   test('测试写出了没被 git 忽略的文件：focused 里相关测试跑完时的内容、整组跑完时的内容也算跑过；单独跑 testpace files 跑完时的内容不算', () => {
     const repo = sampleRepo()
     handle({ hook_event_name: 'SessionStart', session_id: 'p4', cwd: repo }, Date.now(), 'claude')
+    editing(repo, 'p4', 'tests/writes.test.mjs')
     writeFileSync(join(repo, 'tests', 'writes.test.mjs'), "import { writeFileSync } from 'node:fs'\nimport { test } from 'node:test'\ntest('写出一个文件', () => writeFileSync('written.txt', '写出来的\\n'))\n")
     const layermap = fakeLayermap({
       files: [{ path: 'tests/writes.test.mjs', status: 'ADDED' }],
@@ -730,12 +743,12 @@ describe('停止门', () => {
     assert.equal(stop(repo, 'p4'), undefined)
 
     rmSync(join(repo, 'written.txt'))
-    change(repo)
+    edit(repo, 'p4')
     assert.equal(testpace(repo, ['files', 'tests/writes.test.mjs']).code, 0)
     assert.match(stop(repo, 'p4')?.reason ?? '', NOT_FOCUSED)
 
     rmSync(join(repo, 'written.txt'))
-    change(repo, '// 跑整组\n')
+    edit(repo, 'p4', '// 跑整组\n')
     // 跑的过程中内容变了，整组不算通过；停止门只看跑没跑
     const whole = testpace(repo, ['full'])
     assert.match(whole.out, /跑的过程中代码改过，这次不算通过记录。变了的文件：written\.txt/)
@@ -749,7 +762,7 @@ describe('停止门', () => {
     const repo = sampleRepo()
     change(repo)
     assert.equal(stop(repo, 'late'), undefined)
-    change(repo, '// 又改了\n')
+    edit(repo, 'late', '// 又改了\n')
     assert.match(stop(repo, 'late')?.reason ?? '', NOT_FOCUSED)
   })
 
@@ -838,10 +851,16 @@ describe('停止门：提交了还没合', () => {
     appendFileSync(join(repo, file), text)
   }
 
-  /** 改 src/price.mjs 再提交。 */
-  function commitChange(repo: string, message: string): void {
-    touch(repo, 'src/price.mjs', `// ${message}\n`)
+  /** 会话跑 git commit：先发这条命令的 PreToolUse（会话在这里动了手），再真的提交。 */
+  function commitBy(repo: string, session: string, message: string, kind: AgentKind = 'claude'): void {
+    handle({ hook_event_name: 'PreToolUse', session_id: session, cwd: repo, tool_name: 'Bash', tool_input: { command: `git commit -qam '${message}'` } }, Date.now(), kind)
     commit(repo, message)
+  }
+
+  /** 改 src/price.mjs，会话再提交。 */
+  function commitChange(repo: string, session: string, message: string, kind: AgentKind = 'claude'): void {
+    touch(repo, 'src/price.mjs', `// ${message}\n`)
+    commitBy(repo, session, message, kind)
   }
 
   /** 第一个提交那天（git 按提交时的时区写出来的日期）。 */
@@ -874,29 +893,29 @@ describe('停止门：提交了还没合', () => {
   test('会话在功能分支上提交了改代码的提交、工作区干净、没合进默认分支：拦一次，摆出分支、个数、从哪天起、改了几个文件、各提交说明开头；同时给用户看一行；只改 ignore 路径的文件不算进文件数', () => {
     const repo = onBranch('u1')
     assert.equal(stop(repo, 'u1'), undefined, '还没提交')
-    commitChange(repo, '改价格：第一步')
+    commitChange(repo, 'u1', '改价格：第一步')
     touch(repo, 'src/price.mjs')
     touch(repo, 'src/discount.mjs')
     touch(repo, 'docs/more.md', '说明\n')
-    commit(repo, '加折扣，顺便写说明')
+    commitBy(repo, 'u1', '加折扣，顺便写说明')
     focused(repo)
     assert.deepEqual(told(stop(repo, 'u1')), nudge(facts('feat', 2, firstDay(repo), 2, '改价格、加折扣')))
   })
 
   test('同一个 HEAD 只拦一次；再提交一个又拦一次，个数跟着变多', () => {
     const repo = onBranch('u2')
-    commitChange(repo, '改价格')
+    commitChange(repo, 'u2', '改价格')
     focused(repo)
     assert.deepEqual(told(stop(repo, 'u2')), nudge(facts('feat', 1, firstDay(repo), 1, '改价格')))
     assert.equal(stop(repo, 'u2'), undefined, '同一个 HEAD 只拦一次')
-    commitChange(repo, '再改一处')
+    commitChange(repo, 'u2', '再改一处')
     focused(repo)
     assert.deepEqual(told(stop(repo, 'u2')), nudge(facts('feat', 2, firstDay(repo), 1, '改价格、再改一处')))
   })
 
   test('提交了、当前内容又没跑过 focused：先拦跑 focused，下一次才轮到该合了，再下一次不拦', () => {
     const repo = onBranch('u3')
-    commitChange(repo, '改价格')
+    commitChange(repo, 'u3', '改价格')
     const first = stop(repo, 'u3')
     assert.match(first?.reason ?? '', NOT_FOCUSED)
     assert.equal(first?.systemMessage, undefined, '跑 focused 那一项没有给用户的那一行')
@@ -907,17 +926,17 @@ describe('停止门：提交了还没合', () => {
   test('不提醒：在默认分支上、在 merge/ 开头的合并分支上、detached HEAD、提交只改了 ignore 路径', () => {
     const main = sampleRepo()
     handle({ hook_event_name: 'SessionStart', session_id: 'q1', cwd: main }, Date.now(), 'claude')
-    commitChange(main, '直接在 main 上改')
+    commitChange(main, 'q1', '直接在 main 上改')
     focused(main)
     assert.deepEqual(quiet(stop(main, 'q1')), [undefined, undefined], '默认分支上')
 
     const merging = onBranch('q2', 'merge/20261127-feat')
-    commitChange(merging, '合并分支上的提交')
+    commitChange(merging, 'q2', '合并分支上的提交')
     focused(merging)
     assert.equal(stop(merging, 'q2'), undefined, '合并分支上')
 
     const detached = onBranch('q3')
-    commitChange(detached, '改价格')
+    commitChange(detached, 'q3', '改价格')
     focused(detached)
     sh(detached, 'git checkout -q --detach')
     assert.equal(stop(detached, 'q3'), undefined, 'detached HEAD')
@@ -926,13 +945,13 @@ describe('停止门：提交了还没合', () => {
 
     const docs = onBranch('q4')
     touch(docs, 'docs/more.md', '说明\n')
-    commit(docs, '只写说明')
+    commitBy(docs, 'q4', '只写说明')
     assert.equal(stop(docs, 'q4'), undefined, '提交只改了 ignore 路径')
   })
 
   test('工作区还有没提交的代码改动时不提醒；没提交的只有 ignore 路径的照样提醒', () => {
     const repo = onBranch('w1')
-    commitChange(repo, '改价格')
+    commitChange(repo, 'w1', '改价格')
     touch(repo, 'src/price.mjs', '// 还在改\n')
     focused(repo)
     assert.equal(stop(repo, 'w1'), undefined, '这件事还在做')
@@ -954,8 +973,8 @@ describe('停止门：提交了还没合', () => {
 
   test('合进本地默认分支或 origin 上默认分支的提交算合了：只推到 origin 也算', () => {
     const repo = onBranch('m1')
-    commitChange(repo, '第一件')
-    commitChange(repo, '第二件')
+    commitChange(repo, 'm1', '第一件')
+    commitChange(repo, 'm1', '第二件')
     focused(repo)
     sh(repo, 'git update-ref refs/heads/main HEAD~1')
     assert.deepEqual(told(stop(repo, 'm1')), nudge(facts('feat', 1, sh(repo, 'git log -1 --format=%cd --date=short').trim(), 1, '第二件')))
@@ -965,7 +984,7 @@ describe('停止门：提交了还没合', () => {
 
   test('照合并技能在另一个 worktree 建 merge/ 分支、--no-ff 合进功能分支后，从功能分支收尾不提醒；别的分支上有这些提交不算', () => {
     const repo = onBranch('m2')
-    commitChange(repo, '改价格')
+    commitChange(repo, 'm2', '改价格')
     focused(repo)
     sh(repo, 'git branch backup')
     assert.deepEqual(told(stop(repo, 'm2')), nudge(facts('feat', 1, firstDay(repo), 1, '改价格')))
@@ -983,18 +1002,19 @@ describe('停止门：提交了还没合', () => {
     sh(repo, "git add -A && GIT_COMMITTER_DATE=2026-11-02T10:00:00 GIT_AUTHOR_DATE=2026-11-02T10:00:00 git commit -qm '又一个旧的'")
     sh(repo, 'git checkout -q main')
     handle({ hook_event_name: 'SessionStart', session_id: 'o1', cwd: repo }, Date.now(), 'claude')
+    handle({ hook_event_name: 'PreToolUse', session_id: 'o1', cwd: repo, tool_name: 'Bash', tool_input: { command: 'git checkout -q other' } }, Date.now(), 'claude')
     sh(repo, 'git checkout -q other')
     focused(repo)
     assert.equal(stop(repo, 'o1'), undefined, '只是换了分支')
     touch(repo, 'src/new.mjs')
-    commit(repo, '我的')
+    commitBy(repo, 'o1', '我的')
     focused(repo)
     assert.deepEqual(told(stop(repo, 'o1')), nudge(facts('other', 3, '2026-11-01', 2, '旧的、又一个旧的、我的')))
   })
 
   test('超过 8 个提交时只列前 8 个说明开头、后面写"等 N 个"，从旧到新', () => {
     const repo = onBranch('l1')
-    for (let i = 1; i <= 10; i++) commitChange(repo, `第 ${i} 件：细节`)
+    for (let i = 1; i <= 10; i++) commitChange(repo, 'l1', `第 ${i} 件：细节`)
     focused(repo)
     const list = `${Array.from({ length: 8 }, (_, i) => `第 ${i + 1} 件`).join('、')} 等 10 个`
     assert.deepEqual(told(stop(repo, 'l1')), nudge(facts('feat', 10, firstDay(repo), 1, list)))
@@ -1004,7 +1024,7 @@ describe('停止门：提交了还没合', () => {
     const repo = onBranch('t1')
     const exactly24 = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯'
     const subjects = ['fix(price): rounding', '加折扣，顺便改文案', 'v1.2.3, bump', '整理。再说', '拆文件；补注释', 'lint; format', exactly24, `${exactly24}辰`]
-    for (const subject of subjects) commitChange(repo, subject)
+    for (const subject of subjects) commitChange(repo, 't1', subject)
     focused(repo)
     const list = ['fix(price)', '加折扣', 'v1.2.3', '整理', '拆文件', 'lint', exactly24, `${exactly24}…`].join('、')
     assert.deepEqual(told(stop(repo, 't1')), nudge(facts('feat', 8, firstDay(repo), 1, list)))
@@ -1017,7 +1037,8 @@ describe('停止门：提交了还没合', () => {
     const parent = tempDir('testpace-parent-')
     handle({ hook_event_name: 'SessionStart', session_id: 'r1', cwd: parent }, Date.now(), 'claude')
     handle({ hook_event_name: 'PreToolUse', session_id: 'r1', cwd: parent, tool_name: 'Bash', tool_input: { command: `cd ${repo} && ls` } }, Date.now(), 'claude')
-    commitChange(repo, '改价格')
+    touch(repo, 'src/price.mjs', '// 改价格\n')
+    commit(repo, '改价格')
     focused(repo)
     assert.equal(stop(parent, 'r1'), undefined, '只 cd 进去看过')
     handle({ hook_event_name: 'PreToolUse', session_id: 'r1', cwd: parent, tool_name: 'Edit', tool_input: { file_path: join(repo, 'src', 'price.mjs'), new_string: '// x' } }, Date.now(), 'claude')
@@ -1028,9 +1049,122 @@ describe('停止门：提交了还没合', () => {
     const repo = sampleRepo()
     sh(repo, 'git checkout -qb feat')
     handle({ hook_event_name: 'SessionStart', session_id: 'x1', cwd: repo }, Date.now(), 'codex')
-    commitChange(repo, '改价格')
+    commitChange(repo, 'x1', '改价格', 'codex')
     focused(repo)
     assert.deepEqual(told(handle({ hook_event_name: 'Stop', session_id: 'x1', cwd: repo }, Date.now(), 'codex') as Output), nudge(facts('feat', 1, firstDay(repo), 1, '改价格')))
+  })
+})
+
+describe('停止门：只为会话自己干的活拦', () => {
+  const bash = (cwd: string, command: string, session: string): unknown =>
+    handle({ hook_event_name: 'PreToolUse', session_id: session, cwd, tool_name: 'Bash', tool_input: { command } }, Date.now(), 'claude')
+  const start = (cwd: string, session: string): unknown => handle({ hook_event_name: 'SessionStart', session_id: session, cwd }, Date.now(), 'claude')
+
+  /** 示例项目副本和它的另一个工作区（git worktree，分支 other）。 */
+  function twoWorktrees(): { home: string; other: string; otherRoot: string } {
+    const home = sampleRepo()
+    const other = join(tempDir('testpace-wt-'), 'other')
+    sh(home, `git worktree add -q -b other ${other}`)
+    return { home, other, otherRoot: sh(other, 'git rev-parse --show-toplevel').trim() }
+  }
+
+  test('会话所在目录按第一次见到时 hook 给的目录认：cd 进别的工作区后、压缩恢复后 SessionStart 带着那里的目录也不变；只在那里看过、那里后来被别人改了不拦，在那里用改文件的工具改过的照拦', () => {
+    const { home, other, otherRoot } = twoWorktrees()
+    start(home, 'home-1')
+    bash(home, `cd ${other}`, 'home-1')
+    // Claude Code 里 cd 会留住：之后 hook 给的 cwd 是另一个工作区
+    bash(other, 'ls src && git status', 'home-1')
+    change(other, '// 别的会话改的\n')
+    assert.equal(stop(other, 'home-1'), undefined, '只 cd 进去看过')
+    start(other, 'home-1')
+    change(other, '// 压缩后别的会话又改了\n')
+    assert.equal(stop(other, 'home-1'), undefined, '压缩、恢复后再来的 SessionStart 不改所在目录')
+
+    // 所在目录照旧是第一次的工作区：在那里改了没跑，hook 给的 cwd 是别处也按所在目录问，话里不写仓库路径
+    editing(home, 'home-1', 'src/price.mjs', other)
+    change(home)
+    assert.match(stop(other, 'home-1')?.reason ?? '', /^这个会话改了代码，当前内容还没跑过 testpace focused/)
+
+    editing(other, 'home-1', 'src/price.mjs', other)
+    change(other, '// 会话自己用 Edit 改的\n')
+    assert.match(stop(other, 'home-1')?.reason ?? '', new RegExp(`^这个会话在 ${otherRoot} 改了代码，当前内容还没跑过 testpace focused`), '用改文件的工具改过的工作区照拦')
+  })
+
+  test('会话在工作区没动过手：同一个工作区里别的会话、用户改了内容不拦它；会话在那里跑了不只是看的命令后照拦', () => {
+    const repo = sampleRepo()
+    start(repo, 'idle-1')
+    start(repo, 'idle-2')
+    edit(repo, 'idle-1', '// idle-1 改的\n')
+    change(repo, '// 用户改的\n')
+    assert.equal(stop(repo, 'idle-2'), undefined)
+    assert.match(stop(repo, 'idle-1')?.reason ?? '', NOT_FOCUSED, '改的那个会话照拦')
+    bash(repo, 'npm install', 'idle-2')
+    assert.match(stop(repo, 'idle-2')?.reason ?? '', NOT_FOCUSED)
+  })
+
+  test('只看的命令不算动手（读文件、搜索、只看的 git 子命令、gatelight 只做检查的子命令，写到 /dev/null 的重定向）；一条命令里有一部分不只是看、往文件里写的重定向、会写配置的命令算动手', () => {
+    const repo = sampleRepo()
+    let n = 0
+    /** 新会话在仓库里只跑这一条命令，之后别人改了内容：停止门拦不拦它。 */
+    const blocksAfter = (command: string): boolean => {
+      const session = `look-${n++}`
+      start(repo, session)
+      bash(repo, command, session)
+      change(repo, `// 别人改的 ${n}\n`)
+      return NOT_FOCUSED.test(stop(repo, session)?.reason ?? '')
+    }
+    const reads = [
+      'ls src && cat src/price.mjs | head -3 | wc -l',
+      'rg price src; grep -rn price . | tail -5',
+      'find . -name "*.mjs" -type f',
+      "sed -n '1,5p' src/price.mjs | sort",
+      'git status && git -C . log -1 --oneline && git --no-pager diff --stat',
+      'git -c core.pager=cat show HEAD && git blame src/price.mjs',
+      'testpace focused 2>&1 | tail -5',
+      'testpace files tests/price.test.mjs; testpace status; testpace report',
+      'modwall check && modwall status && modwall db check',
+      'codekeep check; testcraft checklist; testcraft status',
+      'ls > /dev/null 2>&1',
+    ]
+    for (const command of reads) assert.equal(blocksAfter(command), false, command)
+    const acts = [
+      'git status && npm install',
+      "sed -i '' 's/a/b/' src/price.mjs",
+      'echo x > src/new.mjs',
+      'echo x >> notes.txt',
+      'cat <<EOF > src/n.mjs\nhi\nEOF',
+      'git log > log.txt',
+      'find . -name x -delete',
+      'find . -name x -exec rm {} +',
+      'sort -o a.txt a.txt',
+      'git commit -qm x',
+      'modwall init',
+      'npm install',
+    ]
+    for (const command of acts) assert.equal(blocksAfter(command), true, command)
+  })
+
+  test('为一项拦过之后会话没再动手：同一项内容变了也不再拦；会话再动手后内容又没跑过照拦', () => {
+    const repo = sampleRepo()
+    start(repo, 'again-1')
+    edit(repo, 'again-1')
+    assert.match(stop(repo, 'again-1')?.reason ?? '', NOT_FOCUSED)
+    // 被拦后只跑了检查，别人接着改
+    bash(repo, 'testpace focused 2>&1 | tail -5', 'again-1')
+    change(repo, '// 别人改的\n')
+    assert.equal(stop(repo, 'again-1'), undefined)
+    edit(repo, 'again-1', '// 会话又改了\n')
+    assert.match(stop(repo, 'again-1')?.reason ?? '', NOT_FOCUSED)
+  })
+
+  test('Claude Code 的 Stop 里有后台的子代理、workflow、队友还在跑时不问模块；只有后台命令、监视器的照问', () => {
+    const repo = sampleRepo()
+    start(repo, 'bg-1')
+    edit(repo, 'bg-1')
+    const stopWith = (types: string[]): Output =>
+      handle({ hook_event_name: 'Stop', session_id: 'bg-1', cwd: repo, background_tasks: types.map(type => ({ type })) }, Date.now(), 'claude') as Output
+    for (const type of ['subagent', 'workflow', 'teammate']) assert.equal(stopWith(['shell', type]), undefined, type)
+    assert.match(stopWith(['shell', 'monitor'])?.reason ?? '', NOT_FOCUSED)
   })
 })
 
