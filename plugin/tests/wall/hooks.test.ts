@@ -4,7 +4,8 @@ import assert from 'node:assert/strict'
 import { appendFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { ENV, hook, modwall, sampleRepo, sh, tempDir, write } from './helpers.ts'
+import { userAgrees } from '../helpers.ts'
+import { editConfig, ENV, hook, modwall, pendingOf, sampleRepo, sh, tempDir, write } from './helpers.ts'
 
 const edit = (repo: string, path: string, tool = 'Write'): Record<string, any> | undefined =>
   hook(repo, 'PreToolUse', { tool_name: tool, tool_input: { file_path: join(repo, path) } })
@@ -249,7 +250,7 @@ describe('结束之前', () => {
     assert.match(stop(repo, 's2') as string, /modwall check/)
   })
 
-  test('在默认分支上：检查通过后提交、默认分支往前走，通过记录照样有效；分叉点上的配置变了才要重跑', () => {
+  test('在默认分支上：检查通过后提交、默认分支往前走，通过记录照样有效；提交了配置的改动也一样', () => {
     const repo = sampleRepo()
     sh(repo, 'git checkout -q main')
     hook(repo, 'SessionStart', { session_id: 'main1' })
@@ -263,7 +264,7 @@ describe('结束之前', () => {
     write(repo, 'notes.md', '说明\n')
     sh(repo, 'git add -A && git commit -qm notes')
     assert.equal(blocked(repo, 'main1'), undefined)
-    // 提交了配置的改动：分叉点上的配置变了，要重跑
+    // 改了配置、check 通过后提交：分叉点上的配置跟着变了，通过记录照样有效
     editBy(repo, 'main1', '.modwall/config.json', file => {
       const config = JSON.parse(readFileSync(file, 'utf8'))
       config.entry = ['index.ts']
@@ -271,7 +272,75 @@ describe('结束之前', () => {
     })
     assert.equal(modwall(repo, ['check']).code, 0)
     sh(repo, 'git add -A && git commit -qm entry')
-    assert.match(blocked(repo, 'main1') as string, /modwall check/)
+    assert.equal(blocked(repo, 'main1'), undefined)
+    assert.match(modwall(repo, ['status']).out, /当前内容 modwall check 通过过/)
+  })
+
+  test('只改测试文件不让通过记录作废：停止门不要求重跑，modwall status 仍说通过过；会话只改了测试不算改了代码', () => {
+    const repo = sampleRepo()
+    hook(repo, 'SessionStart', { session_id: 't1' })
+    // 只改测试：各种认作测试的路径，测试里引别的模块的内部文件也一样
+    const tests = ['tests/booking.test.ts', 'src/modules/billing/__tests__/fee.ts', 'src/modules/billing/fee.spec.ts', 'src/modules/booking/fixtures/slot.ts']
+    for (const path of tests) editBy(repo, 't1', path, file => write(repo, path, "import { create } from '../../booking/internal/create.ts'\nexport const x = create\n"))
+    assert.equal(blocked(repo, 't1'), undefined)
+
+    editBy(repo, 't1', 'src/modules/billing/index.ts', append('\nexport const fee = 1\n'))
+    assert.match(blocked(repo, 't1') as string, /modwall check/)
+    assert.equal(modwall(repo, ['check']).code, 0)
+    for (const path of tests) editBy(repo, 't1', path, append('\nexport const y = 2\n'))
+    assert.equal(blocked(repo, 't1'), undefined)
+    assert.match(modwall(repo, ['status']).out, /当前内容 modwall check 通过过/)
+
+    // 改正式代码照样要重跑
+    editBy(repo, 't1', 'src/modules/billing/index.ts', append('\nexport const tax = 1\n'))
+    assert.match(blocked(repo, 't1') as string, /modwall check/)
+    assert.match(modwall(repo, ['status']).out, /当前内容还没有通过记录/)
+  })
+
+  test('分叉点挪了、内容没变：功能分支放宽配置经用户同意、check 通过，提交后快进到默认分支，通过记录照样有效', () => {
+    const repo = sampleRepo()
+    hook(repo, 'SessionStart', { session_id: 'ff1' })
+    editBy(repo, 'ff1', '.modwall/config.json', file => {
+      const config = JSON.parse(readFileSync(file, 'utf8'))
+      config.shared.push('src/common/**')
+      writeFileSync(file, JSON.stringify(config, null, 2))
+    })
+    const asked = pendingOf(modwall(repo, ['check']).out)
+    userAgrees(repo, asked.id, asked.text)
+    assert.equal(modwall(repo, ['check']).code, 0)
+    sh(repo, 'git add -A && git commit -qm shared && git checkout -q main && git merge -q --ff-only feature')
+    // 快进后分叉点就是自己，配置和分叉点一样；在默认分支上收尾
+    assert.equal(blocked(repo, 'ff1'), undefined)
+    assert.match(modwall(repo, ['status']).out, /当前内容 modwall check 通过过/)
+  })
+
+  test('分叉点挪到更严的配置上、内容没变：和分叉点比多出了通过时没有的放宽项，通过记录不算数，要重跑 modwall check', () => {
+    const repo = sampleRepo()
+    hook(repo, 'SessionStart', { session_id: 'm1' })
+    editBy(repo, 'm1', 'src/modules/billing/index.ts', append('\nexport const fee = 1\n'))
+    // 配置没动：通过时没有放宽项
+    assert.equal(modwall(repo, ['check']).code, 0)
+    assert.equal(blocked(repo, 'm1'), undefined)
+
+    // 默认分支收紧了配置（去掉入口文件名 index.js）；分支把默认分支合进来时留了自己这边的配置，工作区和通过时一样
+    sh(repo, 'git checkout -q main')
+    editConfig(repo, config => {
+      config.entry = config.entry.filter((name: string) => name !== 'index.js')
+    })
+    sh(repo, 'git commit -qm tighten -- .modwall/config.json && git checkout -q feature && git merge -q -s ours main -m merge')
+    assert.match(sh(repo, 'git status --short'), /^ M src\/modules\/billing\/index\.ts\n$/)
+    assert.match(blocked(repo, 'm1') as string, /modwall check/)
+    assert.match(modwall(repo, ['status']).out, /当前内容还没有通过记录/)
+
+    // 重跑：多出来的这项要用户同意，同意后通过
+    const r = modwall(repo, ['check'])
+    assert.equal(r.code, 1, r.out)
+    const asked = pendingOf(r.out)
+    assert.deepEqual(asked.items, ['entry 新增入口文件名 "index.js"'])
+    userAgrees(repo, asked.id, asked.text)
+    assert.equal(modwall(repo, ['check']).code, 0)
+    assert.equal(blocked(repo, 'm1'), undefined)
+    assert.match(modwall(repo, ['status']).out, /当前内容 modwall check 通过过/)
   })
 
   test('同一个仓库两个工作区、两个会话：只进去看过别人工作区的会话不为那边的改动被拦；自己也动手改了那边，照常拦', () => {

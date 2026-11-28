@@ -17,7 +17,7 @@ import { type App, CONFIG_PATH, joined, readConfig, type Scheme, schemeOf } from
 import { entryBypass } from './edit.ts'
 import { isCode, unreadDirectory } from './files.ts'
 import { type Layout, type Module, ownerIn } from './layout.ts'
-import { CONTENT_FORMAT, contentKey, layoutOf, openProject } from './project.ts'
+import { checkPassed, CONTENT_FORMAT, contentKey, layoutOf, openProject } from './project.ts'
 import { unownedText } from './rules.ts'
 import { MODULE, openStore } from './store.ts'
 
@@ -51,7 +51,7 @@ export function unfinished(repo: Repo, sessionId: string, seen: (key: string) =>
   const opened = openProject(repo.root)
   if ('notJoined' in opened) return undefined
   const now = contentKey(opened.project)
-  if (baselines(repo).since(sessionId, now) === now || openStore(repo).passes.get(now)) return undefined
+  if (baselines(repo).since(sessionId, now) === now || checkPassed(opened.project, openStore(repo))) return undefined
   const key = `wall:check:${now}`
   if (seen(key)) return undefined
   return {
