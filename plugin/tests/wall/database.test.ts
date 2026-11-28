@@ -428,7 +428,7 @@ describe('读 SQL', () => {
 })
 
 describe('modwall check 里的 R6', () => {
-  test('模块的代码和迁移以外的 .sql 里切身份拦（按固定写法认，不分大小写；迁移另按语句查）；装配层、共享层、测试文件里可以', () => {
+  test('模块的代码（字符串字面量里的整句 SQL）和迁移以外的 .sql 里切身份拦，报那句所在的行、显示那句（迁移另按语句查）；装配层、共享层、测试文件里可以', () => {
     const code: Record<string, string> = {
       'src/modules/orders/repo.ts': "const a = 1\nawait db.query('set local role billing')\nawait db.query(`SELECT set_config( 'role', $1, true)`)\n",
       'src/modules/billing/auth.py': 'cursor.execute("RESET ROLE")\nuser.set_role("admin")\n',
@@ -442,12 +442,165 @@ describe('modwall check 里的 R6', () => {
     const { layout } = project({ 'src/modules/orders/migrations/20261118090000_orders.sql': '' })
     const found = codeRoleSwitches(layout.databases, Object.keys(code), path => layout.owner(path), path => code[path] as string)
     assert.deepEqual(found.map(v => v.where[0]), [
-      "src/modules/orders/repo.ts:2（orders 模块）切了数据库的身份：set local role",
-      "src/modules/orders/repo.ts:3（orders 模块）切了数据库的身份：set_config( 'role'",
+      'src/modules/orders/repo.ts:2（orders 模块）切了数据库的身份：set local role billing',
+      "src/modules/orders/repo.ts:3（orders 模块）切了数据库的身份：SELECT set_config( 'role', $1, true)",
       'src/modules/billing/auth.py:1（billing 模块）切了数据库的身份：RESET ROLE',
-      'src/modules/orders/queries/as_billing.sql:1（orders 模块）切了数据库的身份：SET LOCAL ROLE',
+      'src/modules/orders/queries/as_billing.sql:1（orders 模块）切了数据库的身份：SET LOCAL ROLE billing;',
     ])
     assert.match(found[0]?.fix as string, /模块的代码不自己切身份：连接在事务开头由装配层或共享层里那个切身份的小函数切成本模块的角色/)
+  })
+
+  /** 模块里的代码文件、.sql 交给 R6：报出来的位置和显示的句子。 */
+  function switches(code: Record<string, string>): string[] {
+    const { layout } = project({})
+    return codeRoleSwitches(layout.databases, Object.keys(code), path => layout.owner(path), path => code[path] as string).map(v => v.where[0] as string)
+  }
+
+  test('注释、界面文字、说明句不拦：四种语言的注释，首字母大写的开头词，名字后面还有词的，没有名字也没拼接的，给叫 role 的列赋值的', () => {
+    const found = switches({
+      'src/modules/orders/session.ts': [
+        '// reset role after logout',
+        '/* SET ROLE billing */',
+        "toast('Reset role')",
+        "const label = 'Set role'",
+        "const hint = 'Set role for user'",
+        "const help = 'set role for the new member'",
+        'const title = "SET ROLE"',
+        "user.setRole('admin')",
+        "await db.query('UPDATE users SET role = $1 WHERE id = $2')",
+      ].join('\n'),
+      'src/modules/billing/auth.py': '# SET ROLE billing\nlabel = "Reset role"\n"""Set role for the user."""\n',
+      'src/modules/billing/db.go': "// SET ROLE billing\n/* RESET ROLE */\nvar sep = ';'\n",
+      'src/modules/billing/Auth.java': "// RESET ROLE\n/* SET ROLE billing */\nchar q = '\\'';\nString title = \"Set role\";\n",
+    })
+    assert.deepEqual(found, [])
+  })
+
+  test('JS/TS 里真切身份的写法都认出来：大写小写、LOCAL/SESSION、带引号的名字、插值、拼接、SESSION AUTHORIZATION、RESET、set_config', () => {
+    const found = switches({
+      'src/modules/orders/repo.ts': [
+        "await db.query('SET ROLE billing')",
+        'await db.query("set role billing")',
+        "await db.query('SET SESSION ROLE billing')",
+        "await db.query('SET LOCAL ROLE \"orders\"')",
+        'await db.query(`SET LOCAL ROLE ${role}`)',
+        "await db.query('SET ROLE ' + role)",
+        "await db.query('SET LOCAL SESSION AUTHORIZATION app')",
+        "await db.query('RESET SESSION AUTHORIZATION')",
+        "await db.query('reset role')",
+        "await db.query(`SELECT set_config( 'role', $1, true)`)",
+      ].join('\n'),
+      'src/modules/billing/Panel.tsx': "await db.query('SET SESSION AUTHORIZATION ' + user)\n",
+    })
+    const at = (line: number, text: string): string => `src/modules/orders/repo.ts:${line}（orders 模块）切了数据库的身份：${text}`
+    assert.deepEqual(found, [
+      at(1, 'SET ROLE billing'),
+      at(2, 'set role billing'),
+      at(3, 'SET SESSION ROLE billing'),
+      at(4, 'SET LOCAL ROLE "orders"'),
+      at(5, 'SET LOCAL ROLE …'),
+      at(6, 'SET ROLE'),
+      at(7, 'SET LOCAL SESSION AUTHORIZATION app'),
+      at(8, 'RESET SESSION AUTHORIZATION'),
+      at(9, 'reset role'),
+      at(10, "SELECT set_config( 'role', $1, true)"),
+      'src/modules/billing/Panel.tsx:1（billing 模块）切了数据库的身份：SET SESSION AUTHORIZATION',
+    ])
+  })
+
+  test('Python、Go、Java 也只看字符串字面量：注释不拦；格式占位、f-string、.format、原始字符串、多行字符串、Go 的反引号、Java 的文本块和拼接里的切身份拦', () => {
+    const found = switches({
+      'src/modules/billing/auth.py': [
+        'cursor.execute("SET ROLE %s", (role,))',
+        'cursor.execute(f"SET LOCAL ROLE {role}")',
+        'cursor.execute("SET ROLE {}".format(role))',
+        'cursor.execute(r"RESET ROLE")',
+        'cursor.execute("""',
+        '    BEGIN;',
+        '    SET LOCAL ROLE billing;',
+        '""")',
+        '# SET ROLE billing',
+      ].join('\n'),
+      'src/modules/billing/db.go': ['db.Exec("SET ROLE billing")', 'db.Exec(`SET LOCAL ROLE billing`)', 'db.Exec(fmt.Sprintf("SET ROLE %q", role))', '// RESET ROLE'].join('\n'),
+      'src/modules/billing/Auth.java': [
+        'stmt.execute("SET ROLE " + role);',
+        'stmt.execute("""',
+        '    SET LOCAL ROLE billing',
+        '    """);',
+        'stmt.execute(String.format("SET SESSION AUTHORIZATION %s", user));',
+        '/* RESET ROLE */',
+      ].join('\n'),
+    })
+    const at = (path: string, line: number, text: string): string => `src/modules/billing/${path}:${line}（billing 模块）切了数据库的身份：${text}`
+    assert.deepEqual(found, [
+      at('auth.py', 1, 'SET ROLE …'),
+      at('auth.py', 2, 'SET LOCAL ROLE …'),
+      at('auth.py', 3, 'SET ROLE …'),
+      at('auth.py', 4, 'RESET ROLE'),
+      at('auth.py', 7, 'SET LOCAL ROLE billing'),
+      at('db.go', 1, 'SET ROLE billing'),
+      at('db.go', 2, 'SET LOCAL ROLE billing'),
+      at('db.go', 3, 'SET ROLE …'),
+      at('Auth.java', 1, 'SET ROLE'),
+      at('Auth.java', 3, 'SET LOCAL ROLE billing'),
+      at('Auth.java', 5, 'SET SESSION AUTHORIZATION …'),
+    ])
+  })
+
+  test('一个字面量里有几句时，有一句切身份就拦，报那句所在的行、只显示那句', () => {
+    const found = switches({
+      'src/modules/orders/tx.ts': [
+        "await db.query('BEGIN; SET LOCAL ROLE \"orders\"; SELECT 1')",
+        'await db.query(`',
+        '  BEGIN;',
+        '  SET LOCAL ROLE billing;',
+        '  SELECT * FROM invoices;',
+        '`)',
+        "await db.query('BEGIN; SELECT 1; COMMIT')",
+      ].join('\n'),
+    })
+    assert.deepEqual(found, [
+      'src/modules/orders/tx.ts:1（orders 模块）切了数据库的身份：SET LOCAL ROLE "orders"',
+      'src/modules/orders/tx.ts:4（orders 模块）切了数据库的身份：SET LOCAL ROLE billing',
+    ])
+  })
+
+  test('显示的句子：空白压成一个空格，插值显示成 …，超过 80 字截断加 …', () => {
+    const found = switches({
+      'src/modules/orders/repo.ts': [
+        'await db.query(`SET   LOCAL',
+        '    ROLE billing`)',
+        "await db.query(`SELECT set_config('role', current_setting('app.request_module_role_for_this_handler'), true), ${now}`)",
+      ].join('\n'),
+    })
+    assert.deepEqual(found, [
+      'src/modules/orders/repo.ts:1（orders 模块）切了数据库的身份：SET LOCAL ROLE billing',
+      "src/modules/orders/repo.ts:3（orders 模块）切了数据库的身份：SELECT set_config('role', current_setting('app.request_module_role_for_this_hand…",
+    ])
+  })
+
+  test('模块里迁移目录以外的 .sql 按语句查：注释里的、给叫 role 的列赋值的不拦，RESET ROLE 拦', () => {
+    const found = switches({
+      'src/modules/orders/queries/reset.sql': ['-- SET ROLE billing', '/* RESET ROLE */', 'UPDATE users SET role = $1 WHERE id = $2;', 'RESET ROLE;'].join('\n'),
+    })
+    assert.deepEqual(found, ['src/modules/orders/queries/reset.sql:4（orders 模块）切了数据库的身份：RESET ROLE;'])
+  })
+
+  test('JS 的正则字面量里的引号、除号不会把后面的代码切歪：后面字面量里的切身份照样认出来', () => {
+    const found = switches({
+      'src/modules/orders/repo.ts': [
+        "const safe = name.replace(/'/g, \"''\")",
+        "await db.query('SET ROLE billing')",
+        "const ratio = a / b; await db.query('SET ROLE orders')",
+        "const n = total / 2 / count",
+        "await db.query('RESET ROLE')",
+      ].join('\n'),
+    })
+    assert.deepEqual(found, [
+      'src/modules/orders/repo.ts:2（orders 模块）切了数据库的身份：SET ROLE billing',
+      'src/modules/orders/repo.ts:3（orders 模块）切了数据库的身份：SET ROLE orders',
+      'src/modules/orders/repo.ts:5（orders 模块）切了数据库的身份：RESET ROLE',
+    ])
   })
 
   test('示例项目加上数据库：迁移干净时通过；有越界时 R6 拦，时间戳重复是配置错误', () => {
