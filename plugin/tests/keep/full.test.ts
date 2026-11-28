@@ -66,7 +66,7 @@ describe('会话开始时的说明', () => {
     assert.doesNotMatch(sessionBrief(repo), /5\. 前端/)
     write(repo, '.codekeep/config.json', keepConfig({ checks: [{ name: 'lint', command: 'true' }], styles: { theme: ['src/theme.ts'], ui: ['src/ui', 'admin/ui'] } }))
     const told = sessionBrief(repo)
-    assert.match(told, /5\. 前端：页面上不加说明文字；组件不合适时不写样式、不写具体的值去补，告诉用户。/)
+    assert.match(told, /5\. 前端：组件不合适时不写样式、不写具体的值去补，告诉用户。页面上不加说明文字：lint 的文字警告只是提示，/)
     assert.match(told, /具体的颜色、尺寸只写在主题 src\/theme\.ts、组件层 src\/ui 里的样式文件、组件层 admin\/ui 里的样式文件；/)
     assert.match(told, /前端文件里"这里不查"的注释不起作用，lint 报了就改代码。/)
   })

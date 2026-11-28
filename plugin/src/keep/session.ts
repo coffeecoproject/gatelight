@@ -22,7 +22,7 @@ export function guide(label = '这个仓库', styles?: StylesConfig): string[] {
 function frontend(styles: StylesConfig): string {
   const places = [...styles.theme.map(path => `主题 ${path}`), ...styles.ui.map(dir => `组件层 ${dir} 里的样式文件`)].join('、')
   return [
-    '5. 前端：页面上不加说明文字；组件不合适时不写样式、不写具体的值去补，告诉用户。',
+    '5. 前端：组件不合适时不写样式、不写具体的值去补，告诉用户。页面上不加说明文字：lint 的文字警告只是提示，放的是数据、单位、问句、要照录的不用改，不为消掉警告删掉原因、办法和数据。',
     `具体的颜色、尺寸只写在${places}；要改先在对话里讲清楚改什么、为什么，整组会要用户确认。`,
     '前端文件里"这里不查"的注释不起作用，lint 报了就改代码。',
   ].join('')

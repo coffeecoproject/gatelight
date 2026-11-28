@@ -7,7 +7,7 @@
 // 只比两边都有的文件：这次新加的文件没有"原来"。
 
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { ConfirmItem } from '../base/confirm.ts'
 
@@ -29,8 +29,12 @@ export const isCode = (path: string): boolean => /\.[cm]?[jt]sx?$/.test(path)
 
 interface LintMessage {
   severity: number
+  line?: number
+  message: string
+  ruleId: string | null
 }
 interface LintResult {
+  filePath: string
   errorCount: number
   warningCount: number
   messages: LintMessage[]
@@ -91,10 +95,17 @@ export async function fileRules(eslint: EslintClass, tree: string, config: strin
   return result
 }
 
-/** lint 的结果：错误、警告各几条，有错误时是只列错误的报告。 */
+/** 一条警告：file 相对 root。 */
+export interface Warning {
+  file: string
+  line: number
+  message: string
+}
+
+/** lint 的结果：错误几条，有错误时是只列错误的报告；警告逐条给出，由调用方挑这次改到的行。 */
 export interface Linted {
   errors: number
-  warnings: number
+  warnings: Warning[]
   report: string
 }
 
@@ -106,7 +117,9 @@ export async function lint(eslint: EslintClass, root: string, config: string, fi
   const instance = new eslint({ cwd: root, overrideConfigFile: join(root, config) })
   const results = await instance.lintFiles(files.map(file => join(root, file)))
   const errors = results.reduce((sum, result) => sum + result.errorCount, 0)
-  const warnings = results.reduce((sum, result) => sum + result.warningCount, 0)
+  const warnings = results.flatMap(result =>
+    result.messages.filter(message => message.severity === 1).map(message => ({ file: relative(root, result.filePath), line: message.line ?? 0, message: message.message })),
+  )
   if (errors === 0) return { errors, warnings, report: '' }
   const onlyErrors = results
     .filter(result => result.errorCount > 0)

@@ -13,6 +13,9 @@ import { NODE_MODULES, tempDir, write } from './helpers.ts'
 const TEMPLATE = fileURLToPath(new URL('../../skills/setup-codekeep/frontend.eslint.mjs', import.meta.url))
 const HINT = '（codekeep 前端规则）'
 const RESTRICTED = 'no-restricted-syntax'
+/** 文字规则（字数、标点、放说明的位置、说明用的横幅）单独一条，只是警告。 */
+const TEXT = 'codekeep/text'
+const NO_DISABLE = '@eslint-community/eslint-comments/no-restricted-disable'
 
 type Change = Record<string, string>
 
@@ -105,14 +108,68 @@ async function messages(eslint: ESLint, path: string, code: string): Promise<Lin
   return result?.messages ?? []
 }
 
-/** 模板的规则报了哪些：每条写成"行号 类别"（提示里"："或"（"前面那段）。 */
+const category = (message: Linter.LintMessage): string => message.message.split(/[：（]/)[0] ?? ''
+
+/** 模板的规则（拦下的和文字警告）报了哪些：每条写成"行号 类别"（提示里"："或"（"前面那段）。报错还是警告另在"拦下还是提示"里测。 */
 async function lint(path: string, code: string, eslint: ESLint = ANTD): Promise<string[]> {
-  return (await messages(eslint, path, code)).filter(message => message.ruleId === RESTRICTED).map(message => `${message.line} ${message.message.split(/[：（]/)[0]}`)
+  return (await messages(eslint, path, code)).filter(message => message.ruleId === RESTRICTED || message.ruleId === TEXT).map(message => `${message.line} ${category(message)}`)
 }
 
 const PAGE = 'src/pages/Orders.tsx'
 /** 一个页面文件：lines 每项一行，放在组件返回的 <> </> 里（第 2 行起）。 */
 const page = (...lines: string[]): string => `export const Page = () => (<>\n${lines.join('\n')}\n</>)\n`
+
+describe('拦下还是提示：文字规则只是警告，结构禁令和写死的值是错误', () => {
+  /** 每条写成"行号 类别 规则 级别"（1 警告、2 错误）。 */
+  const levels = async (path: string, code: string): Promise<string[]> =>
+    (await messages(ANTD, path, code)).filter(message => message.ruleId === RESTRICTED || message.ruleId === TEXT).map(message => `${message.line} ${category(message)} ${message.ruleId} ${message.severity}`)
+  const code = [
+    "import '../a.css'",
+    "import { fake } from './__tests__/fake'",
+    'export const Page = () => (<>',
+    '<span>一二三四五六七八九十十一二</span>',
+    '<span>名称，编号</span>',
+    '<p>名称</p>',
+    "<Form.Item extra='名称' />",
+    "<Alert title='名称' />",
+    "<span onClick={() => message.error('保存没成功。请稍后再试')} />",
+    '<Col style={s} />',
+    '<Space size={4} />',
+    "<Tag color='#fff' />",
+    '<div />',
+    '</>)',
+    'export { fake }',
+    '',
+  ].join('\n')
+  const warn = `${TEXT} 1`
+  const error = `${RESTRICTED} 2`
+
+  for (const [where, path, styleFile] of [
+    ['页面', PAGE, '引样式文件'],
+    ['组件层', 'src/ui/Button.tsx', '只引同目录的样式文件'],
+  ] as const) {
+    test(`${where}：超字数、句子标点、放说明的位置、说明用的横幅、正文不止一句报警告（${TEXT}）；写样式、写死的值、引样式文件、引测试目录、占位报错误`, async () => {
+      assert.deepEqual(await levels(path, code), [
+        `1 ${styleFile} ${error}`,
+        `2 页面不用测试目录里的代码 ${error}`,
+        `4 文字超过 12 个字 ${warn}`,
+        `5 文字带了句子标点 ${warn}`,
+        `6 段落是放说明的 ${warn}`,
+        `7 这个参数是放说明的 ${warn}`,
+        `8 说明用的横幅 ${warn}`,
+        `9 正文不止一句 ${warn}`,
+        `10 写样式 ${error}`,
+        `11 写死的数字 ${error}`,
+        `12 写死的颜色或长度 ${error}`,
+        `13 占位 ${error}`,
+      ])
+    })
+  }
+
+  test('就地改主题报错误', async () => {
+    assert.deepEqual(await levels(PAGE, page('<ConfigProvider theme={theme}><Button>新建</Button></ConfigProvider>')), [`2 就地改主题 ${error}`])
+  })
+})
 
 describe('页面上的固定文字只放名字', () => {
   test('带中文的文字超过 12 个字报：JSX 文字、字符串、模板字符串的每一段都算；12 个字以内不报', async () => {
@@ -641,7 +698,7 @@ describe('不写具体的值', () => {
     assert.deepEqual(
       await lint(
         PAGE,
-        page("<Tag color={'#f50'} />", "<Tag color={ok ? '#f50' : '#000'} />", "<Tag color={ok && 'rgb(1, 2, 3)'} />", "<img width={a ? '8px' : b ? '50%' : 'auto'} />", "<Tag color={ok ? `rgb(${r}, 0, 0)` : 'red'} />"),
+        page("<Tag color={'#f50'} />", "<Tag color={ok ? '#f50' : '#000'} />", "<Tag color={ok && 'rgb(1, 2, 3)'} />", "<circle fill={a ? '#f50' : b ? 'rgb(1, 2, 3)' : 'none'} />", "<Tag color={ok ? `rgb(${r}, 0, 0)` : 'red'} />"),
       ),
       ['2 写死的颜色或长度', '3 写死的颜色或长度', '3 写死的颜色或长度', '4 写死的颜色或长度', '5 写死的颜色或长度', '5 写死的颜色或长度', '6 写死的颜色或长度'],
     )
@@ -688,7 +745,7 @@ describe('不写具体的值', () => {
 
   test('管外观的参数里模板字符串拼的颜色（`rgb(${r}, 0, 0)`）和长度（`${w}px`、rem、vh、vw）也报；不是颜色、长度的拼接不报', async () => {
     const templates = ['`rgb(${r}, 0, 0)`', '`oklch(${l} 0.1 200)`', '`${w}px`', '`${w}rem`', '`${h}vh`', '`${w}vw`', '`${a}-${b}`', '`${count} 个`', '`${w}pixels`']
-    assert.deepEqual(await lint(PAGE, page(...templates.map(value => `<Tag color={${value}} />`), '<rect fill={`rgb(${x},0,0)`} width={`${x}px`} />')), [
+    assert.deepEqual(await lint(PAGE, page(...templates.map(value => `<Tag color={${value}} />`), '<rect fill={`rgb(${x},0,0)`} strokeWidth={`${x}px`} />')), [
       '2 写死的颜色或长度',
       '3 写死的颜色或长度',
       '4 写死的颜色或长度',
@@ -766,23 +823,39 @@ describe('文字和具体的值只查列明的位置', () => {
     assert.deepEqual(await lint(PAGE, code), [])
   })
 
-  test('原生元素上的 width、height、size、color、fill、stroke、strokeWidth、fontSize、fontWeight、opacity 写死的值报', async () => {
+  test('SVG 元素上的 fill、stroke、strokeWidth、opacity、fillOpacity、strokeOpacity、fontSize、fontWeight、color 写死的值报', async () => {
     const code = page(
-      '<img width={200} />',
-      "<svg height='12px' />",
-      '<input size={20} />',
-      "<font color='#f50' />",
+      "<rect fill='#f00' />",
       "<circle fill='#333' />",
       "<line stroke='rgb(1, 2, 3)' />",
       '<rect strokeWidth={2} />',
-      '<text fontSize={-1} />',
-      '<text fontWeight={600} />',
       '<path opacity={0.5} />',
+      '<g fillOpacity={0.5} />',
+      '<polygon strokeOpacity={0.3} />',
+      '<text fontSize={-1} />',
+      '<tspan fontWeight={600} />',
+      "<svg color='#f50' />",
     )
     assert.deepEqual(
       await lint(PAGE, code),
-      ['2 写死的数字', '3 写死的颜色或长度', '4 写死的数字', '5 写死的颜色或长度', '6 写死的颜色或长度', '7 写死的颜色或长度', '8 写死的数字', '9 写死的数字', '10 写死的数字', '11 写死的数字'],
+      ['2 写死的颜色或长度', '3 写死的颜色或长度', '4 写死的颜色或长度', '5 写死的数字', '6 写死的数字', '7 写死的数字', '8 写死的数字', '9 写死的数字', '10 写死的数字', '11 写死的颜色或长度'],
     )
+  })
+
+  test('原生元素的 width、height、size 不算外观、不报：img、canvas、input、select 的，SVG 的 width、height；不在 SVG 清单里的小写元素（react-three-fiber 的材质）上的 color 也不报', async () => {
+    const code = page(
+      '<img width={220} height={120} />',
+      "<img width='220px' />",
+      '<canvas width={800} height={600} />',
+      '<input size={20} />',
+      '<select size={4} />',
+      '<svg width={24} height={24} />',
+      "<svg width='24px' />",
+      '<rect width={10} height={10} />',
+      "<meshStandardMaterial color='#f00' />",
+      "<font color='#f50' />",
+    )
+    assert.deepEqual(await lint(PAGE, code), [])
   })
 
   test('原生元素上的这些参数名写在组件上不算管外观：没列明就不查', async () => {
@@ -838,8 +911,8 @@ describe('不写样式', () => {
     )
   })
 
-  test('<br> 和没有属性、没有子元素的空 <div>、<span> 报"占位"；有属性或有内容的不报', async () => {
-    assert.deepEqual(await lint(PAGE, page('<br />', '<div />', '<span></span>', '<div id={id} />', '<span>订单</span>', '<div><Button>新建</Button></div>')), ['2 占位', '3 占位', '4 占位'])
+  test('没有属性、没有子元素的空 <div>、<span> 报"占位"；有属性或有内容的不报；<br> 不报', async () => {
+    assert.deepEqual(await lint(PAGE, page('<br />', '<div />', '<span></span>', '<div id={id} />', '<span>订单</span>', '<div><Button>新建</Button></div>')), ['3 占位', '4 占位'])
   })
 
   test('ConfigProvider 报"就地改主题"', async () => {
@@ -886,6 +959,14 @@ describe('代码里就地关规则不起作用', () => {
     assert.deepEqual(await lint(PAGE, 'export const Page = () => (<>\n{/* eslint-disable-next-line */}\n<p>名称</p>\n</>)\n'), ['3 段落是放说明的'])
     assert.deepEqual(await lint(PAGE, `export const a = 1\n// eslint-disable-next-line ${RESTRICTED}\nexport const B = () => <Tag color='#fff' />\n`), ['3 写死的颜色或长度'])
   })
+
+  test('关文字警告（codekeep/text）的注释也不起作用：违规照样报；关这两条规则的注释本身报错', async () => {
+    assert.deepEqual(await lint(PAGE, `/* eslint-disable ${TEXT} */\n${page('<p>名称</p>')}`), ['3 段落是放说明的'])
+    assert.deepEqual(await lint(PAGE, `/* eslint ${TEXT}: off */\n${page('<p>名称</p>')}`), ['3 段落是放说明的'])
+    const code = `/* eslint-disable ${TEXT} */\n/* eslint-disable ${RESTRICTED} */\n/* eslint-disable no-console */\n${page('<p>名称</p>')}`
+    const comments = (await messages(ANTD, PAGE, code)).filter(message => message.ruleId === NO_DISABLE).map(message => `${message.line} ${message.severity}`)
+    assert.deepEqual(comments, ['1 2', '2 2'])
+  })
 })
 
 describe('组件层（UI 目录）', () => {
@@ -921,7 +1002,7 @@ describe('主题文件', () => {
 })
 
 describe('测试文件', () => {
-  const BAD = page('<p>名称</p>', '<Space size={4} style={s} />', '<span>名称，编号</span>', '<br />')
+  const BAD = page('<p>名称</p>', '<Space size={4} style={s} />', '<span>名称，编号</span>', '<div />')
 
   test('*.test.*、*.spec.*、__tests__/ 下的文件，页面规则一条都不报', async () => {
     assert.equal((await lint(PAGE, BAD)).length, 5)
@@ -946,7 +1027,7 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
     await assert.rejects(lint(PAGE, page('<span>名称</span>'), project({ UI_LANGUAGE: "'zh'" })), /先填 COMPONENT_LIBRARY 和组件库那几项/)
   })
 
-  test("写 'none' 时通用规则照报：字数、标点、<p>、<br>、空的 div/span、style 和 className、原生元素上写死的数字和颜色、引样式文件、引测试目录", async () => {
+  test("写 'none' 时通用规则照报：字数、标点、<p>、空的 div/span、style 和 className、SVG 元素上写死的数字和颜色、引样式文件、引测试目录；<br>、img 的宽不报", async () => {
     const code = [
       "import './a.css'",
       "import { fake } from './__tests__/fake'",
@@ -957,8 +1038,9 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
       '<br />',
       '<div />',
       '<span style={s} className={c} />',
-      '<img width={4} />',
+      '<rect strokeWidth={4} />',
       "<svg fill='#fff' />",
+      '<img width={4} />',
       '</>)',
       'export { fake }',
       '',
@@ -969,7 +1051,6 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
       '4 文字超过 12 个字',
       '5 文字带了句子标点',
       '6 段落是放说明的',
-      '7 占位',
       '8 占位',
       '9 写样式',
       '9 写样式',
@@ -1002,7 +1083,7 @@ describe('COMPONENT_LIBRARY：不填报错，写 none 只有通用规则', () =>
 
   test("写 'none' 时组件层、主题文件照原来的规则", async () => {
     const UI = 'src/ui/Button.tsx'
-    assert.deepEqual(await lint(UI, page('<button className={c} />', '<Btn style={s} />', '<p>名称</p>', '<img width={4} />'), NONE), ['3 写样式', '4 段落是放说明的', '5 写死的数字'])
+    assert.deepEqual(await lint(UI, page('<button className={c} />', '<Btn style={s} />', '<p>名称</p>', '<rect strokeWidth={4} />'), NONE), ['3 写样式', '4 段落是放说明的', '5 写死的数字'])
     assert.deepEqual(await lint(UI, "import './a.css'\nimport '../b.css'\nexport const a = 1\n", NONE), ['2 只引同目录的样式文件'])
     assert.deepEqual(await lint('src/theme.ts', "export const theme = { colorPrimary: '#1677ff', fontSize: 14 }\n", NONE), [])
   })
@@ -1073,9 +1154,13 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
     assert.deepEqual(await lint(PAGE, code, eslint), ['2 这个参数是放说明的', '3 这个参数是放说明的', '5 正文超过 16 个字', '7 这个参数是放说明的', '8 这个参数是放说明的'])
   })
 
-  test('NOTICE_CALLS、CONFIRM_CALLS、RULE_MESSAGES 按填的对象、方法、字段认正文：toast、modals.openConfirmModal、Controller 的 rules；没填的对象、方法、字段不算正文，写在 JSX 外面，不查', async () => {
+  test('NOTICE_CALLS、CONFIRM_CALLS、RULE_MESSAGES 按填的对象、方法、字段认正文：toast(…)、toast.error(…)、modals.openConfirmModal、Controller 的 rules；没填的对象、方法、字段不算正文，写在 JSX 外面，不查', async () => {
     const code = page(
+      `<span onClick={() => toast('${OK}')} />`,
+      `<span onClick={() => toast('${LONG}')} />`,
+      "<span onClick={() => toast('保存没成功。请稍后再试')} />",
       `<span onClick={() => toast.error('${OK}')} />`,
+      `<span onClick={() => toast.error('${LONG}')} />`,
       `<span onClick={() => toast.error({ description: '${LONG}' })} />`,
       `<span onClick={() => toast.error({ title: '${LONG}' })} />`,
       `<span onClick={() => modals.openConfirmModal({ title: '${OK}' })} />`,
@@ -1092,7 +1177,7 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
       CONFIRM_CALLS: "[['modals', ['openConfirmModal'], ['title']]]",
       RULE_MESSAGES: "[['rules', 'required']]",
     })
-    assert.deepEqual(await lint(PAGE, code, eslint), ['3 正文超过 16 个字', '6 正文超过 16 个字', '10 正文超过 16 个字'])
+    assert.deepEqual(await lint(PAGE, code, eslint), ['3 正文超过 16 个字', '4 正文不止一句', '6 正文超过 16 个字', '7 正文超过 16 个字', '10 正文超过 16 个字', '14 正文超过 16 个字'])
   })
 
   test('组件名带点的照 JSX 里的写法认：DESC_ELEMENTS、DESC_PROPS、ENTRY_PROPS、ENTRY_CHILDREN、THEME_PROVIDERS、ERROR_BANNERS 都只认两段都对上的', async () => {
@@ -1143,13 +1228,15 @@ describe('组件库那几项：按填进去的值起作用，没填的不管（�
 })
 
 describe('提示文字', () => {
-  test('每条报错的提示都带"（codekeep 前端规则）"：页面、组件层的每一条', async () => {
+  test('每条报错和警告的提示都带"（codekeep 前端规则）"：页面、组件层的每一条', async () => {
     const eslint = antd({ DESC_PROPS: "[['Form.Item', 'extra'], ['PageHeader', 'hint']]", ENTRY_CHILDREN: "['ErrorBar']" })
     for (const path of [PAGE, 'src/ui/Button.tsx']) {
       const config = (await eslint.calculateConfigForFile(path)) as Linter.Config
-      const [, ...entries] = config.rules?.[RESTRICTED] as [unknown, ...Array<{ message: string }>]
-      assert.ok(entries.length > 0, path)
-      for (const entry of entries) assert.ok(entry.message.includes(HINT), `${path}：${entry.message}`)
+      for (const rule of [RESTRICTED, TEXT]) {
+        const [, ...entries] = config.rules?.[rule] as [unknown, ...Array<{ message: string }>]
+        assert.ok(entries.length > 0, `${path} ${rule}`)
+        for (const entry of entries) assert.ok(entry.message.includes(HINT), `${path} ${rule}：${entry.message}`)
+      }
     }
   })
 })

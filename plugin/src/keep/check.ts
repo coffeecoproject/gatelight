@@ -4,7 +4,7 @@
 //   2. 和分叉点比，规范改松了哪些（loosen.ts、eslint.ts、prettier.ts、tsconfig.ts；biome 只看配置文件改没改），主题、组件层的样式改了哪些（styles.ts）。放松的条目交给底座的用户确认（askUser），
 //      还没同意的这一段不过，照底座给的话让 agent 调确认工具。分叉点上还没有配置（首次接入）的不比、不问。
 //      分叉点那一版算不出来的（工具在那一版上跑不起来），不当成没放松，列成"程序看不出"的一项，问。
-//   3. 配了 eslint 的，用项目自己的 eslint 程序接口跑一遍 lint，有错误就不过（警告不拦）；eslint 起不来时停（环境问题）。不跑项目写的 lint 命令：
+//   3. 配了 eslint 的，用项目自己的 eslint 程序接口跑一遍 lint，有错误就不过；警告不拦，落在这次改到的行上的列成提示；eslint 起不来时停（环境问题）。不跑项目写的 lint 命令：
 //      命令行会读批量豁免文件（放在哪、叫什么、写成目录都行），从外面猜不全；程序接口不读，查出来的就是代码按规则过没过。
 //   4. 依次跑 checks 里的每条命令（从仓库根目录用 sh 跑）。
 //   5. secrets 开着时用 gitleaks 扫这次改动（secrets.ts）。
@@ -16,12 +16,12 @@ import { join } from 'node:path'
 import { askUser, type ConfirmItem } from '../base/confirm.ts'
 import { EXIT } from '../base/exit.ts'
 import { PROJECT_ENV } from '../base/execute.ts'
-import { filesNow, forkPoint } from '../base/git.ts'
+import { changesSince, diffLines, filesNow, forkPoint } from '../base/git.ts'
 import { judgingFile } from '../base/judging.ts'
 import { hash } from '../base/records.ts'
 import type { Repo } from '../base/repo.ts'
 import { type Config, CONFIG_PATH, joined, KEEP_DIR, missingFiles, parseConfig } from './config.ts'
-import { eslintItems, type FileRules, fileRules, isCode, lint, type Linted, loadEslint, stable } from './eslint.ts'
+import { eslintItems, type FileRules, fileRules, isCode, lint, type Linted, loadEslint, stable, type Warning } from './eslint.ts'
 import { withForkTree } from './forktree.ts'
 import { BIOME_CONFIGS, biomeItem, configItems, GITLEAKS_CONFIG, GITLEAKS_IGNORE, gitleaksItems, removedItem } from './loosen.ts'
 import { checkedFiles, loadPrettier, prettierItem } from './prettier.ts'
@@ -196,6 +196,32 @@ function askLines(items: ConfirmItem[], ask: string[], reasons: string[]): strin
   ]
 }
 
+/** 提示最多列几条：接入分支上排版改了整个仓库，每一行都算改到的。 */
+const HINTS_SHOWN = 40
+
+/** 落在这次改到的行上的警告（和分叉点比，含没提交的）。旧代码上的不列：警告不拦，列出来只为写新代码时看一眼。 */
+function touched(root: string, base: string, warnings: Warning[]): Warning[] {
+  if (!warnings.length) return []
+  const files = new Set(warnings.map(warning => warning.file))
+  const lines = new Map<string, Set<number>>()
+  for (const change of changesSince(root, base)) {
+    if (change.status === 'D' || !files.has(change.path)) continue
+    lines.set(change.path, new Set(diffLines(root, base, change).added.map(added => added.line)))
+  }
+  return warnings.filter(warning => lines.get(warning.file)?.has(warning.line))
+}
+
+// 警告多是前端模板的文字规则：字数、标点、放说明的位置要看用途才判断得了，程序只能猜，所以不拦，交给 agent 看页面判断。
+// 不叫 agent "改到没有警告"：猜错的那些改了就是改业务文字（丢掉原因、办法、数据）。
+function hintLines(hints: Warning[]): string[] {
+  return [
+    '',
+    `提示（不拦）：这次改到的行上有 ${hints.length} 条警告${hints.length > HINTS_SHOWN ? `，列前 ${HINTS_SHOWN} 条` : ''}：`,
+    ...hints.slice(0, HINTS_SHOWN).map(hint => `  ${hint.file}:${hint.line}  ${hint.message}`),
+    '对着页面看一眼：是说明文字、或者确实写长了的，改；放的是数据、单位、问句、要照录的，不用改。拿不准的不改，也不要为了消掉提示删掉原因、办法和数据。',
+  ]
+}
+
 /** 依次跑 checks 里的每条命令，一条没过也接着跑。返回没过的那几条和原因。 */
 function runChecks(root: string, config: Config): Array<{ name: string; cause: string }> {
   const failed: Array<{ name: string; cause: string }> = []
@@ -285,6 +311,8 @@ export async function check(repo: Repo): Promise<number> {
       console.log(linted.report)
       failures.push(`lint 有 ${linted.errors} 个错误（上面列出；批量豁免文件在这里不起作用）`)
     }
+    const hints = touched(root, fork.commit, linted.warnings)
+    if (hints.length) console.log(hintLines(hints).join('\n'))
   }
 
   // 4. 规范检查
@@ -329,7 +357,7 @@ export async function check(repo: Repo): Promise<number> {
     return blocked ? EXIT.usage : EXIT.fail
   }
 
-  const names = [...(linted ? [`lint${linted.warnings ? `，${linted.warnings} 条警告` : ''}`] : []), ...config.checks.map(item => item.name)].join('、')
+  const names = [...(linted ? [`lint${linted.warnings.length ? `，${linted.warnings.length} 条警告不拦` : ''}`] : []), ...config.checks.map(item => item.name)].join('、')
   console.log(`\ncodekeep check：通过。${loosenedLine}；规范检查都过了（${names}）${config.secrets ? '；这次改动里没扫出密钥' : ''}。`)
   return EXIT.ok
 }

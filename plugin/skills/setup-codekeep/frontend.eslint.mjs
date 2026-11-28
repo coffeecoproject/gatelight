@@ -1,9 +1,11 @@
 // codekeep 的前端规则模板（React，和组件库无关）：照 setup-codekeep 技能"有前端代码的项目"一节，复制到项目里（比如 eslint.frontend.mjs），
 // 改好"按项目填"的几项（组件库那几项照项目用的组件库的文档填），在 eslint.config.mjs 里 `...frontend` 接进去。只用 eslint 自带的 no-restricted-syntax 和 eslint-comments 插件。
-// 管两件事：页面上不加说明文字；用了组件不在页面里写样式、写具体的值去补。规则是"默认都不准，只放行少数几种"。
+// 管两件事：用了组件不在页面里写样式、写具体的值去补（拦下）；页面上不加说明文字（只提示）。规则是"默认都不准，只放行少数几种"。
+// 文字（字数、标点、放说明的位置）要看用途才判断得了，程序只能按位置和长相猜，猜错了逼着改业务文字，所以是警告，codekeep check 只在改到的行上列出来。
 // 项目自己的配置里也用了 no-restricted-syntax 的：同一个文件只认最后一份，要把两边的条目合进一份。
 
 import comments from '@eslint-community/eslint-plugin-eslint-comments'
+import { builtinRules } from 'eslint/use-at-your-own-risk'
 
 // ==== 按项目填 ====
 /** 前端代码（页面、业务组件、组件层、主题都在里面）。 */
@@ -60,7 +62,7 @@ const DESC_PROPS = []
 const DESC_ANY = []
 /** 出错条：[组件名, 级别参数, [出错的级别...], 正文参数]。只准标成这几种级别（级别参数只写一次、不用展开写法），正文按正文算；别的级别是放说明的横幅，不准。 */
 const ERROR_BANNERS = []
-/** 提示：[调用的对象名, [参数对象里放正文的字段...]]（toast('…')、notify.error({ message }) 这种），直接写在参数里的文字也算。 */
+/** 提示：[调用的名字, [参数对象里放正文的字段...]]（toast('…')、toast.error('…')、notify.error({ message }) 这种），直接写在参数里的文字也算。 */
 const NOTICE_CALLS = []
 /** 确认框：[调用的对象名, [方法名...], [参数对象里放正文的字段...]]。用 hook 拿到实例、起了别的名字的，按项目里的名字加。 */
 const CONFIRM_CALLS = []
@@ -74,7 +76,7 @@ const ENTRY_CHILDREN = []
 const TEXT_PROPS = []
 /** 不管哪个组件上都是显示出来的文字的参数名（title、label、placeholder 已经算了，比如 'okText'）。 */
 const TEXT_ANY = []
-/** 管外观的参数：[组件名, 参数名]（间距、尺寸、栅格宽度、颜色这类），里面不准写具体的数字、颜色和长度，写组件给的档位（size="small"）。原生元素上的 width、height 这类已经算了。 */
+/** 管外观的参数：[组件名, 参数名]（间距、尺寸、栅格宽度、颜色这类），里面不准写具体的数字、颜色和长度，写组件给的档位（size="small"）。SVG 元素上的 fill、stroke 这类已经算了。 */
 const VALUE_PROPS = []
 /** 不管哪个组件上都只管外观的参数名（这个库里所有组件上的意思都一样才写）。 */
 const VALUE_ANY = []
@@ -86,9 +88,11 @@ const UI_CLASS_PROPS = []
 const THEME_PROVIDERS = []
 // ==== 按项目填完 ====
 
-/** 原生元素上显示出来的文字参数、管外观的参数（HTML、SVG 标准里的）。 */
+/** 原生元素上显示出来的文字参数（HTML 标准里的）。 */
 const HTML_TEXT = ['title', 'label', 'placeholder']
-const HTML_VALUES = ['width', 'height', 'size', 'color', 'fill', 'stroke', 'strokeWidth', 'fontSize', 'fontWeight', 'opacity']
+// 管外观的只认 SVG 元素上的外观属性。width、height、size 不算：canvas 的是分辨率，img 的是固有尺寸，input、select 的是字数、行数，SVG 的是坐标
+const SVG_ELEMENTS = ['svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'tspan', 'use']
+const SVG_VALUES = ['fill', 'stroke', 'strokeWidth', 'opacity', 'fillOpacity', 'strokeOpacity', 'fontSize', 'fontWeight', 'color']
 
 const LANG = LANGUAGES[UI_LANGUAGE]
 if (!LANG) throw new Error(`codekeep 前端规则：UI_LANGUAGE 写 LANGUAGES 里的一套（${Object.keys(LANGUAGES).join('、')}），别的语言先在 LANGUAGES 里加一套`)
@@ -128,7 +132,7 @@ const banners = ERROR_BANNERS.map(([component, levelProp, levels, titleProp]) =>
 const ENTRY = [
   ...banners.flatMap(({ title }) => [`${title} > Literal`, ...strings(`${title} > JSXExpressionContainer`)]),
   ...NOTICE_CALLS.flatMap(([object, fields]) => {
-    const call = `CallExpression[callee.object.name='${object}']`
+    const call = `CallExpression:matches([callee.name='${object}'], [callee.object.name='${object}'])`
     return [...strings(call), ...strings(`${call} > ObjectExpression > Property[key.name=/^(${names(fields)})$/]`)]
   }),
   ...CONFIRM_CALLS.flatMap(([object, methods, fields]) =>
@@ -147,16 +151,16 @@ const ENTRY = [
 const notEntry = ENTRY.length ? `:not(${ENTRY.join(', ')})` : ''
 /**
  * 文字和具体的值只查列明的位置：JSX 文字、子元素里直接写的字符串，列明会显示的参数（HTML_TEXT、TEXT_ANY、TEXT_PROPS），
- * 列明管外观的参数（HTML_VALUES、VALUE_ANY、VALUE_PROPS）；都含二选一、带条件的写法。
+ * 列明管外观的参数（SVG_VALUES、VALUE_ANY、VALUE_PROPS）；都含二选一、带条件的写法。
  * 别处看名字、看长相分不出用途：JSX 外面的变量、对象、函数参数，和没列明的参数（无障碍描述 alt、aria-*，
  * meta 的 content，表单的值 value，分页大小 pageSize）。哪里都查会把它们当成页面文字和样式，逼着改业务内容。
  */
-const listed = (native, any, props) => [
-  ...(native.length ? [`JSXOpeningElement[name.name=/^[a-z]/] > JSXAttribute[name.name=/^(${names(native)})$/]`] : []),
+const listed = (native, any, props, elements = '[a-z][\\w-]*') => [
+  ...(native.length ? [`JSXOpeningElement[name.name=/^(${elements})$/] > JSXAttribute[name.name=/^(${names(native)})$/]`] : []),
   ...(any.length ? [`JSXOpeningElement > JSXAttribute[name.name=/^(${names(any)})$/]`] : []),
   ...props.map(([component, prop]) => `${opening(component)} > JSXAttribute[name.name='${prop}']`),
 ]
-const VALUE_ATTRS = listed(HTML_VALUES, VALUE_ANY, VALUE_PROPS)
+const VALUE_ATTRS = listed(SVG_VALUES, VALUE_ANY, VALUE_PROPS, names(SVG_ELEMENTS))
 /** 参数里直接写的字符串（attr="…"、attr={'…'}，含二选一、带条件的）。 */
 const inAttrs = attrs => attrs.flatMap(attr => [...strings(attr), ...strings(`${attr} > JSXExpressionContainer`)])
 const IN_JSX = ['JSXText', ...strings(':matches(JSXElement, JSXFragment) > JSXExpressionContainer'), ...inAttrs(listed([], [...HTML_TEXT, ...TEXT_ANY], TEXT_PROPS))]
@@ -225,7 +229,6 @@ const channels = (allowed = []) => [
     selector: `JSXAttribute[name.name=/^(${names(['style', 'className', ...STYLE_PROPS].filter(name => !allowed.includes(name)))})$/]`,
     message: `写样式${STYLE_HINT}`,
   },
-  { selector: "JSXOpeningElement[name.name='br']", message: `占位${STYLE_HINT}` },
   { selector: "JSXElement[children.length=0] > JSXOpeningElement[name.name=/^(div|span)$/][attributes.length=0]", message: `占位${STYLE_HINT}` },
 ]
 const fromTests = {
@@ -234,10 +237,13 @@ const fromTests = {
 }
 
 const RESTRICTED = 'no-restricted-syntax'
+// 文字规则用同一个规则换个名字，才能和拦下的那些分开定级别
+const TEXT = 'codekeep/text'
+const textRules = { [TEXT]: ['warn', ...nameText, ...entryText, ...descPlaces] }
 // noInlineConfig 只让这类注释悄悄失效，这条让写了注释的地方直接报错，agent 才知道要改代码而不是换个写法再关。
-const noDisable = { '@eslint-community/eslint-comments/no-restricted-disable': ['error', RESTRICTED] }
+const noDisable = { '@eslint-community/eslint-comments/no-restricted-disable': ['error', RESTRICTED, TEXT] }
 const front = {
-  plugins: { '@eslint-community/eslint-comments': comments },
+  plugins: { '@eslint-community/eslint-comments': comments, codekeep: { rules: { text: builtinRules.get(RESTRICTED) } } },
   // 代码里就地关规则、改配置的注释不起作用：要放开只能改配置，codekeep 会问用户
   linterOptions: { noInlineConfig: true },
 }
@@ -246,15 +252,13 @@ const front = {
 const pageRules = {
   [RESTRICTED]: [
     'error',
-    ...nameText,
-    ...entryText,
-    ...descPlaces,
     ...values,
     fromTests,
     ...channels(),
     ...THEME_PROVIDERS.map(component => ({ selector: opening(component), message: `就地改主题${STYLE_HINT}` })),
     { selector: STYLE_FILE, message: `引样式文件${STYLE_HINT}` },
   ],
+  ...textRules,
   ...noDisable,
 }
 
@@ -269,14 +273,12 @@ export default [
     rules: {
       [RESTRICTED]: [
         'error',
-        ...nameText,
-        ...entryText,
-        ...descPlaces,
         ...values,
         fromTests,
         ...channels(['className', ...UI_CLASS_PROPS]),
         { selector: `${STYLE_FILE}:not([source.value=/^\\.\\x2F[^\\x2F]+$/])`, message: `只引同目录的样式文件${STYLE_HINT}` },
       ],
+      ...textRules,
       ...noDisable,
     },
   },

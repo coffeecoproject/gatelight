@@ -144,7 +144,7 @@ describe('lint：配了 eslint 的，codekeep 用项目的 eslint 直接查，�
     assert.deepEqual(ran(), ['types', 'format'], '检查命令照样跑')
   })
 
-  test('只有警告：通过，通过那一行写"lint，N 条警告"；被忽略的文件、不是代码的文件不查', () => {
+  test('只有警告：通过，通过那一行写"lint，N 条警告不拦"；被忽略的文件、不是代码的文件不查', () => {
     const { check, ran } = ranLog()
     const repo = keepRepo({ ...CODE, 'eslint.config.mjs': eslintConfig({ 'no-var': 'error', 'no-console': 'warn' }, "{ ignores: ['src/legacy/**'] }") })
     write(repo, '.codekeep/config.json', keepConfig({ checks: [check('types')], eslint: { config: 'eslint.config.mjs' } }))
@@ -153,8 +153,44 @@ describe('lint：配了 eslint 的，codekeep 用项目的 eslint 直接查，�
     write(repo, 'notes.txt', 'var x = 1\n')
     const r = codekeep(repo, ['check'])
     assert.equal(r.code, 0, r.out)
-    assert.match(r.out, /codekeep check：通过。规范配置没有改松（和分叉点上的比）；规范检查都过了（lint，2 条警告、types）。/)
+    assert.match(r.out, /codekeep check：通过。规范配置没有改松（和分叉点上的比）；规范检查都过了（lint，2 条警告不拦、types）。/)
     assert.deepEqual(ran(), ['types'])
+  })
+
+  test('警告落在这次改到的行上（和分叉点比：分支上提交的、没提交的、新文件）列在"提示（不拦）"下面，写文件:行和消息；旧代码上的不列', () => {
+    const repo = keepRepo({
+      ...CODE,
+      ...LINTED,
+      'eslint.config.mjs': eslintConfig({ 'no-console': 'warn' }),
+      'src/old.js': 'console.log(1)\nconsole.log(2)\nconsole.log(3)\n',
+    })
+    let r = codekeep(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.doesNotMatch(r.out, /提示（不拦）/, '只有旧代码上的警告：不列')
+    assert.match(r.out, /规范检查都过了（lint，3 条警告不拦、types）/)
+
+    write(repo, 'src/old.js', 'console.log(1)\nconsole.log(20)\nconsole.log(3)\n')
+    sh(repo, 'git commit -qam 改第二行')
+    write(repo, 'src/old.js', 'console.log(1)\nconsole.log(20)\nconsole.log(30)\n')
+    write(repo, 'src/new.js', 'console.log(4)\n')
+    r = codekeep(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /\n提示（不拦）：这次改到的行上有 3 条警告：\n/)
+    const listed = r.out.split('\n').filter(line => /^ {2}src\//.test(line))
+    assert.deepEqual(listed.map(line => line.split(/\s{2,}/)[1]).sort(), ['src/new.js:1', 'src/old.js:2', 'src/old.js:3'])
+    for (const line of listed) assert.match(line, /^ {2}src\/\S+:\d+ {2}Unexpected console statement/)
+    assert.match(r.out, /规范检查都过了（lint，4 条警告不拦、types）/)
+  })
+
+  test('改到的行上警告超过 40 条：说一共几条，只列前 40 条', () => {
+    const repo = keepRepo({ ...CODE, ...LINTED, 'eslint.config.mjs': eslintConfig({ 'no-console': 'warn' }) })
+    write(repo, 'src/many.js', Array.from({ length: 45 }, (_, index) => `console.log(${index})\n`).join(''))
+    const r = codekeep(repo, ['check'])
+    assert.equal(r.code, 0, r.out)
+    assert.match(r.out, /\n提示（不拦）：这次改到的行上有 45 条警告，列前 40 条：\n/)
+    const listed = r.out.split('\n').filter(line => /^ {2}src\/many\.js:\d+ /.test(line))
+    assert.equal(listed.length, 40, r.out)
+    assert.match(r.out, /规范检查都过了（lint，45 条警告不拦、types）/)
   })
 
   test('eslint --suppress-all 生成的豁免文件不起作用：仓库根目录的、被 git 忽略的、名字大小写不同的、建成目录的，lint 有错照样没通过', () => {
