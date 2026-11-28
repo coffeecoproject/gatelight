@@ -78,20 +78,33 @@ describe('放宽项（和分叉点上的配置比）', () => {
   })
 
   test('删掉 database、改它的目录和账号名：放宽；加上 database：收紧，不用确认；首次接入的整份配置里有 database', () => {
-    const database = { migrations: 'migrations', shared: 'src/shared/migrations', login: '<module>_app', migrator: 'migrator' }
+    const database = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' }
     const withDb = (db: unknown): Config => config(db === undefined ? {} : { database: db })
     const between = (before: unknown, now: unknown): string[] => texts(withDb(before), { config: withDb(now), hasDir: true })
     assert.deepEqual(between(undefined, database), [])
     assert.deepEqual(between(database, undefined), ['删掉了 database：数据库不再按模块检查'])
-    assert.deepEqual(between(database, { migrations: 'db', shared: 'db/shared', login: 'web_<module>', migrator: 'owner' }), [
+    assert.deepEqual(between(database, { migrations: 'db', shared: 'db/shared', login: 'web', migrator: 'owner' }), [
       'database.migrations 改了："migrations" 改成 "db"',
       'database.shared 改了："src/shared/migrations" 改成 "db/shared"',
-      'database.login 改了："<module>_app" 改成 "web_<module>"',
+      'database.login 改了："app" 改成 "web"',
       'database.migrator 改了："migrator" 改成 "owner"',
     ])
     assert.match(
       texts(undefined, { config: withDb(database), hasDir: true })[0] as string,
-      /"database":\{"migrations":"migrations","shared":"src\/shared\/migrations","login":"<module>_app","migrator":"migrator"\}/,
+      /"database":\{"migrations":"migrations","shared":"src\/shared\/migrations","login":"app","migrator":"migrator"\}/,
     )
+  })
+
+  test('给 database 加上、改运行角色模板：放宽（运行角色能用模块的内部 schema）；删掉模板：收紧；首次接入的整份配置里有模板', () => {
+    const database = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' }
+    const withDb = (runtime?: string): Config => config({ database: runtime === undefined ? database : { ...database, runtime } })
+    const between = (before?: string, now?: string): string[] => texts(withDb(before), { config: withDb(now), hasDir: true })
+    assert.deepEqual(between(undefined, '<module>_app'), ['database.runtime 加上了模块运行角色 "<module>_app"：它能用本模块的内部 schema'])
+    assert.deepEqual(between('<module>_app', '<module>_rt'), ['database.runtime 改了："<module>_app" 改成 "<module>_rt"（模块运行角色能用本模块的内部 schema）'])
+    assert.deepEqual(between('<module>_app', undefined), [])
+    assert.deepEqual(between('<module>_app', '<module>_app'), [])
+    // 同时加上 database 和模板：加上 database 是收紧，不用确认
+    assert.deepEqual(texts(config(), { config: withDb('<module>_app'), hasDir: true }), [])
+    assert.match(texts(undefined, { config: withDb('<module>_app'), hasDir: true })[0] as string, /"migrator":"migrator","runtime":"<module>_app"\}/)
   })
 })

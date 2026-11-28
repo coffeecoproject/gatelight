@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { describe, test } from 'node:test'
 import { fakePsql, modwall, sampleRepo, write } from './helpers.ts'
 
-const DATABASE = { migrations: 'migrations', shared: 'src/shared/migrations', login: '<module>_app', migrator: 'migrator' }
+const DATABASE = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' }
 const COMMANDS = [
   { name: 'modwall migrate', args: ['migrate'] },
   { name: 'modwall db bootstrap', args: ['db', 'bootstrap'] },
@@ -54,7 +54,7 @@ describe('modwall migrate、db bootstrap 的用法', () => {
     const repo = sampleRepo(dir => {
       const app = (name: string) => ({
         roots: [`apps/${name}/modules`], shared: [`apps/${name}/shared/**`], entry: ['index.ts'],
-        database: { ...DATABASE, shared: `apps/${name}/shared/migrations`, login: `${name}_<module>`, migrator: `${name}_migrator` },
+        database: { ...DATABASE, shared: `apps/${name}/shared/migrations`, login: `${name}_app`, migrator: `${name}_migrator` },
       })
       write(dir, '.modwall/config.json', JSON.stringify({ apps: { web: app('web'), server: app('server') }, outside: ['scripts/**', 'src/**'] }))
       write(dir, 'apps/web/modules/pages/index.ts', 'export const a = 1\n')
@@ -78,20 +78,14 @@ describe('modwall migrate、db bootstrap 的用法', () => {
     assert.doesNotMatch(migrate, /pages/)
   })
 
-  test('modwall help 里 migrate 说运行账号的密码从环境变量 MODWALL_LOGIN_PASSWORD 读', () => {
-    const help = modwall(dbRepo(), ['help'])
-    assert.equal(help.code, 0, help.out)
-    assert.match(help.out, /modwall migrate .*\n(?: {20,}.*\n)*? {20,}环境变量 MODWALL_LOGIN_PASSWORD 是各运行账号的密码/)
-  })
-
   test('配置有问题、配置里没有 database：用法错误（退出码 2），不跑命令', () => {
-    const clash = dbRepo({ database: { ...DATABASE, migrator: 'modules_app' } })
+    const clash = dbRepo({ database: { ...DATABASE, migrator: 'app_modules' } })
     const none = dbRepo({})
     for (const { name, args } of COMMANDS) {
       const psql = fakePsql([])
       const broken = modwall(clash, [...args, '--psql', psql.command])
       assert.equal(broken.code, 2, broken.out)
-      assert.match(broken.out, new RegExp(`^${name}：配置有问题（.modwall/config.json），先改好：\n {2}✗ 各模块的组角色 modules_app`))
+      assert.match(broken.out, new RegExp(`^${name}：配置有问题（.modwall/config.json），先改好：\n {2}✗ 各模块的组角色 app_modules`))
       const missing = modwall(none, [...args, '--psql', psql.command])
       assert.equal(missing.code, 2, missing.out)
       assert.match(missing.out, /里没有写 database/)

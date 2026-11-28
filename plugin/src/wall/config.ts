@@ -4,8 +4,8 @@
 //   entry   模块对外入口的文件名（模块目录下第一层）
 //   map     框架要求放在固定目录的文件：路径规则 → 模块名
 //   allow   用户确认过的例外：一条被放过的 import，写到文件
-//   database 用 Postgres 时：每个模块放迁移的子目录名（migrations）、共享层的迁移目录（shared）、各模块运行账号的名字模板（login，比如 "<module>_app"）、
-//            跑迁移的账号（migrator）。schema、模块的角色和运行账号按模块目录名算（database.ts）
+//   database 用 Postgres 时：每个模块放迁移的子目录名（migrations）、共享层的迁移目录（shared）、程序的登录账号（login）、跑迁移的账号（migrator），
+//            可选的模块运行角色模板（runtime，比如 "<module>_app"）。schema、模块的角色和运行角色按模块目录名算（database.ts）
 // 一个仓库里有几个应用时按应用分组写：apps 每组一个应用（roots、shared、app、entry、map，用库的应用写 database），
 // 外面一层只能有 apps、shared（几个应用共用的共享层）、outside、allow。两种写法不能混用。
 // 规则都按 schemeOf 统一成"几个应用"来算：单应用就是一个没有名字的应用。
@@ -29,22 +29,24 @@ export interface AllowEntry {
 
 /**
  * 数据库：migrations 是每个模块放迁移的子目录（相对模块目录），shared 是共享层的迁移目录（相对仓库根目录）；
- * login 是各模块运行账号的名字模板，<module> 换成模块的内部 schema 名（共享层换成 shared）：每个模块的代码用自己的账号连库，
- * 账号只有本模块的读写授权，不拥有对象、不能建对象；migrator 是跑迁移用的账号（只能切成模块的角色）。
+ * login 是程序连库用的账号，migrator 是跑迁移用的账号（都只能切成模块的角色，modwall db check 查它们）。
+ * runtime（可选）是模块运行角色的名字模板，<module> 换成模块的内部 schema 名：模块的代码切成它执行，它只有本模块的读写授权，
+ * 可以用本模块的内部 schema，不拥有对象、不能建对象。不写就是模块的代码直接切成模块的角色。
  */
 export interface DatabaseConfig {
   migrations: string
   shared: string
   login: string
   migrator: string
+  runtime?: string
 }
 
-/** 运行账号模板里代表模块的占位符。 */
+/** 运行角色模板里代表模块的占位符。 */
 export const MODULE_PLACEHOLDER = '<module>'
 
 const DATABASE_SHAPE =
-  '{ "migrations": 模块里放迁移的子目录, "shared": 共享层的迁移目录, "login": 各模块运行账号的名字模板（比如 "<module>_app"）, "migrator": 跑迁移的账号 }'
-const DATABASE_KEYS = ['migrations', 'shared', 'login', 'migrator']
+  '{ "migrations": 模块里放迁移的子目录, "shared": 共享层的迁移目录, "login": 程序的登录账号, "migrator": 跑迁移的账号, "runtime": 模块运行角色的名字模板（可选，比如 "<module>_app"） }'
+const DATABASE_KEYS = ['migrations', 'shared', 'login', 'migrator', 'runtime']
 
 /** 一个应用的划分：单应用写法的这几项，或者按应用分组时 apps 里的一组。database：这个应用用 Postgres 时才有。 */
 export interface AppConfig {
@@ -223,7 +225,7 @@ class Reader {
     return config
   }
 
-  /** database：两个目录（写目录、不用通配）、运行账号的名字模板和迁移账号名。 */
+  /** database：两个目录（写目录、不用通配）、两个账号名和可选的运行角色模板。 */
   database(): DatabaseConfig | undefined {
     const value = this.record.database
     const name = `${this.prefix}database`
@@ -243,22 +245,28 @@ class Reader {
       }
       return path
     }
+    const account = (key: 'login' | 'migrator', what: string): string | undefined => {
+      const raw = value[key]
+      if (typeof raw === 'string' && PLAIN_NAME.test(raw)) return raw
+      this.problems.push(`${CONFIG_PATH} 的 "${name}.${key}" 要写${what}的名字（小写字母、数字和下划线，不以数字开头）`)
+      return undefined
+    }
     const migrations = dir('migrations', '每个模块放迁移的子目录（相对模块目录，比如 "migrations"）')
     const shared = dir('shared', '共享层的迁移目录（从仓库根目录写起）')
+    const login = account('login', '程序连库用的账号')
+    const migrator = account('migrator', '跑迁移用的账号')
     // 模板里正好一个 <module>，换成模块的 schema 名后仍是普通的角色名；只写 <module> 就是模块的角色本身
-    const login = value.login
-    const loginOk =
-      typeof login === 'string' && login !== MODULE_PLACEHOLDER && login.split(MODULE_PLACEHOLDER).length === 2 && PLAIN_NAME.test(login.replace(MODULE_PLACEHOLDER, 'm'))
-    if (!loginOk) {
+    const template = value.runtime
+    const runtimeOk =
+      template === undefined ||
+      (typeof template === 'string' && template !== MODULE_PLACEHOLDER && template.split(MODULE_PLACEHOLDER).length === 2 && PLAIN_NAME.test(template.replace(MODULE_PLACEHOLDER, 'm')))
+    if (!runtimeOk) {
       this.problems.push(
-        `${CONFIG_PATH} 的 "${name}.login" 要写各模块运行账号的名字模板：带一个 ${MODULE_PLACEHOLDER}（换成模块的内部 schema 名），其余是小写字母、数字和下划线，比如 "${MODULE_PLACEHOLDER}_app"；不能只写 ${MODULE_PLACEHOLDER}（那是模块的角色本身）`,
+        `${CONFIG_PATH} 的 "${name}.runtime" 要写模块运行角色的名字模板：带一个 ${MODULE_PLACEHOLDER}（换成模块的内部 schema 名），其余是小写字母、数字和下划线，比如 "${MODULE_PLACEHOLDER}_app"；不能只写 ${MODULE_PLACEHOLDER}（那是模块的角色本身）`,
       )
     }
-    const migrator = value.migrator
-    const migratorOk = typeof migrator === 'string' && PLAIN_NAME.test(migrator)
-    if (!migratorOk) this.problems.push(`${CONFIG_PATH} 的 "${name}.migrator" 要写跑迁移用的账号的名字（小写字母、数字和下划线，不以数字开头）`)
-    if (migrations === undefined || shared === undefined || !loginOk || !migratorOk) return undefined
-    return { migrations, shared, login: login as string, migrator: migrator as string }
+    if (migrations === undefined || shared === undefined || login === undefined || migrator === undefined || !runtimeOk) return undefined
+    return { migrations, shared, login, migrator, ...(typeof template === 'string' ? { runtime: template } : {}) }
   }
 
   allow(): AllowEntry[] {
