@@ -9,7 +9,7 @@ import { type Catalog, catalogViolations } from '../../src/wall/dbcheck.ts'
 import { Layout } from '../../src/wall/layout.ts'
 import { ENV, fakePsql, modwall, sampleRepo, tempDir, TESTPACE, write } from './helpers.ts'
 
-const DATABASE = { migrations: 'migrations', shared: 'src/shared/migrations', login: '<module>_app', migrator: 'migrator' }
+const DATABASE = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' }
 
 function database(extra: Record<string, unknown> = {}): NonNullable<Layout['databases'][number]> {
   const parsed = parseConfig(JSON.stringify({ roots: ['src/modules'], entry: ['index.ts'], database: { ...DATABASE, ...extra } }))
@@ -24,13 +24,8 @@ type Role = Catalog['roles'][number]
 const role = (name: string, login: boolean, extra: Partial<Role> = {}): Role => ({
   name, login, superuser: false, bypassRls: false, createRole: false, createDb: false, createSchema: false, connect: true, ownsObjects: false, ...extra,
 })
-type Membership = Catalog['memberships'][number]
-/** member 是 role 的成员，默认什么都不能（不继承、不能切、不能转授）。 */
-const member = (name: string, of: string, extra: Partial<Membership> = {}): Membership => ({
-  role: of, member: name, admin: false, inherit: false, set: false, superuser: false, ...extra,
-})
 
-/** 干净的库（migrate 刚跑完的样子）：两个模块、shared 的 schema、角色、运行账号和成员关系都对。 */
+/** 干净的库：两个模块、shared 的 schema 和角色都对，登录账号、迁移账号只能登录。 */
 const EMPTY: Catalog = {
   database: { name: 'appdb', ident: 'appdb', publicConnect: false },
   schemas: schemas('billing', 'billing_api', 'orders', 'orders_api', 'public', 'shared'),
@@ -39,34 +34,11 @@ const EMPTY: Catalog = {
   functions: [],
   foreignKeys: [],
   dependencies: [],
-  roles: [
-    role('postgres', true, { superuser: true, createRole: true, createDb: true, createSchema: true, ownsObjects: true }),
-    role('orders', false),
-    role('billing', false),
-    role('shared', false),
-    role('modules_app', false),
-    role('migrator', true),
-    role('orders_app', true),
-    role('billing_app', true),
-    role('shared_app', true),
-  ],
-  memberships: [
-    // 迁移账号能切成模块的角色；它建的角色 Postgres 16 起自动给它转授（ADMIN）
-    ...['orders', 'billing', 'shared'].map(name => member('migrator', name, { set: true, admin: true })),
-    ...['orders_app', 'billing_app', 'shared_app', 'modules_app'].map(name => member('migrator', name, { admin: true })),
-    ...['orders', 'billing', 'orders_app', 'billing_app'].map(name => member(name, 'modules_app', { inherit: true })),
-    member('pg_monitor', 'pg_read_all_settings', { inherit: true, set: true }),
-    member('postgres', 'orders', { set: true, admin: true, superuser: true }),
-  ],
+  roles: [role('postgres', true, { superuser: true, createRole: true, createDb: true, createSchema: true, ownsObjects: true }), role('orders', false), role('billing', false), role('shared', false), role('app', true), role('migrator', true)],
   privileges: [
     { schema: 'orders', role: 'orders', usage: true, create: true },
     { schema: 'orders_api', role: 'billing', usage: true, create: false },
     { schema: 'shared', role: 'orders', usage: true, create: false },
-    { schema: 'orders', role: 'orders_app', usage: true, create: false },
-    { schema: 'billing', role: 'billing_app', usage: true, create: false },
-    { schema: 'shared', role: 'shared_app', usage: true, create: false },
-    { schema: 'orders_api', role: 'billing_app', usage: true, create: false },
-    { schema: 'shared', role: 'billing_app', usage: true, create: false },
   ],
 }
 const rel = (schema: string, name: string, kind: string, extra: Partial<Catalog['relations'][number]> = {}): Catalog['relations'][number] => ({
@@ -79,7 +51,7 @@ const fn = (schema: string, name: string, config: string[] | null, source: strin
 const found = (catalog: Partial<Catalog>): string[] => catalogViolations(database(), { ...EMPTY, ...catalog }).map(v => v.where[0] as string)
 
 describe('db check 的比对', () => {
-  test('模块的两个 schema、shared、public、角色、运行账号、成员关系都对得上：没有越界；不对应任何模块的 schema 拦', () => {
+  test('模块的两个 schema、shared、public 都对得上：没有越界；不对应任何模块的 schema 拦', () => {
     assert.deepEqual(found({}), [])
     assert.deepEqual(found({ schemas: [...EMPTY.schemas, ...schemas('legacy')] }), ['库里的 schema legacy 不对应任何模块'])
   })
@@ -166,14 +138,14 @@ describe('db check 的比对', () => {
 
   test('模块的两个 schema 和里面的对象归模块的角色，shared 的归 shared 角色；public 里的不管归谁', () => {
     const r = found({
-      schemas: EMPTY.schemas.map(item => (item.name === 'orders_api' ? { ...item, owner: 'orders_app' } : item)),
+      schemas: EMPTY.schemas.map(item => (item.name === 'orders_api' ? { ...item, owner: 'app' } : item)),
       relations: [rel('orders', 'items', 'r', { owner: 'migrator' }), rel('orders', 'ok', 'r'), rel('shared', 'log', 'r', { owner: 'orders' }), rel('public', 'x', 'r')],
       types: [{ schema: 'billing', name: 'status', owner: 'postgres' }],
       functions: [{ ...fn('orders_api', 'f', ['search_path=orders, pg_temp']), owner: 'billing' }],
     })
     assert.deepEqual(r, [
       'public 里有表 x',
-      'schema orders_api 归角色 orders_app，要归 orders',
+      'schema orders_api 归角色 app，要归 orders',
       '表 orders.items 归角色 migrator，要归 orders',
       '表 shared.log 归角色 orders，要归 shared',
       '类型 billing.status 归角色 postgres，要归 billing',
@@ -181,11 +153,11 @@ describe('db check 的比对', () => {
     ])
   })
 
-  test('除了 schema 的主人和本块的运行账号：没有角色能用模块的内部 schema，没有角色能在模块的 schema、shared 里建对象；入口、shared 的使用权可以授', () => {
+  test('除了 schema 的主人（包括经继承的登录账号）：没有角色能用模块的内部 schema，没有角色能在模块的 schema、shared 里建对象；入口、shared 的使用权可以授', () => {
     const r = found({
       privileges: [
         ...EMPTY.privileges,
-        { schema: 'orders', role: 'billing_app', usage: true, create: false },
+        { schema: 'orders', role: 'app', usage: true, create: false },
         { schema: 'billing', role: 'orders', usage: false, create: true },
         { schema: 'billing_api', role: 'orders', usage: true, create: false },
         { schema: 'orders_api', role: 'billing', usage: true, create: true },
@@ -194,74 +166,69 @@ describe('db check 的比对', () => {
       ],
     })
     assert.deepEqual(r, [
-      '角色 billing_app 能使用（USAGE） orders 模块的内部 schema orders',
+      '角色 app 能使用（USAGE） orders 模块的内部 schema orders',
       '角色 orders 能建对象（CREATE） billing 模块的内部 schema billing',
       '角色 billing 能在 orders 模块的入口 schema orders_api 里建对象（CREATE）',
       '角色 billing 能在 共享层的 schema shared 里建对象（CREATE）',
     ])
   })
 
-  test('每个模块和共享层的运行账号：没有的拦；不能登录、连不了库、有特权、能在库里或 public 里建对象、拥有对象的拦', () => {
-    const roles = EMPTY.roles
-      .filter(item => item.name !== 'billing_app')
-      .map(item =>
-        item.name === 'orders_app' ? role('orders_app', false, { connect: false })
-        : item.name === 'shared_app' ? role('shared_app', true, { superuser: true, bypassRls: true, createRole: true, createDb: true, createSchema: true, ownsObjects: true })
-        : item,
-      )
-    const r = found({ roles, privileges: [...EMPTY.privileges, { schema: 'public', role: 'orders_app', usage: true, create: true }] })
-    assert.deepEqual(r.sort(), [
-      '共享层的运行账号 shared_app 是超级用户、能绕过行级权限（BYPASSRLS）、能建角色、能建库、能在库里建 schema、拥有对象',
-      'orders 模块的运行账号 orders_app 不能登录、连不了库 appdb（没有 CONNECT）、能在 public 里建对象',
-      '库里没有billing 模块的运行账号 billing_app（database.login 是 <module>_app）',
-    ].sort())
+  test('没写运行角色模板：<module>_app 这类角色和别的角色一样，能用模块的内部 schema 就拦', () => {
+    const r = found({
+      roles: [...EMPTY.roles, role('orders_app', false)],
+      privileges: [...EMPTY.privileges, { schema: 'orders', role: 'orders_app', usage: true, create: false }],
+    })
+    assert.deepEqual(r, ['角色 orders_app 能使用（USAGE） orders 模块的内部 schema orders'])
   })
 
-  test('运行账号在本块的 schema 上只读写：能建对象（CREATE）的拦；用别的模块的内部 schema、在入口里建对象照样拦', () => {
-    const r = found({
+  test('写了运行角色模板：模块的运行角色能用本模块的内部 schema；用别的模块的内部 schema、建对象、拥有对象、有建库建角色这类特权照样拦；库里没有的不管', () => {
+    const runtime = (catalog: Partial<Catalog>): string[] =>
+      catalogViolations(database({ runtime: '<module>_app' }), { ...EMPTY, ...catalog }).map(v => v.where[0] as string)
+    const roles = [...EMPTY.roles, role('orders_app', false), role('billing_app', false)]
+    const own = [
+      ...EMPTY.privileges,
+      { schema: 'orders', role: 'orders_app', usage: true, create: false },
+      { schema: 'orders_api', role: 'orders_app', usage: true, create: false },
+      { schema: 'billing', role: 'billing_app', usage: true, create: false },
+      { schema: 'shared', role: 'billing_app', usage: true, create: false },
+    ]
+    assert.deepEqual(runtime({ roles, privileges: own }), [])
+    // 没建运行角色的模块不报
+    assert.deepEqual(runtime({ roles: EMPTY.roles }), [])
+
+    const r = runtime({
+      roles: [
+        ...EMPTY.roles,
+        role('orders_app', false, { ownsObjects: true, createSchema: true }),
+        role('billing_app', false, { superuser: true, createRole: true, createDb: true }),
+      ],
       privileges: [
-        ...EMPTY.privileges.filter(item => !['orders_app', 'shared_app'].includes(item.role)),
-        { schema: 'orders', role: 'orders_app', usage: true, create: true },
-        { schema: 'shared', role: 'shared_app', usage: true, create: true },
+        ...own,
         { schema: 'billing', role: 'orders_app', usage: true, create: false },
-        { schema: 'orders', role: 'shared_app', usage: true, create: false },
+        { schema: 'orders', role: 'billing_app', usage: true, create: true },
+        { schema: 'billing', role: 'billing_app', usage: true, create: true },
         { schema: 'orders_api', role: 'orders_app', usage: true, create: true },
+        { schema: 'shared', role: 'orders_app', usage: true, create: true },
+        { schema: 'public', role: 'orders_app', usage: true, create: true },
       ],
     })
-    assert.deepEqual(r.sort(), [
-      'orders 模块的运行账号 orders_app能在 orders 模块的内部 schema orders 里建对象（CREATE）',
-      '共享层的运行账号 shared_app能在 共享层的 schema shared 里建对象（CREATE）',
+    assert.deepEqual(r, [
+      'billing 模块的运行角色 billing_app 是超级用户、能建角色、能建库',
+      'orders 模块的运行角色 orders_app 能在库里建 schema、能在 public 里建对象、拥有对象',
       '角色 orders_app 能使用（USAGE） billing 模块的内部 schema billing',
-      '角色 shared_app 能使用（USAGE） orders 模块的内部 schema orders',
+      '角色 billing_app 能使用（USAGE）、建对象（CREATE） orders 模块的内部 schema orders',
+      'billing 模块的运行角色 billing_app 能在内部 schema billing 里建对象（CREATE）',
       '角色 orders_app 能在 orders 模块的入口 schema orders_api 里建对象（CREATE）',
-    ].sort())
+      '角色 orders_app 能在 共享层的 schema shared 里建对象（CREATE）',
+    ])
   })
 
-  test('成员关系：模块的角色和运行账号的成员只能是迁移账号（超级用户不算）；模块的角色和运行账号只属于组角色（继承、不能切、不能转授），共享层的什么都不属于', () => {
-    const memberships = [
-      ...EMPTY.memberships.filter(item => !(item.role === 'modules_app' && ['orders_app', 'billing'].includes(item.member))),
-      member('orders_app', 'modules_app', { inherit: true, set: true }),
-      member('billing', 'modules_app', { inherit: true, admin: true }),
-      // 以前的做法：一个登录账号属于所有模块的角色
-      member('app', 'orders', { set: true }),
-      member('billing_app', 'orders_app', { inherit: true }),
-      member('orders_app', 'billing', { inherit: true }),
-      member('shared', 'modules_app', { inherit: true }),
-      member('shared_app', 'modules_app', { inherit: true }),
-      member('orders', 'pg_read_all_data', { inherit: true }),
-      member('billing_app', 'outsider', { set: true }),
-    ]
-    assert.deepEqual(found({ memberships }).sort(), [
-      'orders 模块的运行账号 orders_app 能切成（SET）、继承（INHERIT）角色 modules_app',
-      'billing 模块的角色 billing 能继承（INHERIT）、转授（ADMIN）角色 modules_app',
-      '角色 app 能切成（SET）orders 模块的角色 orders',
-      '角色 billing_app 能继承（INHERIT）orders 模块的运行账号 orders_app',
-      '角色 orders_app 能继承（INHERIT）billing 模块的角色 billing',
-      '共享层的角色 shared 能继承（INHERIT）角色 modules_app',
-      '共享层的运行账号 shared_app 能继承（INHERIT）角色 modules_app',
-      'orders 模块的角色 orders 能继承（INHERIT）角色 pg_read_all_data',
-      'billing 模块的运行账号 billing_app 能切成（SET）角色 outsider',
-    ].sort())
+  test('写了运行角色模板：模块的角色本身照旧（运行角色的规矩不套到它身上），登录账号能用内部 schema 照样拦', () => {
+    const r = catalogViolations(database({ runtime: '<module>_app' }), {
+      ...EMPTY,
+      privileges: [...EMPTY.privileges, { schema: 'orders', role: 'app', usage: true, create: false }],
+    }).map(v => v.where[0])
+    assert.deepEqual(r, ['角色 app 能使用（USAGE） orders 模块的内部 schema orders'])
   })
 
   test('模块和共享层的函数、过程都要 SECURITY DEFINER（函数里就切不了身份），聚合函数不管；入口视图不能设 security_invoker，内部 schema 里的不管', () => {
@@ -284,13 +251,12 @@ describe('db check 的比对', () => {
     ])
   })
 
-  test('迁移账号：要有、能登录、不是超级用户、不拥有对象', () => {
-    assert.deepEqual(found({ roles: EMPTY.roles.filter(item => item.name !== 'migrator') }), ['库里没有跑迁移的账号 migrator（database.migrator）'])
-    const roles = EMPTY.roles.map(item => (item.name === 'migrator' ? role('migrator', false, { superuser: true, ownsObjects: true }) : item))
-    assert.deepEqual(found({ roles }), ['跑迁移的账号 migrator 不能登录、是超级用户、拥有对象'])
+  test('登录账号、迁移账号：要有、能登录、不是超级用户、不拥有对象', () => {
+    const roles = EMPTY.roles.filter(item => item.name !== 'migrator').map(item => (item.name === 'app' ? role('app', false, { superuser: true, ownsObjects: true }) : item))
+    assert.deepEqual(found({ roles }), ['程序的登录账号 app 不能登录、是超级用户、拥有对象', '库里没有跑迁移的账号 migrator（database.migrator）'])
   })
 
-  test('库的 CONNECT 不授给 PUBLIC，迁移账号要有：角色整个实例共用，别的项目的账号会串进来', () => {
+  test('库的 CONNECT 不授给 PUBLIC，登录账号、迁移账号要有：角色整个实例共用，别的项目的同名模块角色会串进来', () => {
     const roles = EMPTY.roles.map(item => (item.name === 'migrator' ? role('migrator', true, { connect: false }) : item))
     const violations = catalogViolations(database(), { ...EMPTY, database: { name: 'App-DB', ident: '"App-DB"', publicConnect: true }, roles })
     assert.deepEqual(
@@ -298,7 +264,7 @@ describe('db check 的比对', () => {
       ['库 App-DB 的 CONNECT 授给了 PUBLIC', '跑迁移的账号 migrator 连不了库 App-DB（没有 CONNECT）'],
     )
     // 改法里的库名用 Postgres 给的标识符写法，照抄就能执行
-    assert.match(violations[0]?.fix ?? '', /REVOKE CONNECT ON DATABASE "App-DB" FROM PUBLIC；GRANT CONNECT ON DATABASE "App-DB" TO migrator, shared_app, billing_app, orders_app/)
+    assert.match(violations[0]?.fix ?? '', /REVOKE CONNECT ON DATABASE "App-DB" FROM PUBLIC；GRANT CONNECT ON DATABASE "App-DB" TO app, migrator/)
   })
 })
 
@@ -312,7 +278,7 @@ function dbRepo(config: Record<string, unknown> = { database: DATABASE }): strin
 const catalogOf = (...modules: string[]): Catalog => ({
   ...EMPTY,
   schemas: schemas(...modules.flatMap(name => [name, `${name}_api`]), 'public', 'shared'),
-  roles: [...[...modules, 'shared'].flatMap(name => [role(name, false), role(`${name}_app`, true)]), role('migrator', true)],
+  roles: [...modules.map(name => role(name, false)), role('shared', false), role('app', true), role('migrator', true)],
   privileges: [],
 })
 const SAMPLE = catalogOf('billing', 'booking')
@@ -328,6 +294,17 @@ describe('modwall db check', () => {
     assert.match(sent, /^\\set QUIET on/)
     assert.match(sent, /\\set ON_ERROR_STOP on/)
     assert.match(sent, /FROM pg_namespace/)
+  })
+
+  test('配置写了运行角色模板：模块的运行角色用本模块的内部 schema 通过，用别的模块的拦', () => {
+    const repo = dbRepo({ database: { ...DATABASE, runtime: '<module>_app' } })
+    const catalog = (privileges: Catalog['privileges']): string =>
+      `modwall-db:${JSON.stringify({ ...SAMPLE, roles: [...SAMPLE.roles, role('booking_app', false)], privileges })}`
+    const own = modwall(repo, ['db', 'check', '--psql', fakePsql([catalog([{ schema: 'booking', role: 'booking_app', usage: true, create: false }])]).command])
+    assert.equal(own.code, 0, own.out)
+    const other = modwall(repo, ['db', 'check', '--psql', fakePsql([catalog([{ schema: 'billing', role: 'booking_app', usage: true, create: false }])]).command])
+    assert.equal(other.code, 1, other.out)
+    assert.match(other.out, /✗ 角色 booking_app 能使用（USAGE） billing 模块的内部 schema billing/)
   })
 
   test('有越界：列出来，退出码 1', () => {
