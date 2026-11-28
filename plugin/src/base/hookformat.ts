@@ -8,7 +8,7 @@ import { PLUGIN_NAME } from './version.ts'
 
 interface Session {
   sessionId: string
-  /** 会话所在目录。 */
+  /** 这次 hook 给的目录：agent 现在所在的目录（cd 会留住，会话所在目录按第一次见到的认，见 sessions.ts 的 sessionHome）。 */
   cwd: string
 }
 
@@ -16,7 +16,7 @@ interface Session {
 export type HookEvent = Session &
   (
     | { kind: 'start' }
-    /** 要用改文件的工具改一个文件：路径（相对会话所在目录，或绝对路径），和这次要写进去的新文字（拿得到时）。可以拒绝。 */
+    /** 要用改文件的工具改一个文件：路径（相对 cwd，或绝对路径），和这次要写进去的新文字（拿得到时）。可以拒绝。 */
     | { kind: 'edit'; file: string; text?: string }
     /** 要用一段补丁改这几个文件（Codex 的 apply_patch）：只记下改到的工作区，不检查（一段补丁里有几个文件，修改的部分只有差异）。 */
     | { kind: 'patch'; files: string[] }
@@ -24,7 +24,8 @@ export type HookEvent = Session &
     | { kind: 'command'; command: string }
     /** 一条命令执行完了。放到后台的，agent 这时还没看到它的输出。 */
     | { kind: 'ran'; command: string; background: boolean }
-    | { kind: 'stop' }
+    /** 要结束这一轮。busy：会话放到后台的 agent（子代理、workflow、队友）还在干活，这一轮结束不是活干完了，它们干完会再叫醒会话。 */
+    | { kind: 'stop'; busy?: boolean }
     /**
      * 要调 gatelight 自己的 MCP 服务（src/mcp.ts，只有确认工具 confirm_with_user）：text 是要给用户看的原文（调用里填的，没填是 undefined）。
      * 只有工具自己不能保证每次弹窗的 agent 才读出这种事件（Antigravity）；Claude Code 靠工具自己的标记弹窗，不经过 hook。
@@ -67,7 +68,12 @@ interface ClaudeInput {
   tool_name?: string
   tool_input?: { command?: unknown; run_in_background?: unknown; file_path?: unknown; content?: unknown; new_string?: unknown; edits?: unknown }
   tool_response?: unknown
+  /** Stop 时还在跑的后台任务（Claude Code 给；老版本没有这个字段）。type 是 subagent、workflow、teammate、shell、monitor 这类。 */
+  background_tasks?: Array<{ type?: unknown }>
 }
+
+/** 会在本机替会话改文件、跑命令的后台任务。shell、monitor 不算：开着的开发服务、监视器会一直在，算上它们停止门就再也不问了。 */
+const WORKING_TASKS = new Set(['subagent', 'workflow', 'teammate'])
 
 /** 改文件的工具（Claude Code 的，和 hooks.json 里的 matcher 一样）。Codex 的 apply_patch 另算（patchFiles）。 */
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
@@ -88,7 +94,7 @@ function writtenText(input: ClaudeInput['tool_input']): string | undefined {
 
 /**
  * Codex 的 apply_patch 补丁（tool_input.command 是补丁正文）要改的文件：新建、修改、删除的，和改名后的新路径。
- * 路径相对会话所在目录，也可以是绝对路径。
+ * 路径相对 cwd，也可以是绝对路径。
  */
 function patchFiles(patch: string): string[] {
   return patch.split('\n').flatMap(line => /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)\s*$/.exec(line)?.[1] ?? [])
@@ -112,7 +118,10 @@ export const CLAUDE_HOOKS: HookFormat = {
     const session: Session = { sessionId: input.session_id ?? 'unknown', cwd: input.cwd ?? process.cwd() }
     const event = input.hook_event_name
     if (event === 'SessionStart') return { ...session, kind: 'start' }
-    if (event === 'Stop') return { ...session, kind: 'stop' }
+    if (event === 'Stop') {
+      const busy = Array.isArray(input.background_tasks) && input.background_tasks.some(task => WORKING_TASKS.has(task?.type as string))
+      return { ...session, kind: 'stop', ...(busy ? { busy } : {}) }
+    }
     const tool = input.tool_name ?? ''
     if (event === 'PreToolUse' && EDIT_TOOLS.has(tool)) {
       const file = input.tool_input?.file_path

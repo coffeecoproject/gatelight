@@ -1,7 +1,8 @@
 // 停止门：agent 要结束这一轮时，这个会话起的整组还在跑、或跑完还没看结果，就拦一次。
 // 各模块在这个会话里还没处理完的事（module.ts 的 unfinished，比如改了代码还没跑过 testpace focused、提交了却还有没合进默认分支的提交、
 // 还没有 modwall check 的通过记录），每件也拦一次，要紧的同时直接给用户看一行；
-// 只问会话干活的工作区（所在目录的、用改文件的工具改过的），只在命令里 cd 进去看过的别人的工作区不问。
+// 只问会话干活的工作区（所在目录的、用改文件的工具改过的），只在命令里 cd 进去看过的别人的工作区不问；
+// 会话在那里没动过手的不问，拦过一项之后没再动手的同一项不再拦（SessionState.acted）；放到后台的 agent 还在干活时不问。
 // 每次整组只拦一次（还在跑时一次、跑完没看结果时一次），拦过的记在会话状态里，不靠 agent 给的 stop_hook_active：
 // 有的 agent 不给或总是 false，靠它会反复拦。
 // 谁起的整组看记录里的会话号（testpace full 从命令环境里 agent 的会话号记下，见 agent.ts）；
@@ -21,6 +22,8 @@ export interface StopInput {
   cwd: string
   /** 仓库不是会话所在目录的（会话从仓库外开始），话里写上是哪个仓库。 */
   named?: boolean
+  /** 会话放到后台的 agent 还在干活。 */
+  busy?: boolean
   now: number
 }
 
@@ -60,14 +63,21 @@ export function stopCheck(input: StopInput): StopResult {
 
   // 各模块在这个会话里还没处理完的事（比如改了代码还没有 modwall check 的通过记录）：每件拦一次，免得一句带过。
   // 只问这个会话干活的工作区（会话所在目录的、用改文件的工具改过的，见 SessionState.worked）：只 cd 进去看过的，那里后来的改动是别的会话的
-  const works = input.named !== true || session.worked?.includes(repo.root) === true
+  // 放到后台的 agent 还在干活时不问：内容还会变，每轮结束都拦一次只会空跑；它们干完会叫醒会话，那时再问
+  const works = input.busy !== true && (input.named !== true || session.worked?.includes(repo.root) === true)
+  // 起点只说"这之后变了"，不说是谁变的：同一个工作区里别的会话、用户自己改的也算进去。会话在这里没动过手，变化就不是它的；
+  // 拦过一项、之后没再动手（只跑了检查），后来的变化也不是它的，同一项不再拦
+  const acts = session.acted?.[repo.root] ?? 0
+  const blockedActs = { ...session.blockedActs }
+  const item = (key: string): string => `${repo.root}\0${key.split(':').slice(0, 2).join(':')}`
+  const seen = (key: string): boolean => acts === 0 || blocked.includes(key) || blockedActs[item(key)] === acts
   const moduleProblems: string[] = []
   const moduleNotices: string[] = []
   for (const module of works ? modules() : []) {
     if (result.block) break
     let left: ReturnType<NonNullable<typeof module.unfinished>>
     try {
-      left = module.unfinished?.(repo, input.sessionId, blocked, input.named === true)
+      left = module.unfinished?.(repo, input.sessionId, seen, input.named === true)
     } catch (error) {
       // 一个模块出错不挡别的检查，但要让人看得到
       moduleProblems.push(`testpace：停止门里"${module.name}"这一项检查出错，这次没查它（${(error as Error).message.split('\n')[0]}）。`)
@@ -75,6 +85,7 @@ export function stopCheck(input: StopInput): StopResult {
     }
     if (!left) continue
     blocked.push(...left.keys)
+    for (const key of left.keys) blockedActs[item(key)] = acts
     result.block = left.text
     if (left.notice) moduleNotices.push(left.notice)
   }
@@ -98,6 +109,6 @@ export function stopCheck(input: StopInput): StopResult {
     warns.push(`testpace：${input.named ? `${repo.root} 的 ` : ''}${name} 的最新提交 ${short(commit)} 没有整组通过记录（${how}）。`)
   }
   if (warns.length > 0) result.warn = warns.join('\n')
-  if (warns.length > 0 || result.block) repo.store.saveSession(input.sessionId, { ...session, warned, blocked })
+  if (warns.length > 0 || result.block) repo.store.saveSession(input.sessionId, { ...session, warned, blocked, blockedActs })
   return result
 }

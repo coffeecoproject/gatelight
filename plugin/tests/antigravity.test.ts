@@ -154,7 +154,9 @@ describe('Antigravity 的 hook', () => {
     const repo = sampleRepo()
     sh(repo, 'git checkout -qb feat')
     agy(start(repo, 'un'))
-    writeFileSync(join(repo, 'src', 'price.mjs'), `${sh(repo, 'cat src/price.mjs')}// 改过\n`)
+    const text = `${sh(repo, 'cat src/price.mjs')}// 改过\n`
+    agy({ hookEventName: 'PreToolUse', conversationId: 'un', cwd: repo, toolCall: { name: 'write_file', args: { Path: join(repo, 'src', 'price.mjs'), Content: text } } })
+    writeFileSync(join(repo, 'src', 'price.mjs'), text)
     commit(repo, '改价格')
     assert.equal(testpace(repo, ['focused'], fakeLayermap({ files: [], tests: [], unmapped: [], incomplete: [] }).env).code, 0)
     const blocked = agy(stop(repo, 'un'))

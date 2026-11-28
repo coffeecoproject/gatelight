@@ -1,6 +1,6 @@
 // 大致读懂 agent 要跑的 Bash 命令：拆成一条条命令，跟着 cd 算出每条在哪个目录跑。
-// 只用于提示（节奏说明、直接跑整组命令时的提醒、前台跑完整组算看过结果），不用来把关：
-// 引号、转义、&& || ; | & 换行、cd、环境变量前缀、sh -c。
+// 用于提示（节奏说明、直接跑整组命令时的提醒、前台跑完整组算看过结果）和停止门认会话动没动手（hook.ts），不用来拦命令：
+// 认错了最多是停止门多问或少问一次。认得出：引号、转义、&& || ; | & 换行、cd、环境变量前缀、sh -c、往文件里写的重定向。
 
 import { homedir } from 'node:os'
 import { basename, resolve } from 'node:path'
@@ -8,12 +8,14 @@ import { basename, resolve } from 'node:path'
 export interface Invocation {
   cwd: string
   argv: string[]
+  /** 输出重定向到了文件（> file、>> file、&> file；/dev/null 和 2>&1 这类不算）。 */
+  writes: boolean
 }
 
 const OPERATORS = ['&&', '||', ';;', ';', '|&', '|', '&', '\n', '(', ')']
 
 /** 重定向：`>`、`2>&1`、`&>file`、`<<EOF` 这类。不带目标时目标是下一个词。 */
-const REDIRECT = /^(?:\d+|&)?(?:>>|>&|>\||>|<<<|<<-?|<&|<>|<)(.*)$/s
+const REDIRECT = /^(?:\d+|&)?(>>|>&|>\||>|<<<|<<-?|<&|<>|<)(.*)$/s
 const HEREDOC = /^\d*<<(?!<)(-?)(.*)$/s
 
 /**
@@ -105,15 +107,20 @@ export function tokenize(command: string): string[] {
   return tokens
 }
 
-/** 去掉重定向和它的目标。 */
-function withoutRedirects(argv: string[]): string[] {
+/** 去掉重定向和它的目标；有没有往文件里写。 */
+function withoutRedirects(argv: string[]): { argv: string[]; writes: boolean } {
   const out: string[] = []
+  let writes = false
   for (let i = 0; i < argv.length; i++) {
     const redirect = REDIRECT.exec(argv[i]!)
-    if (!redirect) out.push(argv[i]!)
-    else if (redirect[1] === '') i++
+    if (!redirect) {
+      out.push(argv[i]!)
+      continue
+    }
+    const target = redirect[2] === '' ? argv[++i] : redirect[2]
+    if (redirect[1]!.includes('>') && !/^(?:\/dev\/null|&?\d+|-)$/.test(target ?? '')) writes = true
   }
-  return out
+  return { argv: out, writes }
 }
 
 const WRAPPERS = new Set(['command', 'exec', 'nohup', 'time', 'builtin'])
@@ -128,7 +135,8 @@ export function invocations(command: string, cwd: string): Invocation[] {
   let here = cwd
   let segment: string[] = []
   const flush = (): void => {
-    let argv = withoutRedirects(segment)
+    const redirected = withoutRedirects(segment)
+    let argv = redirected.argv
     segment = []
     // 跳过环境变量前缀和 env、command 这类包装
     for (;;) {
@@ -154,7 +162,7 @@ export function invocations(command: string, cwd: string): Invocation[] {
         return
       }
     }
-    result.push({ cwd: here, argv })
+    result.push({ cwd: here, argv, writes: redirected.writes })
   }
   for (const token of tokenize(command)) {
     if (OPERATORS.includes(token)) flush()

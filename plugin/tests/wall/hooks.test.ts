@@ -9,6 +9,13 @@ import { ENV, hook, modwall, sampleRepo, sh, tempDir, write } from './helpers.ts
 const edit = (repo: string, path: string, tool = 'Write'): Record<string, any> | undefined =>
   hook(repo, 'PreToolUse', { tool_name: tool, tool_input: { file_path: join(repo, path) } })
 
+/** 会话用改文件的工具改 path：先发改文件的事件（停止门只为会话动过手的工作区问），再真的写。 */
+const editBy = (repo: string, session: string, path: string, change: (file: string) => void): void => {
+  hook(repo, 'PreToolUse', { session_id: session, tool_name: 'Edit', tool_input: { file_path: join(repo, path) } })
+  change(join(repo, path))
+}
+const append = (text: string) => (file: string) => appendFileSync(file, text)
+
 /**
  * 停止门里"跑测试"那一项（testpace 的：改了代码、当前内容没跑过 testpace focused）不归 modwall 管，认出来不算拦。
  * modwall 排在它前面，modwall 自己拦的照样看得到。
@@ -203,21 +210,21 @@ describe('结束之前', () => {
     hook(repo, 'SessionStart', { session_id: 's1' })
     assert.equal(stop(repo, 's1'), undefined)
 
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee = 1\n')
+    editBy(repo, 's1', 'src/modules/billing/index.ts', append('\nexport const fee = 1\n'))
     assert.match(stop(repo, 's1') as string, /改了代码或 modwall 的配置.*用 Bash 跑 modwall check.*confirm_with_user/)
     // 同一份内容只拦一次
     assert.equal(stop(repo, 's1'), undefined)
-    // 内容又变了还没有通过记录：再拦
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee2 = 1\n')
+    // 会话又改了内容、还没有通过记录：再拦
+    editBy(repo, 's1', 'src/modules/billing/index.ts', append('\nexport const fee2 = 1\n'))
     assert.match(stop(repo, 's1') as string, /modwall check/)
 
     assert.equal(modwall(repo, ['check']).code, 0)
     assert.equal(stop(repo, 's1'), undefined)
     // 只改文档不算
-    write(repo, 'src/modules/billing/MODULE.md', '负责收款和退款。\n')
+    editBy(repo, 's1', 'src/modules/billing/MODULE.md', file => writeFileSync(file, '负责收款和退款。\n'))
     assert.equal(stop(repo, 's1'), undefined)
 
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const tax = 1\n')
+    editBy(repo, 's1', 'src/modules/billing/index.ts', append('\nexport const tax = 1\n'))
     assert.match(stop(repo, 's1') as string, /modwall check/)
   })
 
@@ -226,14 +233,16 @@ describe('结束之前', () => {
     appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee = 1\n')
     // 这个会话没有过会话开始，也没在这里跑过命令：没有起点可比
     assert.equal(stop(repo, 'late'), undefined)
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee2 = 1\n')
+    editBy(repo, 'late', 'src/modules/billing/index.ts', append('\nexport const fee2 = 1\n'))
     assert.match(stop(repo, 'late') as string, /modwall check/)
   })
 
   test('改了配置也要重跑；压缩后再来一次会话开始，不覆盖会话开始时的样子', () => {
     const repo = sampleRepo()
     hook(repo, 'SessionStart', { session_id: 's2' })
-    write(repo, '.modwall/config.json', '{"roots":["src/modules"],"entry":["index.ts"],"shared":["src/shared/**"],"app":["src/main.ts"],"outside":["scripts/**"]}')
+    editBy(repo, 's2', '.modwall/config.json', file =>
+      writeFileSync(file, '{"roots":["src/modules"],"entry":["index.ts"],"shared":["src/shared/**"],"app":["src/main.ts"],"outside":["scripts/**"]}'),
+    )
     hook(repo, 'SessionStart', { session_id: 's2' })
     assert.match(stop(repo, 's2') as string, /modwall check/)
   })
@@ -242,7 +251,7 @@ describe('结束之前', () => {
     const repo = sampleRepo()
     sh(repo, 'git checkout -q main')
     hook(repo, 'SessionStart', { session_id: 'main1' })
-    appendFileSync(join(repo, 'src/modules/billing/index.ts'), '\nexport const fee = 1\n')
+    editBy(repo, 'main1', 'src/modules/billing/index.ts', append('\nexport const fee = 1\n'))
     assert.match(blocked(repo, 'main1') as string, /modwall check/)
     assert.equal(modwall(repo, ['check']).code, 0)
     sh(repo, 'git add -A && git commit -qm fee')
@@ -253,10 +262,11 @@ describe('结束之前', () => {
     sh(repo, 'git add -A && git commit -qm notes')
     assert.equal(blocked(repo, 'main1'), undefined)
     // 提交了配置的改动：分叉点上的配置变了，要重跑
-    const file = join(repo, '.modwall/config.json')
-    const config = JSON.parse(readFileSync(file, 'utf8'))
-    config.entry = ['index.ts']
-    writeFileSync(file, JSON.stringify(config, null, 2))
+    editBy(repo, 'main1', '.modwall/config.json', file => {
+      const config = JSON.parse(readFileSync(file, 'utf8'))
+      config.entry = ['index.ts']
+      writeFileSync(file, JSON.stringify(config, null, 2))
+    })
     assert.equal(modwall(repo, ['check']).code, 0)
     sh(repo, 'git add -A && git commit -qm entry')
     assert.match(blocked(repo, 'main1') as string, /modwall check/)

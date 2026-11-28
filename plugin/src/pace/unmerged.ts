@@ -45,7 +45,7 @@ function title(subject: string): string {
 export function unmerged(
   repo: Repo,
   sessionId: string,
-  seen: readonly string[],
+  seen: (key: string) => boolean,
   named: boolean,
   clean: () => boolean,
   isIgnored: (path: string) => boolean,
@@ -57,7 +57,7 @@ export function unmerged(
   const head = headCommit(repo.root)
   if (!head) return undefined
   const key = `pace:unmerged:${head}`
-  if (seen.includes(key)) return undefined
+  if (seen(key)) return undefined
   // 会话起点以来 HEAD 没动：这个会话没提交过
   const start = heads(repo).since(sessionId, { head, at: Date.now() })
   if (start.head === head || !clean()) return undefined
