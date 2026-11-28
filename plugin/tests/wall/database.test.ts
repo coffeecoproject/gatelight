@@ -4,13 +4,13 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { type Config, parseConfig } from '../../src/wall/config.ts'
 import { schemaName, unreadSql } from '../../src/wall/database.ts'
-import { migrationViolations } from '../../src/wall/dbrules.ts'
+import { codeRoleSwitches, migrationViolations } from '../../src/wall/dbrules.ts'
 import { Layout } from '../../src/wall/layout.ts'
 import { importViolations } from '../../src/wall/rules.ts'
 import { statements } from '../../src/wall/sql.ts'
 import { modwall, sampleRepo, write } from './helpers.ts'
 
-const DATABASE = { migrations: 'migrations', shared: 'src/shared/migrations', login: '<module>_app', migrator: 'migrator' }
+const DATABASE = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' }
 
 /** 示例项目的划分加上数据库；sql：迁移文件 → 内容。 */
 function project(sql: Record<string, string>, extra: Record<string, unknown> = {}): { layout: Layout; read: (path: string) => string } {
@@ -66,75 +66,64 @@ describe('数据库的 schema 和迁移文件（配置）', () => {
     ])
   })
 
-  test('database 的写法：两个目录、运行账号的模板、迁移账号名都要写，目录不用通配；按应用分组时写在应用里', () => {
+  test('database 的写法：两个目录、两个账号名都要写，目录不用通配；按应用分组时写在应用里', () => {
     const problems = (database: unknown): string[] => parseConfig(JSON.stringify({ roots: ['src/modules'], entry: ['index.ts'], database })).problems
     assert.deepEqual(problems({ ...DATABASE, shared: undefined }), ['.modwall/config.json 的 "database.shared" 要写共享层的迁移目录（从仓库根目录写起）（相对路径，不用通配）'])
     assert.deepEqual(problems({ ...DATABASE, migrations: '*/m', extra: 1 }), [
       '.modwall/config.json 的 "database" 有未知字段 "extra"',
       '.modwall/config.json 的 "database.migrations" 要写每个模块放迁移的子目录（相对模块目录，比如 "migrations"）（相对路径，不用通配）',
     ])
-    assert.deepEqual(problems({ ...DATABASE, migrator: undefined }), ['.modwall/config.json 的 "database.migrator" 要写跑迁移用的账号的名字（小写字母、数字和下划线，不以数字开头）'])
+    assert.deepEqual(problems({ ...DATABASE, login: 'App-User', migrator: undefined }), [
+      '.modwall/config.json 的 "database.login" 要写程序连库用的账号的名字（小写字母、数字和下划线，不以数字开头）',
+      '.modwall/config.json 的 "database.migrator" 要写跑迁移用的账号的名字（小写字母、数字和下划线，不以数字开头）',
+    ])
     const grouped = parseConfig(JSON.stringify({ apps: { server: { roots: ['server/modules'], entry: ['index.ts'] } }, database: DATABASE }))
     assert.match(grouped.problems.join('\n'), /"database" 要写进各个应用里/)
   })
 
-  test('运行账号的名字模板（database.login）：带一个 <module>、换完是普通的名字，不能只写 <module>；迁移账号是普通的名字；database.runtime 不认', () => {
-    const problems = (database: Record<string, unknown>): string[] =>
-      parseConfig(JSON.stringify({ roots: ['src/modules'], entry: ['index.ts'], database: { ...DATABASE, ...database } })).problems
-    assert.deepEqual(problems({}), [])
-    assert.deepEqual(problems({ login: 'app_<module>' }), [])
-    const wrong = '.modwall/config.json 的 "database.login" 要写各模块运行账号的名字模板：带一个 <module>（换成模块的内部 schema 名），其余是小写字母、数字和下划线，比如 "<module>_app"；不能只写 <module>（那是模块的角色本身）'
-    for (const bad of ['<module>', 'app', '<module>-app', '<module>_<module>', '1<module>', '<module>_App', 3, undefined]) assert.deepEqual(problems({ login: bad }), [wrong], String(bad))
-    assert.deepEqual(problems({ migrator: 'Migrator' }), ['.modwall/config.json 的 "database.migrator" 要写跑迁移用的账号的名字（小写字母、数字和下划线，不以数字开头）'])
-    assert.deepEqual(problems({ runtime: '<module>_app' }), ['.modwall/config.json 的 "database" 有未知字段 "runtime"'])
+  test('登录账号、迁移账号和模块的角色（内部 schema 名）、shared 同名：配置错误', () => {
+    const { layout } = project({}, { database: { ...DATABASE, login: 'orders', migrator: 'shared' } })
+    assert.deepEqual(layout.problems, [
+      'database.login 的账号 orders 和orders 模块的角色同名：登录、迁移账号本身没有权限，只能切成模块的角色，换个名字',
+      'database.migrator 的账号 shared 和共享层的角色同名：登录、迁移账号本身没有权限，只能切成模块的角色，换个名字',
+    ])
   })
 
-  test('运行账号（模块的、共享层的）、组角色和模块的角色、shared 角色、迁移账号同名：配置错误', () => {
-    const problems = (files: Record<string, string>, database: Record<string, unknown> = {}): string[] => project(files, { database: { ...DATABASE, ...database } }).layout.problems
-    assert.deepEqual(problems({}), [])
-    assert.deepEqual(problems({ 'src/modules/orders-app/index.ts': '', 'src/modules/shared-app/index.ts': '' }), [
-      '共享层的运行账号 shared_app（database.login 是 <module>_app）和shared-app 模块的角色同名：换个模板或模块名',
-      'orders 模块的运行账号 orders_app（database.login 是 <module>_app）和orders-app 模块的角色同名：换个模板或模块名',
-    ])
-    assert.deepEqual(problems({ 'src/modules/modules/index.ts': '' }), [
-      'modules 模块的运行账号 modules_app（database.login 是 <module>_app）和各模块的组角色同名：换个模板或模块名',
-    ])
-    assert.deepEqual(problems({ 'src/modules/modulesApp/index.ts': '' }), [
-      '各模块的组角色 modules_app（database.login 的 <module> 换成 modules）和modulesApp 模块的角色同名：换个模板或模块名',
-    ])
-    assert.deepEqual(problems({ 'src/modules/d/index.ts': '' }, { login: 'share<module>' }), [
-      'd 模块的运行账号 shared（database.login 是 share<module>）和共享层的角色同名：换个模板或模块名',
-    ])
-    assert.deepEqual(problems({}, { migrator: 'billing_app' }), [
-      'billing 模块的运行账号 billing_app（database.login 是 <module>_app）和跑迁移的账号（database.migrator）同名：换个模板或模块名',
-    ])
-    assert.deepEqual(problems({}, { migrator: 'modules_app' }), ['各模块的组角色 modules_app（database.login 的 <module> 换成 modules）和跑迁移的账号（database.migrator）同名：换个模板或模块名'])
-    assert.deepEqual(problems({}, { migrator: 'orders' }), ['database.migrator 的账号 orders 和orders 模块的角色同名：迁移账号本身没有权限，只能切成模块的角色，换个名字'])
+  test('运行角色模板（database.runtime，可选）：带一个 <module>、换完是普通的角色名；不能只写 <module>', () => {
+    const parsed = (runtime: unknown) => parseConfig(JSON.stringify({ roots: ['src/modules'], entry: ['index.ts'], database: { ...DATABASE, runtime } }))
+    assert.deepEqual(parsed('<module>_app').problems, [])
+    assert.equal((parsed('<module>_app').config as { database?: { runtime?: string } }).database?.runtime, '<module>_app')
+    assert.deepEqual(parsed(undefined).problems, [])
+    assert.equal((parsed(undefined).config as { database?: object }).database && 'runtime' in (parsed(undefined).config as { database: object }).database, false)
+    const wrong = '.modwall/config.json 的 "database.runtime" 要写模块运行角色的名字模板：带一个 <module>（换成模块的内部 schema 名），其余是小写字母、数字和下划线，比如 "<module>_app"；不能只写 <module>（那是模块的角色本身）'
+    for (const bad of ['<module>', 'app', '<module>-app', '<module>_<module>', '1<module>', 3]) assert.deepEqual(parsed(bad).problems, [wrong], String(bad))
   })
 
-  test('超过 Postgres 63 个字符的名字（模块的入口 schema、运行账号、组角色、迁移账号）：配置错误；正好 63 个可以', () => {
-    /** 只有一个模块 dir 的项目。 */
-    const problems = (dir: string, database: Record<string, unknown> = {}): string[] => {
-      const parsed = parseConfig(JSON.stringify({ roots: ['src/modules'], entry: ['index.ts'], database: { ...DATABASE, ...database } }))
-      return new Layout(parsed.config as Config, [`src/modules/${dir}/index.ts`]).problems
-    }
-    const name = (length: number): string => 'm'.repeat(length)
-    // 入口 schema 是内部名加 _api（4 个字符）；模板 <module>_r 只加 2 个，账号不超
-    assert.deepEqual(problems(name(59), { login: '<module>_r' }), [])
-    assert.deepEqual(problems(name(60), { login: '<module>_r' }), [
-      `模块 src/modules/${name(60)} 的目录名太长：入口 schema 名 ${name(60)}_api 超过 Postgres 的 63 个字符，给模块目录改个短点的名字`,
+  test('运行角色和模块的角色、shared、登录账号、迁移账号同名：配置错误', () => {
+    const problems = (runtime: string, files: Record<string, string> = {}, database = {}): string[] =>
+      project(files, { database: { ...DATABASE, ...database, runtime } }).layout.problems
+    assert.deepEqual(problems('<module>_app'), [])
+    assert.deepEqual(problems('<module>_app', { 'src/modules/orders-app/index.ts': '' }), [
+      'orders 模块的运行角色 orders_app（database.runtime 是 <module>_app）和orders-app 模块的角色同名：运行角色只有本模块的读写授权，换个模板',
     ])
-    // 模板 <module>_runtime 加 8 个：入口 schema 不超、账号超
-    assert.deepEqual(problems(name(55), { login: '<module>_runtime' }), [])
-    assert.deepEqual(problems(name(56), { login: '<module>_runtime' }), [
-      `${name(56)} 模块的运行账号 ${name(56)}_runtime 超过 Postgres 的 63 个字符：换个短点的名字或模板`,
+    assert.deepEqual(problems('<module>_app', {}, { login: 'billing_app', migrator: 'orders_app' }), [
+      'billing 模块的运行角色 billing_app（database.runtime 是 <module>_app）和程序的登录账号（database.login）同名：运行角色只有本模块的读写授权，换个模板',
+      'orders 模块的运行角色 orders_app（database.runtime 是 <module>_app）和跑迁移的账号（database.migrator）同名：运行角色只有本模块的读写授权，换个模板',
     ])
-    // 组角色是 <module> 换成 modules（7 个字符），比共享层的 shared 和模块 ab 的账号都长
-    const prefix = (length: number): string => `${'p'.repeat(length)}_<module>`
-    assert.deepEqual(problems('ab', { login: prefix(55) }), [])
-    assert.deepEqual(problems('ab', { login: prefix(56) }), [`各模块的组角色 ${'p'.repeat(56)}_modules 超过 Postgres 的 63 个字符：换个短点的名字或模板`])
-    assert.deepEqual(problems('ab', { migrator: name(63) }), [])
-    assert.deepEqual(problems('ab', { migrator: name(64) }), [`跑迁移的账号（database.migrator） ${name(64)} 超过 Postgres 的 63 个字符：换个短点的名字或模板`])
+  })
+
+  test('各模块的组角色（<登录账号>_modules）和迁移账号、某个模块的角色、某个模块的运行角色同名：配置错误', () => {
+    const problems = (files: Record<string, string>, database: Record<string, unknown>): string[] => project(files, { database: { ...DATABASE, ...database } }).layout.problems
+    assert.deepEqual(problems({}, {}), [])
+    assert.deepEqual(problems({}, { migrator: 'app_modules' }), [
+      '各模块的组角色 app_modules（按 database.login 起名）和跑迁移的账号（database.migrator）同名：换个登录账号名或模块名',
+    ])
+    assert.deepEqual(problems({ 'src/modules/appModules/index.ts': '' }, {}), [
+      '各模块的组角色 app_modules（按 database.login 起名）和appModules 模块的角色同名：换个登录账号名或模块名',
+    ])
+    assert.deepEqual(problems({}, { login: 'billing_x', runtime: '<module>_x_modules' }), [
+      '各模块的组角色 billing_x_modules（按 database.login 起名）和一个模块的运行角色同名：换个登录账号名或模块名',
+    ])
   })
 })
 
@@ -439,16 +428,26 @@ describe('读 SQL', () => {
 })
 
 describe('modwall check 里的 R6', () => {
-  test('模块的代码、页面文字里写 reset role、Set role 不拦（切身份只查迁移文件）', () => {
-    const repo = sampleRepo(dir => {
-      const config = { roots: ['src/modules'], shared: ['src/shared/**'], app: ['src/main.ts'], entry: ['index.ts'], outside: ['scripts/**'], database: DATABASE }
-      write(dir, '.modwall/config.json', JSON.stringify(config))
-      write(dir, 'src/modules/billing/roles.ts', "export const reset = 'reset role'\nexport const title = 'Set role'\n")
-      write(dir, 'src/modules/billing/queries/as_admin.sql', 'SET LOCAL ROLE booking;\n')
-    })
-    const r = modwall(repo, ['check'])
-    assert.equal(r.code, 0, r.out)
-    assert.doesNotMatch(r.out, /切了数据库的身份/)
+  test('模块的代码和迁移以外的 .sql 里切身份拦（按固定写法认，不分大小写；迁移另按语句查）；装配层、共享层、测试文件里可以', () => {
+    const code: Record<string, string> = {
+      'src/modules/orders/repo.ts': "const a = 1\nawait db.query('set local role billing')\nawait db.query(`SELECT set_config( 'role', $1, true)`)\n",
+      'src/modules/billing/auth.py': 'cursor.execute("RESET ROLE")\nuser.set_role("admin")\n',
+      'src/modules/billing/repo.test.ts': "await db.query('SET ROLE orders')\n",
+      'src/shared/db.ts': "await client.query(`SELECT set_config('role', $1, true)`)\n",
+      'src/main.ts': "await pool.query('SET SESSION AUTHORIZATION app')\n",
+      'src/modules/orders/notes.md': 'SET ROLE billing\n',
+      'src/modules/orders/queries/as_billing.sql': 'SET LOCAL ROLE billing;\nSELECT 1;\n',
+      'src/modules/orders/migrations/20261118090000_orders.sql': 'SET ROLE billing;\n',
+    }
+    const { layout } = project({ 'src/modules/orders/migrations/20261118090000_orders.sql': '' })
+    const found = codeRoleSwitches(layout.databases, Object.keys(code), path => layout.owner(path), path => code[path] as string)
+    assert.deepEqual(found.map(v => v.where[0]), [
+      "src/modules/orders/repo.ts:2（orders 模块）切了数据库的身份：set local role",
+      "src/modules/orders/repo.ts:3（orders 模块）切了数据库的身份：set_config( 'role'",
+      'src/modules/billing/auth.py:1（billing 模块）切了数据库的身份：RESET ROLE',
+      'src/modules/orders/queries/as_billing.sql:1（orders 模块）切了数据库的身份：SET LOCAL ROLE',
+    ])
+    assert.match(found[0]?.fix as string, /模块的代码不自己切身份：连接在事务开头由装配层或共享层里那个切身份的小函数切成本模块的角色/)
   })
 
   test('示例项目加上数据库：迁移干净时通过；有越界时 R6 拦，时间戳重复是配置错误', () => {
@@ -475,7 +474,7 @@ describe('modwall check 里的 R6', () => {
     assert.match(modwall(repo, ['status']).out, /数据库：库里的现状要在迁移跑完后用 modwall db check 查；没接入 testpace/)
 
     write(repo, 'src/modules/billing/queries/list.sql', 'SELECT * FROM booking.bookings;\n')
-    assert.match(modwall(repo, ['check']).out, /没检查到.*\n(?: {2}· .*\n)* {2}· src\/modules\/billing\/queries\/list\.sql：不在迁移目录里，R6 不读它/)
+    assert.match(modwall(repo, ['check']).out, /没检查到.*\n(?: {2}· .*\n)* {2}· src\/modules\/billing\/queries\/list\.sql：不在迁移目录里，R6 只查它有没有切身份/)
 
     write(repo, 'src/modules/billing/migrations/20261118090000_dup.sql', 'SELECT 1;\n')
     const dup = modwall(repo, ['check'])

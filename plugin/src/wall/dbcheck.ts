@@ -8,14 +8,13 @@
 //   每个模块有同名的角色，共享层有 shared 角色：不能登录、不是超级用户、不能绕过行级权限、不能建角色和库，不能在 public 里建对象、不能在库里建 schema；
 //   模块两个 schema 和里面的对象归模块的角色，shared 的归 shared 角色；除了超级用户和 schema 的主人，没有角色（包括经继承）能用模块的内部 schema、
 //   能在模块的两个 schema 和 shared 里建对象；函数都是 SECURITY DEFINER（函数里也就切不了身份），入口视图没有设 security_invoker；
-//   迁移账号存在、能登录、不是超级用户、不拥有任何对象。
-//   每个模块和共享层的运行账号（database.login 模板）存在、能登录、能连库，可以用本块的内部 schema（别的模块的照样不行），
-//   不是超级用户、不能绕过行级权限、不能建角色和库、不能在库里建 schema、不能在任何 schema 里建对象（本块的也不行）、不拥有任何对象。
-//   成员关系：模块的角色、运行账号的成员只能是迁移账号；运行账号只属于组角色（共享层的什么都不属于）。超级用户当成员的不管。
+//   登录账号、迁移账号存在、能登录、不是超级用户、不拥有任何对象。
+//   配置写了运行角色模板（database.runtime）的：模块的运行角色可以用本模块的内部 schema（别的模块的照样不行），
+//   不是超级用户、不能建角色和库、不能在库里建 schema、不能在任何 schema 里建对象（本模块的内部 schema 也不行）、不拥有任何对象。库里没有的运行角色不管。
 // 扩展自带的 schema 和对象不算。
 
 import { spawnSync } from 'node:child_process'
-import { accountOf, type Database, groupOf, internalOf, PUBLIC_SCHEMA, SHARED_SCHEMA, type SchemaOwner, schemaLabel } from './database.ts'
+import { type Database, internalOf, PUBLIC_SCHEMA, runtimeOf, SHARED_SCHEMA, type SchemaOwner, schemaLabel } from './database.ts'
 import { crossing, expectedSearchPath, FIXES, nameClashes, searchPathOk, writtenApis } from './dbrules.ts'
 import type { Module } from './layout.ts'
 import type { Violation } from './rules.ts'
@@ -114,20 +113,9 @@ SELECT '${MARKER}' || json_build_object(
       'ownsObjects', EXISTS (
         SELECT 1 FROM pg_shdepend d WHERE d.refclassid = 'pg_authid'::regclass AND d.refobjid = r.oid AND d.deptype = 'o'
           AND d.dbid IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
-          -- 连着的会话建的临时表不算
-          AND NOT EXISTS (
-            SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE d.classid = 'pg_class'::regclass AND c.oid = d.objid AND n.nspname ~ '^pg_(toast_)?temp_'
-          )
       )
     ) ORDER BY r.rolname), '[]'::json)
     FROM pg_roles r WHERE r.rolname !~ '^pg_'
-  ),
-  'memberships', (
-    SELECT coalesce(json_agg(json_build_object(
-      'role', g.rolname, 'member', u.rolname, 'admin', m.admin_option, 'inherit', m.inherit_option, 'set', m.set_option, 'superuser', u.rolsuper
-    ) ORDER BY g.rolname, u.rolname), '[]'::json)
-    FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member
   ),
   'privileges', (
     SELECT coalesce(json_agg(json_build_object('schema', x.nspname, 'role', x.rolname, 'usage', x.usage, 'create', x.create)), '[]'::json) FROM (
@@ -162,8 +150,6 @@ export interface Catalog {
   dependencies: Array<{ kind: 'view' | 'function'; schema: string; name: string; refSchema: string; refName: string; refKind: 'relation' | 'function' | 'type' }>
   /** 实例上的角色（pg_ 开头的内置角色除外）。createSchema：能在当前库里建 schema；connect：能连当前库；ownsObjects：在当前库里（或实例共用的对象里）拥有对象。 */
   roles: Array<{ name: string; login: boolean; superuser: boolean; bypassRls: boolean; createRole: boolean; createDb: boolean; createSchema: boolean; connect: boolean; ownsObjects: boolean }>
-  /** 成员关系：member 是 role 的成员。admin：能转授；inherit：继承 role 的权限；set：能切成 role；superuser：member 是超级用户。 */
-  memberships: Array<{ role: string; member: string; admin: boolean; inherit: boolean; set: boolean; superuser: boolean }>
   /** 非超级用户的角色对 schema 有的权限（包括经成员关系继承的），只列有权限的。 */
   privileges: Array<{ schema: string; role: string; usage: boolean; create: boolean }>
 }
@@ -188,7 +174,6 @@ function parseCatalog(text: string): Catalog | undefined {
     rows(value.foreignKeys, 'schema', 'table', 'name', 'refSchema', 'refTable') &&
     rows(value.dependencies, 'kind', 'schema', 'name', 'refSchema', 'refName', 'refKind') &&
     rows(value.roles, 'name', 'login', 'superuser', 'bypassRls', 'createRole', 'createDb', 'createSchema', 'connect', 'ownsObjects') &&
-    rows(value.memberships, 'role', 'member', 'admin', 'inherit', 'set', 'superuser') &&
     rows(value.privileges, 'schema', 'role', 'usage', 'create')
   return ok ? (value as unknown as Catalog) : undefined
 }
@@ -302,14 +287,13 @@ export function catalogViolations(database: Database, catalog: Catalog): Violati
   return [...violations.values()]
 }
 
-/** 按模块的数据库角色：角色和运行账号的属性、成员关系、对象的归属、内部 schema 的权限、入口函数和视图以谁的身份执行、库的 CONNECT、迁移账号。 */
+/** 按模块的数据库角色：角色（和运行角色）的属性、对象的归属、内部 schema 的权限、入口函数和视图以谁的身份执行、库的 CONNECT、登录和迁移账号。 */
 function roleViolations(database: Database, catalog: Catalog, add: (what: string, where: string, fix: string) => void): void {
   const config = database.app.database as NonNullable<Database['app']['database']>
   const roles = new Map(catalog.roles.map(role => [role.name, role]))
-  const publicCreate = (name: string): boolean => catalog.privileges.some(item => item.schema === PUBLIC_SCHEMA && item.role === name && item.create)
-  /** 模块和共享层的角色：名字和说法；account 是这一块的运行账号。 */
-  const owners: Array<{ role: string; who: string; account: string }> = [{ role: SHARED_SCHEMA, who: '共享层', account: accountOf(SHARED_SCHEMA, config.login) }]
-  for (const [schema, at] of database.schemas) if (at.kind === 'internal') owners.push({ role: schema, who: `${at.module.id} 模块`, account: accountOf(schema, config.login) })
+  /** 模块和共享层的角色：名字和说法。 */
+  const owners: Array<{ role: string; who: string; module?: Module }> = [{ role: SHARED_SCHEMA, who: '共享层' }]
+  for (const [schema, at] of database.schemas) if (at.kind === 'internal') owners.push({ role: schema, who: `${at.module.id} 模块`, module: at.module })
 
   for (const { role: name, who } of owners) {
     const role = roles.get(name)
@@ -326,50 +310,25 @@ function roleViolations(database: Database, catalog: Catalog, add: (what: string
       role.createSchema && '能在库里建 schema',
     ].filter(Boolean)
     if (wrong.length) add(`角色 ${name} 属性`, `${who}的角色 ${name} ${wrong.join('、')}`, FIXES.roleAttributes(name))
-    if (publicCreate(name)) add(`角色 ${name} 在 public 建对象`, `${who}的角色 ${name} 能在 public 里建对象`, FIXES.publicCreate)
+    const publicCreate = catalog.privileges.some(item => item.schema === PUBLIC_SCHEMA && item.role === name && item.create)
+    if (publicCreate) add(`角色 ${name} 在 public 建对象`, `${who}的角色 ${name} 能在 public 里建对象`, FIXES.publicCreate)
   }
 
-  // 运行账号：只读写本块，不拥有对象、不能做 DDL。在别的 schema 里建对象由下面查权限的地方报
-  for (const { role: owner, who, account: name } of owners) {
+  // 模块的运行角色（配置写了模板时）：只读写本模块，不拥有对象、不能做 DDL。在别的 schema 里建对象由下面查权限的地方报
+  const runtimes = new Map<string, Module>()
+  if (config.runtime !== undefined) for (const { module } of owners) if (module) runtimes.set(runtimeOf(module, config.runtime), module)
+  for (const [name, module] of runtimes) {
     const role = roles.get(name)
-    if (!role) {
-      add(`运行账号 ${name}`, `库里没有${who}的运行账号 ${name}（database.login 是 ${config.login}）`, FIXES.account(name, owner))
-      continue
-    }
+    if (!role) continue
     const wrong = [
-      !role.login && '不能登录',
-      !role.connect && `连不了库 ${catalog.database.name}（没有 CONNECT）`,
       role.superuser && '是超级用户',
-      role.bypassRls && '能绕过行级权限（BYPASSRLS）',
       role.createRole && '能建角色',
       role.createDb && '能建库',
       role.createSchema && '能在库里建 schema',
-      publicCreate(name) && '能在 public 里建对象',
+      catalog.privileges.some(item => item.schema === PUBLIC_SCHEMA && item.role === name && item.create) && '能在 public 里建对象',
       role.ownsObjects && '拥有对象',
     ].filter(Boolean)
-    if (wrong.length) add(`运行账号 ${name} 属性`, `${who}的运行账号 ${name} ${wrong.join('、')}`, FIXES.account(name, owner))
-  }
-
-  // 成员关系：切成、继承、转授模块的角色和运行账号的，只能是迁移账号；它们自己只属于组角色（共享层的什么都不属于）
-  const whose = new Map<string, string>()
-  for (const { role, who, account } of owners) {
-    whose.set(role, `${who}的角色 ${role}`)
-    whose.set(account, `${who}的运行账号 ${account}`)
-  }
-  const group = groupOf(config.login)
-  const sharedAccount = accountOf(SHARED_SCHEMA, config.login)
-  for (const item of catalog.memberships) {
-    if (item.superuser || item.member === config.migrator || !(item.admin || item.inherit || item.set)) continue
-    const what = [item.set && '切成（SET）', item.inherit && '继承（INHERIT）', item.admin && '转授（ADMIN）'].filter(Boolean).join('、')
-    const target = whose.get(item.role)
-    if (target !== undefined) {
-      add(`成员 ${item.role} ${item.member}`, `角色 ${item.member} 能${what}${target}`, FIXES.membership(item.role, item.member))
-      continue
-    }
-    const member = whose.get(item.member)
-    if (member === undefined) continue
-    if (item.role === group && item.member !== sharedAccount && item.member !== SHARED_SCHEMA && !item.set && !item.admin) continue
-    add(`成员 ${item.role} ${item.member}`, `${member} 能${what}角色 ${item.role}`, FIXES.membership(item.role, item.member))
+    if (wrong.length) add(`运行角色 ${name} 属性`, `${module.id} 模块的运行角色 ${name} ${wrong.join('、')}`, FIXES.runtimeRole(name, internalOf(module)))
   }
 
   /** schema 归谁的角色：模块的两个 schema 归模块的角色，shared 归 shared 角色。 */
@@ -388,14 +347,13 @@ function roleViolations(database: Database, catalog: Catalog, add: (what: string
   for (const type of catalog.types) owned(`类型 ${type.schema}.${type.name}`, type.schema, type.owner)
   for (const fn of catalog.functions) owned(`函数 ${fn.schema}.${fn.name}(${fn.args})`, fn.schema, fn.owner)
 
-  // 内部 schema（和 shared）只有它的主人和本块的运行账号能用，运行账号不能建对象；模块的两个 schema 和 shared 只有主人能建对象
-  const accountSchema = new Map(owners.map(owner => [owner.account, owner.role]))
+  // 内部 schema 只有它的主人（模块的角色）和本模块的运行角色能用，运行角色不能建对象；模块的两个 schema 和 shared 只有主人能建对象
   for (const item of catalog.privileges) {
     const at = database.schemas.get(item.schema)
     const expected = expectedOwner(item.schema)
     if (!at || expected === undefined || item.role === expected) continue
-    if (accountSchema.get(item.role) === expected && at.kind !== 'api') {
-      if (item.create) add(`权限 ${item.schema} ${item.role}`, `${whose.get(item.role)}能在 ${schemaLabel(item.schema, at)} 里建对象（CREATE）`, FIXES.accountCreate(item.schema, item.role, expected))
+    if (at.kind === 'internal' && runtimes.get(item.role)?.id === at.module.id) {
+      if (item.create) add(`权限 ${item.schema} ${item.role}`, `${at.module.id} 模块的运行角色 ${item.role} 能在内部 schema ${item.schema} 里建对象（CREATE）`, FIXES.runtimeCreate(item.schema, item.role, expected))
     } else if (at.kind === 'internal' && (item.usage || item.create)) {
       const what = [item.usage && '使用（USAGE）', item.create && '建对象（CREATE）'].filter(Boolean).join('、')
       add(`权限 ${item.schema} ${item.role}`, `角色 ${item.role} 能${what} ${at.module.id} 模块的内部 schema ${item.schema}`, FIXES.internalPrivilege(item.schema, item.role))
@@ -414,15 +372,18 @@ function roleViolations(database: Database, catalog: Catalog, add: (what: string
     add(`入口视图 ${relation.schema}.${relation.name} 身份`, `入口视图 ${relation.schema}.${relation.name} 设了 security_invoker`, FIXES.securityInvoker(at.module))
   }
 
-  // 角色整个实例共用：库的 CONNECT 授给了 PUBLIC，同一个实例上别的项目的账号就能连进来
-  const accounts = [config.migrator, ...owners.map(owner => owner.account)]
+  // 角色整个实例共用：库的 CONNECT 授给了 PUBLIC，同一个实例上别的项目的登录账号就能连进来，切成同名的模块角色
+  const accounts = [...new Set([config.login, config.migrator])]
   if (catalog.database.publicConnect) add('库 CONNECT', `库 ${catalog.database.name} 的 CONNECT 授给了 PUBLIC`, FIXES.connect(catalog.database.ident, accounts))
-  const migrator = roles.get(config.migrator)
-  if (!migrator) {
-    add(`账号 ${config.migrator}`, `库里没有跑迁移的账号 ${config.migrator}（database.migrator）`, FIXES.migrator(config.migrator))
-    return
+  for (const [key, what] of [['login', '程序的登录账号'], ['migrator', '跑迁移的账号']] as const) {
+    const name = config[key]
+    const role = roles.get(name)
+    if (!role) {
+      add(`账号 ${name}`, `库里没有${what} ${name}（database.${key}）`, FIXES.account(name))
+      continue
+    }
+    const wrong = [!role.login && '不能登录', role.superuser && '是超级用户', role.ownsObjects && '拥有对象'].filter(Boolean)
+    if (wrong.length) add(`账号 ${name} 属性`, `${what} ${name} ${wrong.join('、')}`, FIXES.account(name))
+    if (!role.connect) add(`账号 ${name} CONNECT`, `${what} ${name} 连不了库 ${catalog.database.name}（没有 CONNECT）`, FIXES.connect(catalog.database.ident, accounts))
   }
-  const wrong = [!migrator.login && '不能登录', migrator.superuser && '是超级用户', migrator.ownsObjects && '拥有对象'].filter(Boolean)
-  if (wrong.length) add(`账号 ${config.migrator} 属性`, `跑迁移的账号 ${config.migrator} ${wrong.join('、')}`, FIXES.migrator(config.migrator))
-  if (!migrator.connect) add(`账号 ${config.migrator} CONNECT`, `跑迁移的账号 ${config.migrator} 连不了库 ${catalog.database.name}（没有 CONNECT）`, FIXES.connect(catalog.database.ident, accounts))
 }

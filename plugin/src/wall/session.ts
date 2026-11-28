@@ -106,8 +106,12 @@ function databaseLines(scheme: Scheme): string[] {
     const db = app.database
     if (!db) return []
     const at = app.name === undefined ? '' : `${app.name} 应用的`
+    const roles =
+      db.runtime === undefined
+        ? '每个模块一个同名的数据库角色，程序每个事务开头切成模块的角色'
+        : `每个模块一个同名的数据库角色（拥有对象，迁移切成它跑）和一个运行角色（${db.runtime}，只有本模块的读写授权，不拥有对象、不建对象），程序每个事务开头切成模块的运行角色`
     return [
-      `- ${at}数据库（Postgres）也按模块分：模块的表、视图、函数建在它的内部 schema（模块目录名转成小写加下划线，adminAccess → admin_access），给别的模块用的视图和函数放进入口 schema（<内部 schema>_api，不放表）；别的模块只引用对方入口 schema 里的对象，不在对方入口上建视图（跨模块读取写在函数正文或代码里），写入走对方入口里的函数，入口只加不改（入口里的类型别的模块可以用），模块之间不建外键（只存 id）；只在自己的两个 schema 里建、改、删对象；共享层用 shared，public 里不放对象。迁移放在模块目录下的 ${db.migrations}/（共享层的在 ${db.shared}/），文件名以 14 位时间戳开头，只写正向（一个时间戳一个文件）；迁移里不建 schema（modwall migrate 建），写了迁移就用 modwall migrate 跑，跑过的迁移不改不删；函数一律带 SET search_path = <本模块的内部 schema>, pg_temp、一律 SECURITY DEFINER，迁移和函数里不改 search_path，引用别的模块、shared 写带 schema 的全名；别名、变量不和模块的 schema 同名，引用的表名和别的模块的 schema 同名时起别名。每个模块一个同名的数据库角色（拥有对象，迁移切成它跑）和一个运行账号（${db.login}，只有本模块的读写授权，不拥有对象、不建对象），每个模块的代码用自己的运行账号连库（装配层给每个模块注入它自己的连接池），连不到别的模块的内部；几个模块要同时成功或同时失败的写入，在自己的事务里调用对方入口里的函数；迁移里不切身份。`,
+      `- ${at}数据库（Postgres）也按模块分：模块的表、视图、函数建在它的内部 schema（模块目录名转成小写加下划线，adminAccess → admin_access），给别的模块用的视图和函数放进入口 schema（<内部 schema>_api，不放表）；别的模块只引用对方入口 schema 里的对象，不在对方入口上建视图（跨模块读取写在函数正文或代码里），写入走对方入口里的函数，入口只加不改（入口里的类型别的模块可以用），模块之间不建外键（只存 id）；只在自己的两个 schema 里建、改、删对象；共享层用 shared，public 里不放对象。迁移放在模块目录下的 ${db.migrations}/（共享层的在 ${db.shared}/），文件名以 14 位时间戳开头，只写正向（一个时间戳一个文件）；迁移里不建 schema（modwall migrate 建），写了迁移就用 modwall migrate 跑，跑过的迁移不改不删；函数一律带 SET search_path = <本模块的内部 schema>, pg_temp、一律 SECURITY DEFINER，迁移和函数里不改 search_path，引用别的模块、shared 写带 schema 的全名；别名、变量不和模块的 schema 同名，引用的表名和别的模块的 schema 同名时起别名。${roles}：迁移和模块的代码里不自己切身份（SET ROLE、set_config('role', …)），切身份只在装配层或共享层的那个小函数里。`,
     ]
   })
 }

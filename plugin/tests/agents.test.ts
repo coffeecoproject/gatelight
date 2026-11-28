@@ -112,7 +112,7 @@ describe('Codex 的命令', () => {
   /** 示例项目写上 database（migrate、db bootstrap、db check 要它）。 */
   const dbRepo = (): string =>
     wallRepo(dir => editConfig(dir, config => {
-      config.database = { migrations: 'migrations', shared: 'src/shared/migrations', login: '<module>_app', migrator: 'migrator' }
+      config.database = { migrations: 'migrations', shared: 'src/shared/migrations', login: 'app', migrator: 'migrator' }
     }))
 
   test('在 Codex 的沙箱里 modwall 不做检查、不连库（check、status、db check，带 --psql 的 migrate、db bootstrap），什么都不记，说明要提权；提权后照常检查', () => {
