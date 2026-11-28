@@ -1,4 +1,4 @@
-// 检查整个项目：配置、R1–R5、R6 里迁移文件和模块代码切身份那部分、放宽项是否经用户同意；R4 和入口新增导出只提示；LayerMap 没看全的地方照列。
+// 检查整个项目：配置、R1–R5、R6 里迁移文件那部分、放宽项是否经用户同意；R4 和入口新增导出只提示；LayerMap 没看全的地方照列。
 // modwall check 和 modwall status 共用。没有 LayerMap 时只剩按路径判断的 R5、读迁移文件的 R6 和配置保护，检查不通过。
 // 放宽项用户同意过没有问底座（base/confirm.ts）：这里只交条目，不弹窗、不存同意记录。
 
@@ -10,7 +10,7 @@ import { pathsAt } from '../base/git.ts'
 import type { Repo } from '../base/repo.ts'
 import { CONFIG_PATH } from './config.ts'
 import { unreadSql } from './database.ts'
-import { codeRoleSwitches, migrationViolations } from './dbrules.ts'
+import { migrationViolations } from './dbrules.ts'
 import { type ChangeFacts, type ProjectImports, readChanges, readImports } from './layermap.ts'
 import { miniprogramRefs } from './miniprogram.ts'
 import type { Layout, Module } from './layout.ts'
@@ -110,8 +110,7 @@ export function analyze(project: Project, repo: Repo): Report {
   const database = migrationViolations(layout.databases, read)
   // 小程序的 .json、.wxml、.wxss 里的引用 LayerMap 不读，modwall 自己读，和 import 一起判
   const miniprogram = miniprogramRefs(project.files, read)
-  const switches = codeRoleSwitches(layout.databases, project.files, path => layout.owner(path), read)
-  report.violations = [...unownedFiles(layout, project.files), ...database.violations, ...switches]
+  report.violations = [...unownedFiles(layout, project.files), ...database.violations]
 
   let facts: ProjectImports | undefined
   const imports = readImports(project.root)
@@ -138,7 +137,7 @@ export function analyze(project: Project, repo: Repo): Report {
   report.unchecked = [
     ...uncheckedItems(layout, facts, changes),
     ...miniprogram.unresolved.map(text => `${text}：小程序的引用没对上项目里的文件`),
-    ...unreadSql(layout.databases, project.files, path => layout.owner(path)).map(path => `${path}：不在迁移目录里，R6 只查它有没有切身份（应用自己的查询文件可以不管；是迁移的话放进迁移目录）`),
+    ...unreadSql(layout.databases, project.files, path => layout.owner(path)).map(path => `${path}：不在迁移目录里，R6 不读它（应用自己的查询文件可以不管；是迁移的话放进迁移目录）`),
   ]
   return report
 }
