@@ -3,12 +3,11 @@
 //   视图建在别的模块的入口上；直接写别的模块入口里的视图；在自己以外的 schema 里建、改、删对象（共享层也不建、删模块的）；入口 schema 里建表；
 //   函数没把 search_path 设成本模块的内部 schema 加 pg_temp、不是 SECURITY DEFINER；迁移、函数里改 search_path；迁移里切身份、建 schema；
 //   别名、没起别名的表名和模块的 schema 同名（检查按名字认 schema，同名的会被当成跨模块引用）。
-// 模块的代码里切身份（按固定写法认文字）也在这里：应用代码里只有装配层和共享层可以切。
 // 函数里切身份不用查文字：函数一律 SECURITY DEFINER，Postgres 不让 SECURITY DEFINER 的函数切身份。
+// 应用代码里切身份不查：每个模块用自己的运行账号连库，账号不是别的角色的成员，切不过去（modwall db check 查成员关系）。
 
 import { apiOf, type Database, internalOf, SHARED_SCHEMA, type SchemaOwner, schemaLabel } from './database.ts'
-import { isCode } from './files.ts'
-import { label, type Module, type Owner } from './layout.ts'
+import type { Module } from './layout.ts'
 import type { Edge, Violation } from './rules.ts'
 import { type Statement, statements } from './sql.ts'
 
@@ -72,31 +71,31 @@ export const FIXES = {
   switchesRole:
     "迁移里不切身份（SET ROLE、RESET ROLE、SET SESSION AUTHORIZATION、set_config('role', …)，在角色、库上设 role 也算）：modwall migrate 已经切成本模块的角色。要别的模块做事，在它的迁移里做，或者调用它入口里的函数（以它的角色执行）。",
   createsSchema: '迁移里不建 schema：modwall migrate 按模块目录建好模块的角色和两个 schema（共享层的 shared 也由它建），迁移只在里面建对象。删掉这句。',
-  codeSwitchesRole:
-    "模块的代码不自己切身份：连接在事务开头由装配层或共享层里那个切身份的小函数切成本模块的角色。要别的模块的数据，经它的代码入口或数据库入口。这里写的其实不是 SQL（注释、说明文字）的，换个说法。",
   missingRole: (role: string) =>
     `模块的角色 ${role} 和它的两个 schema（共享层是 shared 角色和 shared schema）由 modwall migrate 按模块目录建：用迁移账号跑一次 modwall migrate。`,
   roleAttributes: (role: string) =>
     `模块和共享层的角色只用来切身份，本身不能登录、没有特权：ALTER ROLE ${role} NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB；能在库里建 schema 的，REVOKE CREATE ON DATABASE … FROM ${role}（授给 PUBLIC 的也要收回）。`,
-  runtimeRole: (role: string, owner: string) =>
-    `运行角色只用来跑模块的代码：本身没有特权，只有本模块内部 schema 的使用权和表上的读写授权（SELECT、INSERT、UPDATE、DELETE），不拥有对象、不能建对象，建表、改表结构归模块的角色 ${owner}，在迁移里做：ALTER ROLE ${role} NOSUPERUSER NOCREATEROLE NOCREATEDB；能在库里、public 里建对象的，REVOKE CREATE ON DATABASE … FROM ${role}、REVOKE CREATE ON SCHEMA public FROM ${role}（授给 PUBLIC 的也收回）；它拥有的对象用 ALTER … OWNER TO ${owner} 改归模块的角色。`,
-  runtimeCreate: (schema: string, role: string, owner: string) =>
-    `运行角色不建对象，建表、改表结构归模块的角色 ${owner}，在迁移里做：REVOKE CREATE ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是 ${role} 经成员关系从 ${owner} 继承来的，把成员关系去掉，只授本模块表上的读写。`,
+  account: (role: string, owner: string) =>
+    `运行账号只用来跑${owner === SHARED_SCHEMA ? '共享层' : `模块 ${owner}`}的代码：能登录、能连库，本身没有特权，只有 ${owner} schema 的使用权和表上的读写授权，不拥有对象、不能建对象，由 modwall migrate 建（还没有就用迁移账号跑一次）：ALTER ROLE ${role} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB；能在库里、public 里建对象的，REVOKE CREATE ON DATABASE … FROM ${role}、REVOKE CREATE ON SCHEMA public FROM ${role}（授给 PUBLIC 的也收回）；它拥有的对象用 ALTER … OWNER TO ${owner} 改归 ${owner} 的角色。`,
+  accountCreate: (schema: string, role: string, owner: string) =>
+    `运行账号不建对象，建表、改表结构归 ${owner} 的角色，在迁移里做：REVOKE CREATE ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是 ${role} 经成员关系继承来的，把成员关系去掉。`,
+  membership: (role: string, member: string) =>
+    `模块的角色、运行账号只给迁移账号当成员（modwall migrate 加的），模块的角色、运行账号自己只属于各模块的组角色（共享层的什么都不属于）：每个模块的代码用自己的运行账号连库，切不成、也继承不到别的模块。REVOKE ${role} FROM ${member}；不再用的旧账号（比如原来属于所有模块角色的登录账号）用超级用户在这个库里 DROP OWNED BY 它，再 DROP ROLE。`,
   publicCreate: 'public 里不放对象：REVOKE CREATE ON SCHEMA public FROM PUBLIC（modwall db bootstrap 会收回），授给这个角色的也收回。',
   owner: (role: string) =>
     `模块的两个 schema 和里面的对象归模块的角色，shared 的归 shared 角色：迁移切成这个角色执行，建出来的就归它；已有的用 ALTER … OWNER TO ${role} 改，再查迁移是不是用 modwall migrate 跑的。`,
   createPrivilege: (schema: string, owner: string, role: string) =>
     `只有 ${owner} 能在 ${schema} 里建对象，别的模块要什么让它在自己的迁移里加：REVOKE CREATE ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是经成员关系继承来的，把成员关系设成不继承或去掉。`,
   internalPrivilege: (schema: string, role: string) =>
-    `内部 schema 只有模块自己能用，别的模块经入口：REVOKE ALL ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是 ${role} 经成员关系继承来的（比如登录账号），把成员关系设成不继承（GRANT … WITH INHERIT FALSE；modwall migrate 加的都不继承）或去掉。`,
+    `内部 schema 只有模块自己能用，别的模块经入口：REVOKE ALL ON SCHEMA ${schema} FROM ${role}（授给 PUBLIC 的也收回）；是 ${role} 经成员关系继承来的，把成员关系去掉。`,
   securityDefiner:
     '函数一律 SECURITY DEFINER：以所在模块（共享层）的角色执行，入口函数才碰得到内部的表，函数里也切不了身份（Postgres 不让）。建函数时写上（CREATE OR REPLACE 不写会改回按调用者执行），不用 SECURITY INVOKER；要 COMMIT 的过程拆开或放到应用代码里。',
   securityInvoker: (module: Module) =>
     `入口视图以 ${module.id} 的角色读它内部的表，别的模块的角色用不了 ${internalOf(module)}：去掉 security_invoker（ALTER VIEW … RESET (security_invoker)）。`,
   connect: (database: string, accounts: string[]) =>
-    `库只让本项目的两个账号连：角色是整个 Postgres 实例共用的，同一个实例上别的项目有同名的模块角色时，它的登录账号连进这个库就能切成这个角色、读写这个模块。用超级用户跑一次 modwall db bootstrap，或者手动：REVOKE CONNECT ON DATABASE ${database} FROM PUBLIC；GRANT CONNECT ON DATABASE ${database} TO ${accounts.join(', ')}。`,
-  account: (role: string) =>
-    `程序的登录账号、跑迁移的账号要能登录，本身没有权限，只能切成模块的角色：不是超级用户（超级用户不受权限限制，越界查不出来），不拥有任何对象（拥有的对象改归所属模块的角色）。还没有就用超级用户跑一次 modwall db bootstrap 建，modwall migrate 再把它加成各模块角色的成员。`,
+    `库只让本项目的迁移账号和运行账号连：角色是整个 Postgres 实例共用的，同一个实例上别的项目的账号连进这个库，就能用授给 PUBLIC 的东西。用超级用户跑一次 modwall db bootstrap，再用迁移账号跑 modwall migrate（它把 CONNECT 授给各运行账号），或者手动：REVOKE CONNECT ON DATABASE ${database} FROM PUBLIC；GRANT CONNECT ON DATABASE ${database} TO ${accounts.join(', ')}。`,
+  migrator: (role: string) =>
+    `跑迁移的账号 ${role} 要能登录，本身没有权限，只能切成模块的角色：不是超级用户（超级用户不受权限限制，越界查不出来），不拥有任何对象（拥有的对象改归所属模块的角色）。还没有就用超级用户跑一次 modwall db bootstrap 建，modwall migrate 再把它加成各模块角色的成员。`,
   alias: '表、列的别名、CTE 的名字、函数里的变量不能和模块的 schema 同名，否则会被当成跨模块引用：换个名字。',
   bareRelation: (name: string) => `表名 ${name} 和模块的 schema 同名：给它起个别名（FROM … AS 别名），用别名限定列，不用表名，否则 ${name}.列 会被当成跨模块引用。`,
   internal: (module: Module, schema: string) =>
@@ -187,27 +186,4 @@ export function migrationViolations(databases: readonly Database[], read: (path:
     }
   }
   return { violations, edges }
-}
-
-/** 代码里切身份的固定写法：SET [LOCAL|SESSION] ROLE、RESET ROLE、SESSION AUTHORIZATION、set_config('role', …)。不分大小写。 */
-const SWITCH_ROLE = /\b(?:re)?set\s+(?:(?:local|session)\s+)?role\b|\bsession\s+authorization\b|\bset_config\s*\(\s*['"`]role['"`]/giu
-
-/**
- * 模块的代码里切身份：用库的应用里，归模块的代码文件和迁移目录以外的 .sql（应用自己的查询），测试文件不算。装配层、共享层可以切（那个切身份的小函数在这里）。
- * modwall 不解析代码里的 SQL，只按文字认固定写法；拼出来的认不出。owner：按路径看文件归谁。read：读仓库里的文件。
- */
-export function codeRoleSwitches(databases: readonly Database[], files: readonly string[], owner: (path: string) => Owner, read: (path: string) => string): Violation[] {
-  const violations: Violation[] = []
-  const migrations = new Set(databases.flatMap(database => database.migrations.map(migration => migration.path)))
-  for (const path of files) {
-    if (!isCode(path) && !(path.endsWith('.sql') && !migrations.has(path))) continue
-    const at = owner(path)
-    if (at.kind !== 'module' || !databases.some(database => database.app.name === at.app)) continue
-    const text = read(path)
-    for (const match of text.matchAll(SWITCH_ROLE)) {
-      const line = text.slice(0, match.index).split('\n').length
-      violations.push({ rule: 'R6', key: `R6 ${path} 切身份 ${line}`, where: [`${path}:${line}（${label(at)}）切了数据库的身份：${match[0].replace(/\s+/g, ' ')}`], fix: FIXES.codeSwitchesRole })
-    }
-  }
-  return violations
 }
