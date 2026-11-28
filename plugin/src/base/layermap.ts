@@ -13,7 +13,7 @@ export const LAYERMAP_MINIMUM = '0.1.48'
 
 /**
  * 插件不把命令放进 PATH 的地方怎么有 layermap 命令：Claude Code 把 LayerMap 插件的命令放进它跑命令的 PATH，
- * Codex 的命令、终端、git 钩子里没有，要用 LayerMap 自己放的固定入口（LayerMap 0.1.55 起，它运行装着的最高版本）。
+ * Codex 的命令、终端、git 钩子里没有，要用 LayerMap 自己放的固定入口（它运行的是本机各个 LayerMap 插件跑的同一版）。
  * 入口由 LayerMap 放、归它管，这里只说怎么放；各处"找不到命令"的提示都接这一句。
  */
 export const LAYERMAP_COMMAND = 'Codex 和终端里还要跑一次 npx layermap setup command，在 ~/.local/bin 放上 layermap 命令'
@@ -27,12 +27,15 @@ export type LayermapFailure = {
 
 export type LayermapAnswer = { ok: true; value: unknown } | LayermapFailure
 
-/** 版本太旧的说法：模块在输出里读不到要的字段时也用它。 */
+/**
+ * 版本太旧的说法：模块在输出里读不到要的字段时也用它。
+ * 新版 LayerMap 自己跟着 npm 的最新版走，只有插件和 setup 放的入口还是旧版时才会太旧，所以这里说的是升一次插件和入口。
+ */
 export function tooOld(): LayermapFailure {
   return {
     ok: false,
     kind: 'old',
-    problem: `layermap 版本太旧，要 ${LAYERMAP_MINIMUM} 以上：升级 layermap 插件（Claude Code 里是 claude plugin update layermap@layermap），开新会话后再跑`,
+    problem: `layermap 版本太旧，要 ${LAYERMAP_MINIMUM} 以上：升级一次 LayerMap 插件（Claude Code 里是 claude plugin marketplace update layermap 再 claude plugin update layermap@layermap，Codex 里是 codex plugin marketplace upgrade layermap），~/.local/bin 的 layermap 命令再跑一次 npx layermap setup command；之后它自己跟着 npm 的最新版更新。开新会话后再跑`,
   }
 }
 

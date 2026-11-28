@@ -537,7 +537,7 @@ describe('调 LayerMap', () => {
     const silent = fake('process.exit(3)')
     assert.deepEqual(ask(silent, ['check', '--json']), { ok: false, kind: 'failed', problem: 'layermap 出错了（退出码 3）' })
 
-    const old = { ok: false, kind: 'old', problem: `layermap 版本太旧，要 ${LAYERMAP_MINIMUM} 以上：升级 layermap 插件（Claude Code 里是 claude plugin update layermap@layermap），开新会话后再跑` }
+    const old = { ok: false, kind: 'old', problem: `layermap 版本太旧，要 ${LAYERMAP_MINIMUM} 以上：升级一次 LayerMap 插件（Claude Code 里是 claude plugin marketplace update layermap 再 claude plugin update layermap@layermap，Codex 里是 codex plugin marketplace upgrade layermap），~/.local/bin 的 layermap 命令再跑一次 npx layermap setup command；之后它自己跟着 npm 的最新版更新。开新会话后再跑` }
     // 旧版不认识的命令只打印用法
     assert.deepEqual(ask(fake('console.error("Usage: layermap <command>"); process.exit(2)'), ['imports', '--json']), old)
     // 输出不是 JSON
