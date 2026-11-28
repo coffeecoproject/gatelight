@@ -1,9 +1,9 @@
 // 数据库按模块分：位置就是归属，不另外登记。
 //   每个模块两个 schema：内部（模块目录名转成小写加下划线，adminAccess → admin_access）和入口（<内部>_api，只放视图和函数）；
 //   共享层用 shared；public 里不放对象（扩展自带的除外）。
-//   每个模块一个角色，名字就是它的内部 schema 名；共享层的角色叫 shared。程序的登录账号、跑迁移的账号不能和它们同名。
-//   各模块的组角色叫 <登录账号>_modules，不能和上面这些同名。
-//   配置写了运行角色模板（database.runtime）的，每个模块还有一个运行角色（模板里的 <module> 换成内部 schema 名），不能和上面这些角色、账号同名。
+//   每个模块一个角色（不能登录，拥有对象），名字就是它的内部 schema 名；共享层的角色叫 shared。跑迁移的账号不能和它们同名。
+//   每个模块和共享层各一个运行账号（database.login 模板里的 <module> 换成内部 schema 名，共享层换成 shared），模块的代码用它连库；
+//   各模块的组角色是模板里的 <module> 换成 modules。这些都不能和上面的角色、账号同名。
 //   迁移放在每个模块目录下的 database.migrations 子目录、共享层的 database.shared 目录，文件名以 14 位的时间戳开头，不能重复（迁移只写正向，一个时间戳一个文件）。
 // 这里只管划分：每个应用的库有哪些 schema、各归谁，迁移文件各归谁，以及这些算出来的配置错误。只看路径，layout.ts 用它。
 // R6 的判定在 dbrules.ts（迁移文件那部分，modwall check）和 dbcheck.ts（库里的现状，modwall db check）。
@@ -43,10 +43,10 @@ export interface Database {
 
 export const internalOf = (module: Module): string => schemaName(module.name)
 export const apiOf = (module: Module): string => `${schemaName(module.name)}${API_SUFFIX}`
-/** 模块的运行角色：配置的模板里的 <module> 换成模块的内部 schema 名。 */
-export const runtimeOf = (module: Module, template: string): string => template.replace(MODULE_PLACEHOLDER, internalOf(module))
-/** 各模块（和运行角色）的组角色：入口 schema、shared 的使用权授给它。按登录账号起名：角色整个实例共用，各项目各用各的。 */
-export const groupOf = (login: string): string => `${login}_modules`
+/** 运行账号：模板里的 <module> 换成模块的内部 schema 名（共享层传 shared）。 */
+export const accountOf = (role: string, template: string): string => template.replace(MODULE_PLACEHOLDER, role)
+/** 各模块（和模块的运行账号）的组角色：入口 schema 的使用权授给它。按运行账号的模板起名：角色整个实例共用，各项目各用各的。 */
+export const groupOf = (template: string): string => accountOf('modules', template)
 
 /** 这个 schema 归谁的说法，比如 orders 模块的内部 schema。 */
 export function schemaLabel(schema: string, owner: SchemaOwner): string {
@@ -55,6 +55,8 @@ export function schemaLabel(schema: string, owner: SchemaOwner): string {
 }
 
 const TIMESTAMP = /^(\d{14})(?!\d)/
+// Postgres 把更长的名字静默截断：下次按原名查不到，又去建，就再也跑不过
+const NAME_MAX = 63
 
 /** 写了 database 的应用各一个库：schema 和迁移文件，以及配置错误（schema 名撞了、迁移文件名不对、时间戳重复）。 */
 export function databasesOf(apps: readonly App[], modules: readonly Module[], files: readonly string[]): Database[] {
@@ -69,6 +71,10 @@ export function databasesOf(apps: readonly App[], modules: readonly Module[], fi
       const internal = internalOf(module)
       if (!PLAIN_NAME.test(internal)) {
         problems.push(`${where}模块 ${module.dir} 的目录名转不成 schema 名（转出来是 "${internal}"，只能有字母、数字和下划线，不以数字开头）：给模块目录改个名字`)
+        continue
+      }
+      if (apiOf(module).length > NAME_MAX) {
+        problems.push(`${where}模块 ${module.dir} 的目录名太长：入口 schema 名 ${apiOf(module)} 超过 Postgres 的 ${NAME_MAX} 个字符，给模块目录改个短点的名字`)
         continue
       }
       const owners: Array<[string, SchemaOwner & { module: Module }]> = [
@@ -86,33 +92,32 @@ export function databasesOf(apps: readonly App[], modules: readonly Module[], fi
     }
 
     // 模块的角色和内部 schema 同名，共享层的角色叫 shared
-    for (const key of ['login', 'migrator'] as const) {
-      const owner = schemas.get(config[key])
-      if (owner && owner.kind !== 'api') {
-        const role = owner.kind === 'shared' ? '共享层的角色' : `${owner.module.id} 模块的角色`
-        problems.push(`${where}database.${key} 的账号 ${config[key]} 和${role}同名：登录、迁移账号本身没有权限，只能切成模块的角色，换个名字`)
-      }
+    const roleOf = (name: string): string | undefined => {
+      const owner = schemas.get(name)
+      if (!owner || owner.kind === 'api') return undefined
+      return owner.kind === 'shared' ? '共享层的角色' : `${owner.module.id} 模块的角色`
     }
-    if (config.runtime !== undefined) {
-      for (const module of own) {
-        const runtime = runtimeOf(module, config.runtime)
-        const owner = schemas.get(runtime)
-        const clash =
-          owner && owner.kind !== 'api' ? (owner.kind === 'shared' ? '共享层的角色' : `${owner.module.id} 模块的角色`)
-          : runtime === config.login ? '程序的登录账号（database.login）'
-          : runtime === config.migrator ? '跑迁移的账号（database.migrator）'
-          : undefined
-        if (clash) problems.push(`${where}${module.id} 模块的运行角色 ${runtime}（database.runtime 是 ${config.runtime}）和${clash}同名：运行角色只有本模块的读写授权，换个模板`)
-      }
-    }
+    const migratorClash = roleOf(config.migrator)
+    if (migratorClash) problems.push(`${where}database.migrator 的账号 ${config.migrator} 和${migratorClash}同名：迁移账号本身没有权限，只能切成模块的角色，换个名字`)
     const group = groupOf(config.login)
-    const groupOwner = schemas.get(group)
-    const groupClash =
-      groupOwner && groupOwner.kind !== 'api' ? (groupOwner.kind === 'shared' ? '共享层的角色' : `${groupOwner.module.id} 模块的角色`)
-      : group === config.migrator ? '跑迁移的账号（database.migrator）'
-      : config.runtime !== undefined && own.some(module => runtimeOf(module, config.runtime as string) === group) ? '一个模块的运行角色'
-      : undefined
-    if (groupClash) problems.push(`${where}各模块的组角色 ${group}（按 database.login 起名）和${groupClash}同名：换个登录账号名或模块名`)
+    const accounts: Array<{ name: string; who: string }> = [
+      { name: accountOf(SHARED_SCHEMA, config.login), who: '共享层的运行账号' },
+      ...own.filter(module => PLAIN_NAME.test(internalOf(module))).map(module => ({ name: accountOf(internalOf(module), config.login), who: `${module.id} 模块的运行账号` })),
+    ]
+    const named = [
+      ...accounts,
+      { name: group, who: '各模块的组角色' },
+      { name: config.migrator, who: '跑迁移的账号（database.migrator）' },
+    ]
+    for (const { name, who } of named) {
+      if (name.length > NAME_MAX) problems.push(`${where}${who} ${name} 超过 Postgres 的 ${NAME_MAX} 个字符：换个短点的名字或模板`)
+    }
+    for (const account of accounts) {
+      const clash = roleOf(account.name) ?? (account.name === config.migrator ? '跑迁移的账号（database.migrator）' : account.name === group ? '各模块的组角色' : undefined)
+      if (clash) problems.push(`${where}${account.who} ${account.name}（database.login 是 ${config.login}）和${clash}同名：换个模板或模块名`)
+    }
+    const groupClash = roleOf(group) ?? (group === config.migrator ? '跑迁移的账号（database.migrator）' : undefined)
+    if (groupClash) problems.push(`${where}各模块的组角色 ${group}（database.login 的 ${MODULE_PLACEHOLDER} 换成 modules）和${groupClash}同名：换个模板或模块名`)
 
     const migrations: Migration[] = []
     const inDir = (dir: string): string[] => files.filter(path => path.startsWith(`${dir}/`) && !path.slice(dir.length + 1).includes('/') && path.endsWith('.sql'))

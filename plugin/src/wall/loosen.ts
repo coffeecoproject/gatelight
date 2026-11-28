@@ -1,6 +1,6 @@
 // 放宽项：和分叉点的配置比，这次放宽了哪些规则。放宽要用户在确认工具的弹窗里同意（底座的用户确认，base/confirm.ts），收紧不用。
-//   往 allow 加条目；扩大 shared、app、map、outside 的范围；删掉或缩小 roots；往 entry 加文件名；删掉 database 或改它的目录、账号名；
-//   给 database 加上或改运行角色模板（运行角色能用模块的内部 schema）；删掉配置或整个 .modwall/。加上 database 是收紧，删掉运行角色模板也是。
+//   往 allow 加条目；扩大 shared、app、map、outside 的范围；删掉或缩小 roots；往 entry 加文件名；删掉 database 或改它的目录、账号名（包括运行账号的模板）；
+//   删掉配置或整个 .modwall/。加上 database 是收紧。
 //   首次接入（分叉点上还没有配置）：整份配置算一项。
 // 有几个应用时，每个应用和分叉点上同名的应用比，项里写明是哪个应用（apps.<应用名>.<字段>）：
 //   新加的应用和一个空的应用比（roots 是收紧，shared、app、map、entry 按扩大算）；删掉或改名的应用按删掉它的 roots 算；
@@ -45,7 +45,6 @@ const databaseFields = (database: NonNullable<AppConfig['database']>): NonNullab
   shared: database.shared,
   login: database.login,
   migrator: database.migrator,
-  ...(database.runtime === undefined ? {} : { runtime: database.runtime }),
 })
 
 const appFields = (app: AppConfig): AppConfig => ({
@@ -131,17 +130,6 @@ export function looseningItems(before: Config | undefined, now: ConfigSide): Loo
     }
     for (const part of ['migrations', 'shared', 'login', 'migrator'] as const) {
       if (was.database[part] !== app.database[part]) add(`${key}.${part} 改了："${was.database[part]}" 改成 "${app.database[part]}"`, was.database[part], app.database[part])
-    }
-    const { runtime } = app.database
-    if (runtime !== undefined && runtime !== was.database.runtime) {
-      const previous = was.database.runtime
-      add(
-        previous === undefined
-          ? `${key}.runtime 加上了模块运行角色 "${runtime}"：它能用本模块的内部 schema`
-          : `${key}.runtime 改了："${previous}" 改成 "${runtime}"（模块运行角色能用本模块的内部 schema）`,
-        previous ?? '',
-        runtime,
-      )
     }
   }
   for (const { before: was, now: app } of pairs) {

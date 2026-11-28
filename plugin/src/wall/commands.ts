@@ -13,7 +13,7 @@ import { analyze, exitCode, formatReport, logCheck, prepare, type Report, violat
 import { CONFIG_PATH, MODWALL_DIR, schemeOf } from './config.ts'
 import type { Database } from './database.ts'
 import { catalogViolations, readCatalog } from './dbcheck.ts'
-import { bootstrapScript, fileReader, migrateScript, runScript } from './migrate.ts'
+import { bootstrapScript, fileReader, migrateScript, PASSWORD_ENV, runScript } from './migrate.ts'
 import { leaveReceipt } from './receipt.ts'
 import { draftConfig } from './init.ts'
 import type { Module } from './layout.ts'
@@ -27,9 +27,10 @@ const USAGE = `用法：
   modwall check       检查整个项目：R1–R5、R6 里迁移文件那部分、放宽项是否经用户同意；通过时记一条通过记录。
                       接入了的仓库，testpace full 里自动跑它
   modwall db bootstrap --psql "<执行 SQL 的命令>" | --print [--app <应用名>]
-                      建库那一步：建程序的登录账号和跑迁移的账号，库只让这两个连（不设密码）。用超级用户连库
+                      建库那一步：建跑迁移的账号，库只让本项目的账号连（不设密码）。用超级用户连库
   modwall migrate --psql "<执行 SQL 的命令>" | --print [--app <应用名>]
-                      建各模块和共享层的角色、schema、权限，按时间戳跑还没跑过的迁移。用跑迁移的账号连库；
+                      建各模块和共享层的角色、运行账号、schema、权限，按时间戳跑还没跑过的迁移。用跑迁移的账号连库，
+                      环境变量 ${PASSWORD_ENV} 是各运行账号的密码；
                       --print 只输出脚本（打包上线用，线上只用 psql 跑它）
   modwall db check --psql "<执行 SQL 的命令>" [--app <应用名>]
                       查库里的现状（R6 里库的那部分），迁移跑完之后执行，用哪个账号连都行；
