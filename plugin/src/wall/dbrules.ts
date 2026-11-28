@@ -3,14 +3,15 @@
 //   视图建在别的模块的入口上；直接写别的模块入口里的视图；在自己以外的 schema 里建、改、删对象（共享层也不建、删模块的）；入口 schema 里建表；
 //   函数没把 search_path 设成本模块的内部 schema 加 pg_temp、不是 SECURITY DEFINER；迁移、函数里改 search_path；迁移里切身份、建 schema；
 //   别名、没起别名的表名和模块的 schema 同名（检查按名字认 schema，同名的会被当成跨模块引用）。
-// 模块的代码里切身份（按固定写法认文字）也在这里：应用代码里只有装配层和共享层可以切。
+// 模块的代码里切身份（代码里字符串字面量写的整句 SQL）也在这里：应用代码里只有装配层和共享层可以切。
 // 函数里切身份不用查文字：函数一律 SECURITY DEFINER，Postgres 不让 SECURITY DEFINER 的函数切身份。
 
 import { apiOf, type Database, internalOf, SHARED_SCHEMA, type SchemaOwner, schemaLabel } from './database.ts'
 import { isCode } from './files.ts'
 import { label, type Module, type Owner } from './layout.ts'
+import { type Literal, PLACEHOLDER, stringLiterals } from './literals.ts'
 import type { Edge, Violation } from './rules.ts'
-import { type Statement, statements } from './sql.ts'
+import { type Statement, statements, type Token, tokenize } from './sql.ts'
 
 /** 引用的 schema 怎么判：from 是写它的模块（undefined 是共享层）。 */
 export type Crossing =
@@ -73,7 +74,7 @@ export const FIXES = {
     "迁移里不切身份（SET ROLE、RESET ROLE、SET SESSION AUTHORIZATION、set_config('role', …)，在角色、库上设 role 也算）：modwall migrate 已经切成本模块的角色。要别的模块做事，在它的迁移里做，或者调用它入口里的函数（以它的角色执行）。",
   createsSchema: '迁移里不建 schema：modwall migrate 按模块目录建好模块的角色和两个 schema（共享层的 shared 也由它建），迁移只在里面建对象。删掉这句。',
   codeSwitchesRole:
-    "模块的代码不自己切身份：连接在事务开头由装配层或共享层里那个切身份的小函数切成本模块的角色。要别的模块的数据，经它的代码入口或数据库入口。这里写的其实不是 SQL（注释、说明文字）的，换个说法。",
+    "模块的代码不自己切身份：连接在事务开头由装配层或共享层里那个切身份的小函数切成本模块的角色。要别的模块的数据，经它的代码入口或数据库入口。",
   missingRole: (role: string) =>
     `模块的角色 ${role} 和它的两个 schema（共享层是 shared 角色和 shared schema）由 modwall migrate 按模块目录建：用迁移账号跑一次 modwall migrate。`,
   roleAttributes: (role: string) =>
@@ -189,24 +190,64 @@ export function migrationViolations(databases: readonly Database[], read: (path:
   return { violations, edges }
 }
 
-/** 代码里切身份的固定写法：SET [LOCAL|SESSION] ROLE、RESET ROLE、SESSION AUTHORIZATION、set_config('role', …)。不分大小写。 */
-const SWITCH_ROLE = /\b(?:re)?set\s+(?:(?:local|session)\s+)?role\b|\bsession\s+authorization\b|\bset_config\s*\(\s*['"`]role['"`]/giu
+const word = (token: Token | undefined, ...texts: string[]): boolean => token?.kind === 'word' && !token.quoted && texts.includes(token.text)
+
+/**
+ * 代码里一个字符串字面量里切身份的句子（按分号分句）。只认整句：
+ * SET [LOCAL|SESSION] ROLE 名字、SET [LOCAL|SESSION] SESSION AUTHORIZATION 名字、RESET ROLE、RESET SESSION AUTHORIZATION，
+ * 名字是一个词、带引号的名字或插值，后面不再有别的词；字面量以 ROLE、AUTHORIZATION 收尾又紧跟着 + 的，名字在拼接的后半截，也算。
+ * 句子里调用了 set_config('role', …) 的也算。
+ */
+function literalSwitches(literal: Literal): { line: number; text: string }[] {
+  const pieces = literal.text.split(';')
+  let line = literal.line
+  return pieces.flatMap((piece, index) => {
+    const start = line
+    line += piece.split('\n').length - 1
+    const tokens = tokenize(piece, start)
+    const found = [{ line: tokens[0]?.line ?? start, text: piece.trim().replace(/\s+/gu, ' ').replaceAll(PLACEHOLDER, '…') }]
+    if (tokens.some((token, k) => word(token, 'set_config') && tokens[k + 1]?.text === '(' && tokens[k + 2]?.kind === 'string' && tokens[k + 2]?.text.toLowerCase() === 'role')) return found
+    // 'Reset role' 这类首字母大写的是界面文字：SQL 的关键字要么全小写要么全大写
+    const lead = /^[A-Za-z]+/u.exec(piece.trimStart())?.[0] ?? ''
+    if (lead !== lead.toLowerCase() && lead !== lead.toUpperCase()) return []
+    if (word(tokens[0], 'reset')) {
+      const tail = tokens.slice(1)
+      const switches = (tail.length === 1 && word(tail[0], 'role')) || (tail.length === 2 && word(tail[0], 'session') && word(tail[1], 'authorization'))
+      return switches ? found : []
+    }
+    if (!word(tokens[0], 'set')) return []
+    const from = word(tokens[1], 'local') || (word(tokens[1], 'session') && !word(tokens[2], 'authorization')) ? 2 : 1
+    let name: Token[]
+    if (word(tokens[from], 'role')) name = tokens.slice(from + 1)
+    else if (word(tokens[from], 'session') && word(tokens[from + 1], 'authorization')) name = tokens.slice(from + 2)
+    else return []
+    const named = name.length === 1 && (name[0]?.kind === 'word' || name[0]?.kind === 'string')
+    const joined = name.length === 0 && literal.joined && index === pieces.length - 1
+    return named || joined ? found : []
+  })
+}
 
 /**
  * 模块的代码里切身份：用库的应用里，归模块的代码文件和迁移目录以外的 .sql（应用自己的查询），测试文件不算。装配层、共享层可以切（那个切身份的小函数在这里）。
- * modwall 不解析代码里的 SQL，只按文字认固定写法；拼出来的认不出。owner：按路径看文件归谁。read：读仓库里的文件。
+ * 代码文件只看字符串字面量里的整句 SQL（注释、界面文字不算），在别处拼出来的认不出；.sql 按语句查。owner：按路径看文件归谁。read：读仓库里的文件。
  */
 export function codeRoleSwitches(databases: readonly Database[], files: readonly string[], owner: (path: string) => Owner, read: (path: string) => string): Violation[] {
   const violations: Violation[] = []
   const migrations = new Set(databases.flatMap(database => database.migrations.map(migration => migration.path)))
   for (const path of files) {
-    if (!isCode(path) && !(path.endsWith('.sql') && !migrations.has(path))) continue
+    const sql = path.endsWith('.sql')
+    if (!isCode(path) && !(sql && !migrations.has(path))) continue
     const at = owner(path)
     if (at.kind !== 'module' || !databases.some(database => database.app.name === at.app)) continue
     const text = read(path)
-    for (const match of text.matchAll(SWITCH_ROLE)) {
-      const line = text.slice(0, match.index).split('\n').length
-      violations.push({ rule: 'R6', key: `R6 ${path} 切身份 ${line}`, where: [`${path}:${line}（${label(at)}）切了数据库的身份：${match[0].replace(/\s+/g, ' ')}`], fix: FIXES.codeSwitchesRole })
+    const found = sql
+      ? statements(text)
+          .filter(statement => statement.switchesRole && !statement.inFunction)
+          .map(statement => ({ line: statement.line, text: (text.split('\n')[statement.line - 1] ?? '').trim() }))
+      : stringLiterals(path, text).flatMap(literalSwitches)
+    for (const item of found) {
+      const shown = item.text.length > 80 ? `${item.text.slice(0, 80)}…` : item.text
+      violations.push({ rule: 'R6', key: `R6 ${path} 切身份 ${item.line}`, where: [`${path}:${item.line}（${label(at)}）切了数据库的身份：${shown}`], fix: FIXES.codeSwitchesRole })
     }
   }
   return violations
