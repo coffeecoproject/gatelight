@@ -232,7 +232,7 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     ])
   })
 
-  test('前端规则模板 LANGUAGES.zh 的名字上限从 12 改成 20：只列改了的几处，看得到"超过 12 个字"和"超过 20 个字"，不整段列', () => {
+  test('前端规则模板 LANGUAGES.zh 的名字上限从 12 改成 20：算文字规则 codekeep/text 改了参数，只列改了的几处，看得到"超过 12 个字"和"超过 20 个字"，不整段列', () => {
     const template = frontendTemplate()
     const page = { 'src/pages/Orders.js': 'export const a = 1\n' }
     const repo = keepRepo({ ...JOINED, ...page, 'eslint.config.mjs': template })
@@ -243,7 +243,7 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     assert.equal(r.code, 1, r.out)
     const asked = pendingOf(r.out)
     assert.equal(asked.items.length, 1, asked.text)
-    assert.match(asked.items[0] ?? '', /no-restricted-syntax.* 的参数改了，程序看不出是改松还是改紧/)
+    assert.equal(asked.items[0], 'lint 规则 codekeep/text 的参数改了，程序看不出是改松还是改紧')
     assert.doesNotMatch(asked.text, /原来：\[/, '不整段列参数')
     // 只列改了的几处：列出来的每一处都是名字上限那条，原来是 12、现在是 20；没改的条目一条不列
     const was = asked.text.split('\n').filter(line => line.includes(' 原来：'))
@@ -254,7 +254,7 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     for (const line of now) assert.match(line, /超过 20 个字/)
   })
 
-  test('前端规则模板的 ENTRY_PROPS 加一项（选择器后面多一段、条目个数也变了）：加的那段出现在弹窗文字里', () => {
+  test('前端规则模板的 ENTRY_PROPS 加一项（选择器后面多一段、条目个数也变了）：算文字规则 codekeep/text 改了参数，加的那段出现在弹窗文字里', () => {
     const template = frontendTemplate()
     const repo = keepRepo({ ...JOINED, 'src/pages/Orders.js': 'export const a = 1\n', 'eslint.config.mjs': template })
     const entryProps = /^const ENTRY_PROPS = \[(.*)\]$/m
@@ -264,7 +264,7 @@ describe('用项目自己的 eslint 比（每个代码文件都算）', () => {
     assert.equal(r.code, 1, r.out)
     const asked = pendingOf(r.out)
     assert.equal(asked.items.length, 1, asked.text)
-    assert.match(asked.items[0] ?? '', /no-restricted-syntax.* 的参数改了/)
+    assert.equal(asked.items[0], 'lint 规则 codekeep/text 的参数改了，程序看不出是改松还是改紧')
     assert.match(asked.text, /JSXOpeningElement\[name\.name='Card'\] > JSXAttribute\[name\.name='title'\]/)
     assert.doesNotMatch(asked.text, /原来：\[/, '不整段列参数')
   })
