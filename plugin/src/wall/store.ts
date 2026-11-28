@@ -8,6 +8,8 @@ import { newRunId } from '../base/store.ts'
 
 export interface PassRecord {
   at: number
+  /** 通过时和分叉点比出来的放宽项（给用户看的文字）。 */
+  loosening: string[]
 }
 
 /** 一个分支上一次查全了的检查：下一次据此算改正了哪些越界。 */
@@ -17,7 +19,7 @@ export interface LastCheck {
 }
 
 export interface Store {
-  /** modwall check 的通过记录，按当时的内容记，内容变了就对不上。 */
+  /** modwall check 的通过记录，按当时的内容记，内容变了就对不上（还算不算数见 project.ts 的 checkPassed）。 */
   passes: ModuleRecords<PassRecord>
   /** 按分支记。 */
   last: ModuleRecords<LastCheck>

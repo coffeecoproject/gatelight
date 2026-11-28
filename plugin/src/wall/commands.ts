@@ -18,7 +18,7 @@ import { leaveReceipt } from './receipt.ts'
 import { draftConfig } from './init.ts'
 import type { Module } from './layout.ts'
 import { configText } from './loosen.ts'
-import { contentKey, currentKey, layoutOf, openProject, type Project } from './project.ts'
+import { checkPassed, contentKey, currentKey, layoutOf, openProject, passRecord, type Project } from './project.ts'
 import { BLOCKING_RULES, unownedFiles } from './rules.ts'
 import { openStore, type Store } from './store.ts'
 
@@ -103,7 +103,7 @@ function check(): number {
   const code = exitCode(report)
   if (code !== EXIT.ok) return code
   // 结论是按开始时的内容得出的：检查的过程中内容改过，这次不记、不算
-  if (!store.passes.saveChecked(key, () => currentKey(project.root) ?? '', { at: Date.now() })) {
+  if (!store.passes.saveChecked(key, () => currentKey(project.root) ?? '', passRecord(project))) {
     console.log('\n检查过程中内容改过（检查是按开始时的样子做的），这次的结论不算：代码不再改动时重跑 modwall check。')
     return EXIT.fail
   }
@@ -256,7 +256,7 @@ function status(): number {
     else if (report.changesProblem) lines.push(`越界：${counts.join('、')}；R4 和入口新增导出没查（这次改动增删的关系没读到）`)
     else lines.push(`越界：${counts.join('、')}；R4 提示 ${report.behavior.length}（详情跑 modwall check）`)
   }
-  lines.push(`通过记录：${store.passes.get(contentKey(project)) ? '当前内容 modwall check 通过过' : '当前内容还没有通过记录（modwall check）'}`)
+  lines.push(`通过记录：${checkPassed(project, store) ? '当前内容 modwall check 通过过' : '当前内容还没有通过记录（modwall check）'}`)
   const version = layermapVersion()
   lines.push(
     version
