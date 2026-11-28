@@ -40,7 +40,7 @@ function onlyIgnored(repo: Repo, from: string, to: string, isIgnored: (path: str
 }
 
 /** 停止门：先看跑没跑 focused，跑过了（或已经拦过）再看该不该合（unmerged.ts）。 */
-export function unfinished(repo: Repo, sessionId: string, seen: readonly string[], named: boolean): { keys: string[]; text: string; notice?: string } | undefined {
+export function unfinished(repo: Repo, sessionId: string, seen: (key: string) => boolean, named: boolean): { keys: string[]; text: string; notice?: string } | undefined {
   const config = loadConfig(repo.root).config
   if (!config) return undefined
   const now = workTreeId(repo.root)
@@ -56,13 +56,13 @@ export function unfinished(repo: Repo, sessionId: string, seen: readonly string[
 function notRun(
   repo: Repo,
   sessionId: string,
-  seen: readonly string[],
+  seen: (key: string) => boolean,
   named: boolean,
   now: string,
   isIgnored: (path: string) => boolean,
 ): { keys: string[]; text: string } | undefined {
   const key = `pace:focused:${now}`
-  if (seen.includes(key)) return undefined
+  if (seen(key)) return undefined
   if (onlyIgnored(repo, baselines(repo).since(sessionId, now), now, isIgnored)) return undefined
   // 跑过的内容：fast（focused 的第一步）和整组开始时的；跑完时的也算（测试自己写出没被 git 忽略的文件，内容会变）。
   // focused 的相关测试和它的 fast 记的是同一个开始时的内容，靠这个认出哪些 files 是 focused 跑的，取它们跑完时的

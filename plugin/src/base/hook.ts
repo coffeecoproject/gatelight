@@ -10,14 +10,14 @@ import { fileURLToPath } from 'node:url'
 import { AGENTS, type AgentKind } from './agent.ts'
 import { CONFIRM_TOOL } from './confirm.ts'
 import { CONTRACT_FILE, joined, loadContract } from './contract.ts'
-import { entriesNotPlaced, entryDir, refreshEntries } from './entry.ts'
+import { ENTRY_COMMANDS, type EntryCommand, entriesNotPlaced, entryDir, refreshEntries } from './entry.ts'
 import { ensureGate, gateProblem } from './gate.ts'
 import { git } from './git.ts'
 import type { HookEvent, HookVerdict } from './hookformat.ts'
 import { modules } from './module.ts'
 import { defaultTips, openRepo, type Repo } from './repo.ts'
-import { noteSessionRepos, sessionRepos } from './sessions.ts'
-import { invocations } from './shell.ts'
+import { noteSessionRepos, sessionHome, sessionRepos } from './sessions.ts'
+import { type Invocation, invocations } from './shell.ts'
 import { PLUGIN_NAME } from './version.ts'
 import { stopCheck } from './stop.ts'
 import type { SessionState } from './store.ts'
@@ -53,6 +53,49 @@ function noteWorking(repo: Repo, sessionId: string, now: number): void {
   const state = repo.store.session(sessionId, now, () => defaultTips(repo))
   if (state.worked?.includes(repo.root)) return
   repo.store.saveSession(sessionId, { ...state, worked: [...(state.worked ?? []), repo.root] })
+}
+
+/** 这个会话在这个工作区动了一次手（停止门靠它分清内容的变化是不是这个会话的，见 stop.ts）。 */
+function noteActing(repo: Repo, sessionId: string, now: number): void {
+  const state = repo.store.session(sessionId, now, () => defaultTips(repo))
+  const acted = state.acted ?? {}
+  repo.store.saveSession(sessionId, { ...state, acted: { ...acted, [repo.root]: (acted[repo.root] ?? 0) + 1 } })
+}
+
+/** 只看、不改内容的程序（往文件里写的重定向另算）。 */
+const READERS = new Set([
+  ...['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'tree', 'stat', 'file', 'du', 'pwd', 'echo', 'printf'],
+  ...['diff', 'cmp', 'less', 'more', 'jq', 'which', 'type', 'basename', 'dirname', 'realpath', 'readlink', 'date', 'true', 'cut', 'tr'],
+])
+/** 只看的 git 子命令。 */
+const GIT_READS = new Set(['status', 'log', 'diff', 'show', 'blame', 'rev-parse', 'ls-files', 'ls-tree', 'grep', 'merge-base', 'rev-list', 'describe', 'cat-file', 'shortlog'])
+/** gatelight 只做检查的子命令（会写配置的 modwall init、testpace install 这类不在里面）。 */
+const CHECKS: Record<EntryCommand, readonly string[]> = {
+  testpace: ['focused', 'files', 'full', 'status', 'report', 'verify'],
+  modwall: ['check', 'status', 'db check'],
+  codekeep: ['check'],
+  testcraft: ['checklist', 'status'],
+}
+
+/** 去掉 git 自己的选项（-C 目录、-c 配置、--no-pager 这类），剩下的从子命令开始。 */
+function gitArgs(args: string[]): string[] {
+  let at = 0
+  while (at < args.length && args[at]!.startsWith('-')) at += ['-C', '-c'].includes(args[at]!) ? 2 : 1
+  return args.slice(at)
+}
+
+/** 这次调用只看、不改内容。 */
+function readsOnly({ argv, writes }: Invocation): boolean {
+  if (writes) return false
+  const program = basename(argv[0] ?? '')
+  const args = argv.slice(1)
+  if (READERS.has(program)) return true
+  if (program === 'sed') return !args.some(arg => /^-[^-]*[iI]/.test(arg) || arg.startsWith('--in-place'))
+  if (program === 'sort') return !args.some(arg => /^-[^-]*o/.test(arg) || arg.startsWith('--output'))
+  if (program === 'find') return !args.some(arg => /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/.test(arg))
+  if (program === 'git') return GIT_READS.has(gitArgs(args)[0] ?? '')
+  const checks = (ENTRY_COMMANDS as readonly string[]).includes(program) ? CHECKS[program as EntryCommand] : undefined
+  return checks?.some(check => args.slice(0, check.split(' ').length).join(' ') === check) ?? false
 }
 
 /** 新仓库最多这么多个提交：还没接入时，会话开始就提出接入。老仓库要先改造，不在这里提。 */
@@ -124,20 +167,27 @@ function contractRepos(dirs: Iterable<string>): Repo[] {
 }
 
 /**
- * 这条命令碰到的接入仓库（会话所在目录和命令里 cd 进去的目录；同一条命令里多数调用在同一个目录，按目录去重）。
+ * 这条命令碰到的接入仓库（这次 hook 给的目录和命令里 cd 进去的目录；同一条命令里多数调用在同一个目录，按目录去重）。
  * 每个仓库都记下会话，插件数据目录里记下会话碰过它；每个工作区都让各模块记下会话在那里的起点（节奏按仓库说一次，起点按工作区各记一份：
  * 同一个仓库的另一个工作区不会再说节奏，起点照样要记）。会话所在目录的工作区记成它干活的地方；cd 进去的不算（noteWorking）。
- * 返回还没给这个会话说过节奏的。
+ * 不只是看的调用，在它所在的工作区记一次动手（noteActing）。返回还没给这个会话说过节奏的。
  * 已知的缺口：会话没进某个工作区、从外面按路径往里写了文件（cp、重定向这类），这里看不到，那个工作区的起点要到会话进去时才记，
  * 已经带着它写的东西；停止门不提醒这一部分，合并前的整组照样查。
+ * 还有一处：cd 进别的工作区、只用命令（sed -i、git cherry-pick 这类）改的，那里不算干活的地方，停止门不为它问；
+ *   用改文件的工具改的照样算。不只是看的命令里也有不改代码的（装依赖、构建、跑别的测试），按它认干活的地方，
+ *   去别人的工作区帮着跑一下就会被那里的改动拦，所以不补。
  * 试过按字面认命令里别的工作区的路径来补：相对路径、软链认不出，只提到路径也会提前记起点成误报；每条命令前后各比一次各工作区又拖慢每条命令，所以不补。
  */
-function untoldRepos(command: string, cwd: string, sessionId: string, now: number): Array<{ repo: Repo; state: SessionState }> {
-  const repos = contractRepos([cwd, ...invocations(command, cwd).map(call => call.cwd)])
+function untoldRepos(command: string, cwd: string, home: string, sessionId: string, now: number): Array<{ repo: Repo; state: SessionState }> {
+  const calls = invocations(command, cwd)
+  const repos = contractRepos([cwd, ...calls.map(call => call.cwd)])
   noteSessionRepos(sessionId, repos.map(repo => repo.root), now)
-  const here = openRepo(cwd)?.root
-  const home = repos.find(repo => repo.root === here)
-  if (home) noteWorking(home, sessionId, now)
+  // 只看的命令不算动手：算的话，同一个工作区里别人一改内容，停止门就又为会话看过的东西拦它（被拦后照话跑检查也一样，拦成循环）。
+  const acting = calls.filter(call => !readsOnly(call))
+  for (const repo of contractRepos(acting.map(call => call.cwd))) noteActing(repo, sessionId, now)
+  const here = openRepo(home)?.root
+  const homeRepo = repos.find(repo => repo.root === here)
+  if (homeRepo) noteWorking(homeRepo, sessionId, now)
   const untold: Array<{ repo: Repo; state: SessionState }> = []
   for (const repo of repos) {
     const state = repo.store.session(sessionId, now, () => defaultTips(repo))
@@ -155,6 +205,7 @@ function noteEditing(repo: Repo, sessionId: string, now: number): void {
   noteSession(repo, sessionId)
   noteSessionRepos(sessionId, [repo.root], now)
   noteWorking(repo, sessionId, now)
+  noteActing(repo, sessionId, now)
 }
 
 /**
@@ -193,6 +244,8 @@ function editRefusal({ repo, path }: { repo: Repo; path: string }, text: string 
  */
 export function judge(event: HookEvent, now: number, agent: AgentKind): HookVerdict | undefined {
   const { cwd, sessionId } = event
+  // 会话所在目录按第一次见到时的认（sessions.ts 的 sessionHome）；cwd 是这次 hook 给的目录，解析命令、相对路径用它
+  const home = event.kind === 'confirm' ? cwd : sessionHome(sessionId, cwd, now)
 
   // 确认工具：用户当场在弹窗里看到原文、点了同意才执行。没填原文的不弹空窗，拒掉让 agent 照检查输出填
   if (event.kind === 'confirm') {
@@ -203,9 +256,9 @@ export function judge(event: HookEvent, now: number, agent: AgentKind): HookVerd
     // 旧版本放的固定入口先换成这一版的：下面的会话说明、之后的命令和合并门的钩子都靠它们找到命令
     refreshEntries()
     // 会话所在目录的仓库，加上会话之前碰过的仓库（压缩、恢复后重新开始时上下文里的节奏说明可能没了）。
-    const hereRepo = openRepo(cwd)
+    const hereRepo = openRepo(home)
     const here = hereRepo?.root
-    const repos = contractRepos([cwd, ...sessionRepos(sessionId)])
+    const repos = contractRepos([home, cwd, ...sessionRepos(sessionId)])
     const fresh = hereRepo && !joined(hereRepo.root) && isNewRepo(hereRepo.root) ? hereRepo : undefined
     if (repos.length === 0 && !fresh) return undefined
     // 用得上合并门的会话里自动配上它，只告诉用户一声
@@ -244,7 +297,7 @@ export function judge(event: HookEvent, now: number, agent: AgentKind): HookVerd
   if (event.kind === 'command') {
     // 记下会话第一次出现的时间：停止门只管这之后起的整组。会话不在仓库里开始（会话开始时没说节奏）时，
     // 第一次碰到接入的仓库就补说一次。
-    const untold = untoldRepos(event.command, cwd, sessionId, now)
+    const untold = untoldRepos(event.command, cwd, home, sessionId, now)
     for (const { repo, state } of untold) repo.store.saveSession(sessionId, { ...state, rhythm: true })
     const briefs = untold.map(({ repo }) => told(repo, agent, `${repo.root} 这个仓库`))
     let hints = modules().flatMap(module => module.beforeCommand?.(event.command, cwd) ?? [])
@@ -274,11 +327,11 @@ export function judge(event: HookEvent, now: number, agent: AgentKind): HookVerd
   }
 
   // 要结束这一轮：会话所在目录的仓库和会话碰过的仓库都查；不是所在目录的，话里写上是哪个仓库。
-  const here = openRepo(cwd)?.root
+  const here = openRepo(home)?.root
   const blocks: string[] = []
   const warns: string[] = []
-  for (const repo of contractRepos([cwd, ...sessionRepos(sessionId)])) {
-    const result = stopCheck({ sessionId, cwd: repo.root, now, named: repo.root !== here })
+  for (const repo of contractRepos([home, cwd, ...sessionRepos(sessionId)])) {
+    const result = stopCheck({ sessionId, cwd: repo.root, now, named: repo.root !== here, ...(event.busy ? { busy: true } : {}) })
     if (result.block) blocks.push(result.block)
     if (result.warn) warns.push(result.warn)
   }

@@ -82,6 +82,10 @@ export interface SessionState {
    * 只在命令里 cd 进去看过的工作区不算，那里后来的改动是别的会话的。
    */
   worked?: string[]
+  /** 这个会话在各工作区动过几次手：用改文件的工具改了那里的文件，或在那里跑了不只是 gatelight 检查的命令（hook.ts 的 noteActing）。 */
+  acted?: Record<string, number>
+  /** 停止门上次为各项拦下时（工作区 + 项，见 stop.ts）这个会话在那个工作区动过几次手：之后没再动手，同一项不再拦。 */
+  blockedActs?: Record<string, number>
   /** 停止门拦过的：running:<运行 id>（还在跑时拦过）、unread:<运行 id>（跑完没看结果时拦过）、flaky:<testKey>（认出的时好时坏测试）。每种只拦一次。 */
   blocked?: string[]
   /** 执行命令之前只能拒绝、不能只加一句话的 agent（Antigravity）：为了说这几段提示已经拦过一次命令，同样的不再拦（hook.ts）。 */

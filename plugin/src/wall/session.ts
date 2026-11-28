@@ -47,13 +47,13 @@ export function onSession(repo: Repo, sessionId: string): void {
 }
 
 /** 停止门：这个会话在这个仓库里改了代码或配置（和起点比；没有起点的不算这个会话改的），当前内容还没有 modwall check 的通过记录。 */
-export function unfinished(repo: Repo, sessionId: string, seen: readonly string[], named: boolean): { keys: string[]; text: string } | undefined {
+export function unfinished(repo: Repo, sessionId: string, seen: (key: string) => boolean, named: boolean): { keys: string[]; text: string } | undefined {
   const opened = openProject(repo.root)
   if ('notJoined' in opened) return undefined
   const now = contentKey(opened.project)
   if (baselines(repo).since(sessionId, now) === now || openStore(repo).passes.get(now)) return undefined
   const key = `wall:check:${now}`
-  if (seen.includes(key)) return undefined
+  if (seen(key)) return undefined
   return {
     keys: [key],
     text:
